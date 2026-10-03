@@ -107,3 +107,25 @@ pub fn decode_bmp(d: &[u8], color_key: Option<[u8; 3]>) -> Option<Pixels> {
     }
     Some(Pixels { width: width as u32, height: height as u32, rgba })
 }
+
+/// Decodes an uncompressed true-colour Targa, the only kind the archive holds. These
+/// carry their own transparency.
+pub fn decode_tga(d: &[u8]) -> Option<Pixels> {
+    let (id, kind, bpp) = (*d.first()? as usize, *d.get(2)?, *d.get(16)? as usize);
+    if kind != 2 || (bpp != 24 && bpp != 32) {
+        return None;
+    }
+    let width = u16::from_le_bytes([d[12], d[13]]) as usize;
+    let height = u16::from_le_bytes([d[14], d[15]]) as usize;
+    let top_down = d[17] & 0x20 != 0;
+    let step = bpp / 8;
+    let data = d.get(18 + id..18 + id + width * height * step)?;
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        let row = if top_down { y } else { height - 1 - y };
+        for p in data[row * width * step..(row + 1) * width * step].chunks(step) {
+            rgba.extend_from_slice(&[p[2], p[1], p[0], if step == 4 { p[3] } else { 255 }]);
+        }
+    }
+    Some(Pixels { width: width as u32, height: height as u32, rgba })
+}

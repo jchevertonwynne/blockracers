@@ -265,6 +265,7 @@ impl Frame<'_> {
 pub fn draw(
     mut commands: Commands,
     time: Res<Time>,
+    real: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     race: Res<Race>,
     settings: Res<Settings>,
@@ -274,6 +275,7 @@ pub fn draw(
     window: Single<&Window, With<PrimaryWindow>>,
     karts: Query<(&Kart, Has<Player>)>,
     roots: Query<Entity, With<Root>>,
+    pause: Res<crate::Pause>,
 ) {
     for root in &roots {
         commands.entity(root).despawn();
@@ -403,7 +405,7 @@ pub fn draw(
     state.speed = state.speed * 0.8 + speed * 0.2;
     let corner = Vec2::new(width - MAP_INSET, HEIGHT - MAP_INSET);
     match (state.gadget, &art.map) {
-        (0, Some((picture, [min_x, max_x, max_y, min_y]))) => {
+        (0, Some((picture, [min_x, max_y, max_x, min_y]))) => {
             let range = Vec2::new(max_x - min_x, max_y - min_y);
             let per_unit = MAP_SIZE / range.max_element();
             let size = range * per_unit;
@@ -461,6 +463,26 @@ pub fn draw(
         let prompt = format!("ENTER: {}   ESC: {}", string(text::RESTART), string(text::EXIT));
         let at = Vec2::new((width - frame.width("font_ths", &prompt, 0.75)) / 2.0, HEIGHT * 0.3 + 6.5 * line);
         frame.write("font_ths", &prompt, at, 0.75, white);
+    }
+
+    // Paused: everything else gives way to a darkened screen and the menu.
+    if let Some(dialog) = &pause.0 {
+        frame.nodes.clear();
+        let shade = ImageNode { image: art.white.clone(), color: Color::srgba(0.0, 0.0, 0.0, 64.0 / 255.0), image_mode: NodeImageMode::Stretch, ..default() };
+        frame.nodes.push((place(Vec2::ZERO, Vec2::new(width, HEIGHT)), shade, UiTransform::IDENTITY));
+        let step = line * 2.0;
+        let top = HEIGHT / 2.0 - dialog.options.len() as f32 * step / 2.0;
+        frame.banner(&string(dialog.prompt), Vec2::new(width / 2.0, top - step / 2.0), 1.0, white);
+        for (row, &option) in dialog.options.iter().enumerate() {
+            // The answer picked out pulses.
+            let colour = if row == dialog.selected {
+                let pulse = 0.75 + 0.25 * (real.elapsed_secs_f64() * std::f64::consts::TAU).cos() as f32;
+                Color::srgba(1.0, 1.0, 0x24 as f32 / 255.0, pulse)
+            } else {
+                Color::srgb(0.5, 0.5, 0x12 as f32 / 255.0)
+            };
+            frame.banner(&string(option), Vec2::new(width / 2.0, top + (row as f32 + 0.5) * step), 1.0, colour);
+        }
     }
 
     let nodes = frame.nodes;

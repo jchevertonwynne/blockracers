@@ -7,6 +7,7 @@ pub mod font;
 pub mod gdb;
 pub mod image;
 pub mod jam;
+pub mod mab;
 pub mod materials;
 pub mod route;
 pub mod sound;

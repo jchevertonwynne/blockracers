@@ -9,6 +9,10 @@ pub struct Material {
     pub texture: Option<String>,
     pub alpha_test: bool,
     pub blend: bool,
+    /// Added to what is behind it rather than laid over it: glows, flames, beams.
+    pub additive: bool,
+    /// How solid it is drawn, where the material says: 255 is fully.
+    pub alpha: Option<u8>,
 }
 
 #[derive(Default, Clone)]
@@ -50,7 +54,17 @@ pub fn parse_mdb(data: &[u8]) -> HashMap<String, Material> {
             }
             0x2c => m.texture = Some(r.string()?.to_lowercase()),
             0x2f => m.alpha_test = true,
-            0x38 | 0x46 | 0x4d..=0x50 => m.blend = true,
+            0x46 => {
+                m.blend = true;
+                m.alpha = Some(r.int()? as u8);
+            }
+            0x38 => {
+                // The source and destination factors follow; a destination of one adds.
+                r.next()?;
+                m.blend = true;
+                m.additive = r.next()? == Token::Key(0x3a);
+            }
+            0x4d..=0x50 => m.blend = true,
             _ => {}
         }
         Some(())
@@ -96,6 +110,8 @@ pub struct Surface {
     pub touch_event: Option<i32>,
     /// Set off when a shot hits it.
     pub shot_event: Option<i32>,
+    /// The emitter of what wheels throw up from it; all zero for none.
+    pub particle: [u8; 8],
 }
 
 impl Default for Surface {
@@ -112,6 +128,7 @@ impl Default for Surface {
             leave_event: None,
             touch_event: None,
             shot_event: None,
+            particle: [0; 8],
         }
     }
 }
@@ -127,6 +144,11 @@ pub fn parse_tmb(data: &[u8]) -> HashMap<String, Surface> {
             0x2b => s.shot_event = Some(r.int()?),
             0x2d => s.force = r.floats()?,
             0x2e => s.sound = Some(r.int()? as usize),
+            0x31 => {
+                let name = r.string()?;
+                let bytes = &name.as_bytes()[..name.len().min(8)];
+                s.particle[..bytes.len()].copy_from_slice(bytes);
+            }
             0x33 => s.friction = r.float()?,
             0x34 => s.lateral_grip = r.float()?,
             0x36 => s.rolling_resistance = r.float()?,

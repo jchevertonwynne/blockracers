@@ -15,7 +15,7 @@ use crate::items::{Action, Beam, ItemAssets};
 use crate::kart::Kart;
 use crate::particles::{Emitter as Particles, Emitters};
 use crate::physics::{self, UNIT};
-use crate::scenery::{Animated, Prop, Scenery, Scrolling, Swatches, to_world};
+use crate::scenery::{Animated, Prop, Retrack, Scenery, Scrolling, Swatches, to_world};
 use crate::track::Track;
 use crate::{Phase, Race};
 use bevy::prelude::*;
@@ -38,7 +38,9 @@ const GHOST_HIT: usize = id::AMBIENT + 15;
 /// Materials swapped onto models: the code puzzle's lights show red where the first
 /// pad of a pair is the right one and blue where the second is.
 pub const SWATCHES: [&str; 2] = ["mmredco", "mmblueco"];
-const CODE_LIGHTS: [&str; 3] = ["mmcode1", "mmcode2", "mmcode3"];
+/// How long the sphinx takes to blow up: the length of its material animation.
+const SPHINX_BLOW_UP: f32 = 18.0 / 30.0;
+pub const CODE_LIGHTS: [&str; 3] = ["mmcode1", "mmcode2", "mmcode3"];
 /// How fast each light flickers while the doors are open, in changes a second.
 const CODE_FLICKER: [f32; 3] = [3.0, 4.0, 5.0];
 
@@ -358,6 +360,9 @@ pub fn hazards(
                 Kind::Sphinx { blowing } => {
                     *blowing = 0.0;
                     show!("blowup", true);
+                    if let Some(sphinx) = prop("blowup") {
+                        commands.entity(sphinx).insert(Retrack(vec![(2, 0), (3, 1)], true));
+                    }
                 }
                 Kind::Rocket { open } => {
                     *open = false;
@@ -408,7 +413,11 @@ pub fn hazards(
                             events.fire(9, None, &mut sfx);
                         }
                         Kind::Sphinx { blowing } => {
-                            *blowing = 1.0;
+                            // Its face cracks and falls apart, picture by picture.
+                            *blowing = SPHINX_BLOW_UP;
+                            if let Some(sphinx) = prop("blowup") {
+                                commands.entity(sphinx).insert(Retrack(vec![(0, 2), (1, 3)], false));
+                            }
                             set_surface("sphinx", true);
                             events.start(16, event.at, &mut sfx);
                         }

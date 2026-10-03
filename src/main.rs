@@ -5,8 +5,10 @@ mod events;
 mod frontend;
 mod hazards;
 mod hud;
+mod item_models;
 mod items;
 mod kart;
+mod kart_effects;
 mod menu;
 mod meshgen;
 mod mixer;
@@ -53,6 +55,45 @@ pub struct Race {
     pub time: f32,
     /// Attract mode: the AI drives the player's kart too.
     pub demo: bool,
+    /// Go straight to the racing, with no drop-in or countdown.
+    pub quick: bool,
+}
+
+/// The menu a race is paused with, as the original's `RaceDialog`: a question and
+/// answers to pick from. All are strings of the game's.
+#[derive(Resource, Default)]
+pub struct Pause(pub Option<Dialog>);
+
+pub struct Dialog {
+    pub prompt: usize,
+    pub options: Vec<usize>,
+    pub selected: usize,
+    /// What saying yes will do, when this is the "are you sure?" that follows a choice.
+    pending: Option<Pending>,
+}
+
+#[derive(Clone, Copy)]
+enum Pending {
+    Restart,
+    Exit,
+}
+
+impl Dialog {
+    const CONTINUE: usize = 14;
+    const RESTART: usize = 15;
+    const EXIT: usize = 17;
+    const YES: usize = 18;
+    const PAUSED: usize = 20;
+    const SURE: usize = 44;
+
+    fn paused() -> Self {
+        Dialog { prompt: Self::PAUSED, options: vec![Self::CONTINUE, Self::RESTART, Self::EXIT], selected: 0, pending: None }
+    }
+
+    /// Starts on "no".
+    fn sure(pending: Pending) -> Self {
+        Dialog { prompt: Self::SURE, options: vec![Self::YES, Self::YES + 1], selected: 1, pending: Some(pending) }
+    }
 }
 
 /// The chase camera's heading, which trails the kart's.
@@ -73,6 +114,12 @@ struct DemoShot {
     events: Vec<(i32, f32)>,
     /// `BRICK_KEYS=Enter@1.5,Down@2`: keys to press, and when.
     keys: Vec<(KeyCode, f32)>,
+    /// `BRICK_VIEW=back,up,right`: where the camera sits relative to the player's kart,
+    /// which it looks at.
+    view: Option<Vec3>,
+    /// `BRICK_POWER=green2@4,red0@6`: power-ups (brick colour and level) the player
+    /// fires, and when.
+    powers: Vec<(items::Power, u8, f32)>,
 }
 
 fn main() {
@@ -88,6 +135,10 @@ fn main() {
             [x, y, z, tx, ty, tz] => Some((Vec3::new(x, y, z), Vec3::new(tx, ty, tz))),
             _ => None,
         };
+        let view = match numbers("BRICK_VIEW")[..] {
+            [back, up, right] => Some(Vec3::new(back, up, right)),
+            _ => None,
+        };
         let events = numbers("BRICK_EVENTS").chunks_exact(2).map(|pair| (pair[0] as i32, pair[1])).collect();
         let keys = std::env::var("BRICK_KEYS").unwrap_or_default();
         let keys = keys.split(',').filter_map(|press| {
@@ -97,6 +148,8 @@ fn main() {
                 "Esc" => KeyCode::Escape,
                 "Up" => KeyCode::ArrowUp,
                 "Down" => KeyCode::ArrowDown,
+                "Escape" => KeyCode::Escape,
+                "Tab" => KeyCode::Tab,
                 "Left" => KeyCode::ArrowLeft,
                 "Right" => KeyCode::ArrowRight,
                 _ => return None,
@@ -104,10 +157,30 @@ fn main() {
             Some((key, at.parse().ok()?))
         });
         let keys = keys.collect();
-        Some((DemoShot { at, path, cycle: mode == Some("cycle"), camera, events, keys }, mode == Some("menu")))
+        let powers = std::env::var("BRICK_POWER").unwrap_or_default();
+        let powers = powers
+            .split(',')
+            .filter_map(|power| {
+                let (what, at) = power.split_once('@')?;
+                let colour = match what.trim_end_matches(char::is_numeric) {
+                    "red" => items::Power::Red,
+                    "yellow" => items::Power::Yellow,
+                    "blue" => items::Power::Blue,
+                    "green" => items::Power::Green,
+                    _ => return None,
+                };
+                Some((colour, what.chars().last()?.to_digit(10)? as u8, at.parse().ok()?))
+            })
+            .collect();
+        Some((DemoShot { at, path, cycle: mode == Some("cycle"), camera, view, events, keys, powers }, mode == Some("menu")))
     });
     let circuits = Circuits::find();
-    let settings = Settings::new(&circuits);
+    let mut settings = Settings::new(&circuits);
+    // `BRICK_LAPS=1`: how long a demo's race is.
+    let laps = std::env::var("BRICK_LAPS").ok().and_then(|laps| laps.parse::<i32>().ok());
+    if let Some(choice) = laps.and_then(|laps| menu::LAP_CHOICES.iter().position(|&l| l == laps)) {
+        settings.lap_choice = choice;
+    }
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -116,7 +189,7 @@ fn main() {
     }));
     match demo {
         Some((shot, on_menu)) => {
-            app.insert_resource(shot).add_systems(Update, demo_shot);
+            app.insert_resource(shot).add_systems(Update, demo_shot.after(kart::ai_drive).before(items::use_items));
             app.add_systems(PreUpdate, demo_keys.after(bevy::input::InputSystems));
             app.insert_state(if on_menu { Screen::Menu } else { Screen::Race });
         }
@@ -129,6 +202,7 @@ fn main() {
         .insert_resource(circuits)
         .insert_resource(settings)
         .init_resource::<ChaseYaw>()
+        .init_resource::<Pause>()
         .add_plugins((menu::plugin, frontend::plugin, audio::plugin))
         .add_systems(Startup, setup_scene)
         .add_systems(
@@ -161,7 +235,16 @@ fn main() {
                 events::track_events,
                 events::part_animations,
                 (hazards::hazards, hazards::code_lights).chain(),
-                (scenery::animate, scenery::scroll, particles::emit).chain(),
+                (
+                    item_models::dress_actions,
+                    item_models::dress_karts,
+                    scenery::animate,
+                    scenery::cycle,
+                    scenery::scroll,
+                    kart_effects::kart_effects,
+                    particles::emit,
+                )
+                    .chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
                 (chase_camera, particles::particles).chain(),
@@ -226,13 +309,28 @@ fn load_race(
         countdown: COUNTDOWN,
         time: 0.0,
         demo: demo.is_some(),
+        quick: demo.is_some() && std::env::var("BRICK_START").is_err(),
     });
 }
 
 /// Everything a race puts in the world goes when the race does.
 fn tag_race_entities(
     mut commands: Commands,
-    new: Query<Entity, (Or<(Added<Mesh3d>, Added<Node>, Added<Kart>)>, Without<ChildOf>)>,
+    new: Query<
+        Entity,
+        (
+            Or<(
+                Added<Mesh3d>,
+                Added<Node>,
+                Added<Kart>,
+                Added<scenery::Prop>,
+                Added<particles::Emitter>,
+                Added<item_models::Dressing>,
+                Added<items::Action>,
+            )>,
+            Without<ChildOf>,
+        ),
+    >,
 ) {
     for entity in &new {
         commands.entity(entity).insert(DespawnOnExit(Screen::Race));
@@ -263,7 +361,7 @@ fn setup_brick_world(
 }
 
 /// Presses the keys a demo asks for, each for one frame.
-fn demo_keys(time: Res<Time>, demo: Res<DemoShot>, mut keys: ResMut<ButtonInput<KeyCode>>, mut pressed: Local<usize>) {
+fn demo_keys(time: Res<Time<Real>>, demo: Res<DemoShot>, mut keys: ResMut<ButtonInput<KeyCode>>, mut pressed: Local<usize>) {
     for &(key, _) in demo.keys.iter().take(*pressed) {
         keys.release(key);
     }
@@ -275,16 +373,24 @@ fn demo_keys(time: Res<Time>, demo: Res<DemoShot>, mut keys: ResMut<ButtonInput<
 
 fn demo_shot(
     mut commands: Commands,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     demo: Res<DemoShot>,
     mut exit: MessageWriter<AppExit>,
     mut next: ResMut<NextState<Screen>>,
     mut taken: Local<bool>,
     mut cycled: Local<u8>,
     mut fired: Local<usize>,
+    mut used: Local<usize>,
     events: Option<ResMut<events::TrackEvents>>,
     mut sfx: ResMut<audio::Sfx>,
+    mut player: Query<(&mut Kart, &mut kart::Controls), With<Player>>,
 ) {
+    if let Some(&(power, level, _)) = demo.powers.get(*used).filter(|p| time.elapsed_secs() >= p.2) {
+        if let Ok((mut kart, mut controls)) = player.single_mut() {
+            (kart.held, kart.whites, controls.use_item) = (Some(power), level, true);
+            *used += 1;
+        }
+    }
     if let Some(mut events) = events {
         while let Some(&(event, _)) = demo.events.get(*fired).filter(|e| time.elapsed_secs() >= e.1) {
             events.fire(event, None, &mut sfx);
@@ -318,22 +424,84 @@ fn race_flow(
     mut sfx: ResMut<audio::Sfx>,
     mut karts: Query<(&mut Kart, Has<Player>)>,
     debris: Query<Entity, With<Action>>,
+    mut pause: ResMut<Pause>,
+    mut clock: ResMut<Time<Virtual>>,
+    art: Option<Res<hud::original::Art>>,
 ) {
-    if keys.just_pressed(KeyCode::Escape) {
+    let mut restart = false;
+    if let Some(dialog) = &mut pause.0 {
+        // Paused: the keys work the menu and nothing else moves.
+        let count = dialog.options.len();
+        let step = keys.just_pressed(KeyCode::ArrowDown) as usize + keys.just_pressed(KeyCode::ArrowUp) as usize * (count - 1);
+        if step > 0 {
+            dialog.selected = (dialog.selected + step) % count;
+            sfx.play(audio::id::MENU_HIGHLIGHT);
+        }
+        let chosen = if keys.just_pressed(KeyCode::Escape) {
+            // Backing out is "continue", or "no".
+            Some(if dialog.pending.is_some() { 1 } else { 0 })
+        } else {
+            keys.just_pressed(KeyCode::Enter).then_some(dialog.selected)
+        };
+        let Some(chosen) = chosen else { return };
+        debug!("chose {chosen}");
+        sfx.play(audio::id::MENU_SELECT);
+        pause.0 = match (dialog.pending, chosen) {
+            (None, 0) => None,
+            (None, 1) => Some(Dialog::sure(Pending::Restart)),
+            (None, _) => Some(Dialog::sure(Pending::Exit)),
+            (Some(Pending::Exit), 0) => {
+                clock.unpause();
+                pause.0 = None;
+                next.set(Screen::Menu);
+                return;
+            }
+            (Some(Pending::Restart), 0) => {
+                restart = true;
+                None
+            }
+            (Some(_), _) => Some(Dialog::paused()),
+        };
+        if pause.0.is_none() {
+            clock.unpause();
+        }
+        if !restart {
+            return;
+        }
+    } else if keys.just_pressed(KeyCode::Escape) {
         sfx.play(audio::id::MENU_BACK);
-        next.set(Screen::Menu);
+        // Without the game's own lettering there is no menu to show: just leave.
+        if art.is_none() || race.phase == Phase::Finished {
+            next.set(Screen::Menu);
+        } else {
+            pause.0 = Some(Dialog::paused());
+            clock.pause();
+            debug!("paused");
+        }
+        return;
+    }
+    if restart || (race.phase == Phase::Finished && keys.just_pressed(KeyCode::Enter)) {
+        for (mut k, _) in &mut karts {
+            k.reset(&track);
+        }
+        for e in &debris {
+            commands.entity(e).despawn();
+        }
+        race.phase = Phase::Intro;
+        race.intro = INTRO;
+        race.countdown = COUNTDOWN;
         return;
     }
     match race.phase {
         Phase::Intro => {
             race.intro -= time.delta_secs();
-            if race.intro <= 0.0 || race.demo {
+            if race.intro <= 0.0 || race.quick {
                 race.phase = Phase::Countdown;
             }
         }
         Phase::Countdown => {
             race.countdown -= time.delta_secs();
-            if race.countdown <= 0.0 || race.demo {
+            if race.countdown <= 0.0 || race.quick {
                 race.phase = Phase::Racing;
                 race.time = 0.0;
             }
@@ -343,17 +511,6 @@ fn race_flow(
             if karts.iter().any(|(k, player)| player && k.finished.is_some()) {
                 race.phase = Phase::Finished;
             }
-        }
-        Phase::Finished if keys.just_pressed(KeyCode::Enter) => {
-            for (mut k, _) in &mut karts {
-                k.reset(&track);
-            }
-            for e in &debris {
-                commands.entity(e).despawn();
-            }
-            race.phase = Phase::Intro;
-            race.intro = INTRO;
-            race.countdown = COUNTDOWN;
         }
         Phase::Finished => {}
     }
@@ -368,9 +525,14 @@ fn chase_camera(
     mut cam_yaw: ResMut<ChaseYaw>,
 ) {
     let (mut t, mut projection) = camera.into_inner();
-    if let Some((from, to)) = demo.and_then(|d| d.camera) {
+    if let Some((from, to)) = demo.as_ref().and_then(|d| d.camera) {
         t.translation = scenery::to_world(from);
         t.look_at(scenery::to_world(to), Vec3::Y);
+        return;
+    }
+    if let Some(view) = demo.and_then(|d| d.view) {
+        t.translation = player.pos + player.rot * Vec3::new(view.z, view.y, view.x);
+        t.look_at(player.pos + Vec3::Y * 0.5, Vec3::Y);
         return;
     }
     let ease = |rate: f32| 1.0 - (-rate * time.delta_secs()).exp();

@@ -5,6 +5,7 @@
 
 use crate::assets::{
     image::Pixels,
+    mab::Track,
     tokens::{Token, tokenize},
 };
 use crate::physics::UNIT;
@@ -26,7 +27,7 @@ pub struct EmitterDef {
     interval: f32,
     skip: f32,
     size: Vec2,
-    /// Growth per second.
+    /// Growth over a particle's life.
     growth: Vec2,
     life: f32,
     /// How long the emitter itself lasts, if not for ever.
@@ -34,6 +35,17 @@ pub struct EmitterDef {
     acceleration: Vec3,
     velocities: Vec<Vec3>,
     pub material: Option<String>,
+    /// Or the track of the material animation alongside that its particles play through.
+    pub track: Option<usize>,
+}
+
+/// What an emitter's particles look like: one picture, or several with the frames they
+/// show from and the track that times them.
+#[derive(Default)]
+pub struct Look {
+    pub frames: Vec<(u32, Pixels)>,
+    pub track: Option<Track>,
+    pub additive: bool,
 }
 
 fn number(token: Option<&Token>) -> f32 {
@@ -63,13 +75,15 @@ pub fn parse(data: &[u8]) -> Vec<(String, EmitterDef)> {
             acceleration: Vec3::ZERO,
             velocities: Vec::new(),
             material: None,
+            track: None,
         };
         let mut at = i + 3;
         while let Some(token) = tokens.get(at) {
             let value = |n: usize| number(tokens.get(at + 1 + n));
             match token {
                 Token::RCurly => break,
-                Token::Key(0x28) => def.interval = value(0) / 1000.0,
+                // So many a second.
+                Token::Key(0x28) => def.interval = 1.0 / value(0).max(0.001),
                 Token::Key(0x29) => def.skip = value(0),
                 Token::Key(0x2a) => def.acceleration = Vec3::new(value(0), value(1), value(2)),
                 Token::Key(0x2b) => {
@@ -78,6 +92,7 @@ pub fn parse(data: &[u8]) -> Vec<(String, EmitterDef)> {
                     def.velocities = (0..count).map(|n| Vec3::new(value(4 + n * 3), value(5 + n * 3), value(6 + n * 3))).collect();
                     at += 5 + count * 3;
                 }
+                Token::Key(0x2e) => def.track = Some(value(0) as usize),
                 Token::Key(0x2c) => def.size.y = value(0),
                 Token::Key(0x2d) => def.size.x = value(0),
                 Token::Key(0x2f) => def.life = value(0) / 1000.0,
@@ -100,7 +115,17 @@ pub fn parse(data: &[u8]) -> Vec<(String, EmitterDef)> {
 
 struct Kind {
     def: EmitterDef,
-    material: Handle<StandardMaterial>,
+    /// One material per picture, with the frame each shows from.
+    materials: Vec<Handle<StandardMaterial>>,
+    frames: Vec<u32>,
+    track: Option<Track>,
+}
+
+impl Kind {
+    fn material(&self, age: f32) -> Handle<StandardMaterial> {
+        let index = self.track.map_or(0, |t| t.sample(&self.frames, age));
+        self.materials[index.min(self.materials.len() - 1)].clone()
+    }
 }
 
 /// The circuit's emitters, ready to use.
@@ -114,7 +139,7 @@ impl Emitters {
     /// Builds the emitters and the materials their particles are drawn with: each
     /// one's own picture, or a soft puff for those that take theirs from an animation.
     pub fn new(
-        defs: Vec<(String, EmitterDef, Option<Pixels>)>,
+        defs: Vec<(String, EmitterDef, Look)>,
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
         images: &mut Assets<Image>,
@@ -133,24 +158,38 @@ impl Emitters {
             .collect();
         let puff = image(32, 32, puff);
         let mut kinds = HashMap::new();
-        for (name, def, pixels) in defs {
-            let texture = pixels.map_or(puff.clone(), |p| image(p.width, p.height, p.rgba));
-            let material = materials.add(StandardMaterial {
-                base_color_texture: Some(texture),
-                unlit: true,
-                alpha_mode: AlphaMode::Blend,
-                cull_mode: None,
-                double_sided: true,
-                ..default()
-            });
-            kinds.insert(name, Arc::new(Kind { def, material }));
+        for (name, def, look) in defs {
+            let alpha_mode = if look.additive { AlphaMode::Add } else { AlphaMode::Blend };
+            let mut material = |texture| {
+                materials.add(StandardMaterial {
+                    base_color_texture: Some(texture),
+                    unlit: true,
+                    alpha_mode,
+                    cull_mode: None,
+                    double_sided: true,
+                    ..default()
+                })
+            };
+            let frames: Vec<u32> = look.frames.iter().map(|f| f.0).collect();
+            let mut pictures: Vec<_> = look.frames.into_iter().map(|(_, p)| material(image(p.width, p.height, p.rgba))).collect();
+            if pictures.is_empty() {
+                pictures.push(material(puff.clone()));
+            }
+            kinds.insert(name, Arc::new(Kind { def, materials: pictures, frames, track: look.track }));
         }
         Emitters { kinds, quad: meshes.add(Rectangle::new(1.0, 1.0)) }
     }
 
     /// An emitter of the named kind, to spawn with a `Transform` saying where it is.
     pub fn emitter(&self, name: &str) -> Option<Emitter> {
-        Some(Emitter { kind: self.kinds.get(name)?.clone(), timer: 0.0, age: 0.0, seed: 0x9e37_79b9, velocity: Vec3::ZERO })
+        let kind = self.kinds.get(name)?.clone();
+        // Due at once.
+        Some(Emitter { timer: kind.def.interval, kind, age: 0.0, seed: 0x9e37_79b9, velocity: Vec3::ZERO, spawned: 0 })
+    }
+
+    /// Starts an emitter of the named kind at a place; those with a duration end themselves.
+    pub fn spawn(&self, commands: &mut Commands, name: &str, at: Transform) -> Option<Entity> {
+        Some(commands.spawn((self.emitter(name)?, at)).id())
     }
 }
 
@@ -163,6 +202,8 @@ pub struct Emitter {
     seed: u32,
     /// Added to each particle's own velocity.
     pub velocity: Vec3,
+    /// How many particles it has thrown out.
+    pub spawned: u32,
 }
 
 impl Emitter {
@@ -176,6 +217,7 @@ impl Emitter {
 
 #[derive(Component)]
 pub struct Particle {
+    kind: Arc<Kind>,
     velocity: Vec3,
     acceleration: Vec3,
     size: Vec2,
@@ -203,8 +245,10 @@ pub fn emit(mut commands: Commands, time: Res<Time>, emitters: Option<Res<Emitte
             continue;
         }
         let velocity = kind.def.velocities[emitter.roll(kind.def.velocities.len() as u32) as usize];
+        emitter.spawned += 1;
         commands.spawn((
             Particle {
+                kind: kind.clone(),
                 velocity: transform.rotation * to_world(velocity) + emitter.velocity,
                 acceleration: to_world(kind.def.acceleration),
                 size: kind.def.size * UNIT,
@@ -213,7 +257,7 @@ pub fn emit(mut commands: Commands, time: Res<Time>, emitters: Option<Res<Emitte
                 life: kind.def.life,
             },
             Mesh3d(emitters.quad.clone()),
-            MeshMaterial3d(kind.material.clone()),
+            MeshMaterial3d(kind.material(0.0)),
             Transform::from_translation(transform.translation).with_scale(Vec3::splat(MIN_SIZE)),
         ));
     }
@@ -224,10 +268,10 @@ pub fn particles(
     mut commands: Commands,
     time: Res<Time>,
     camera: Single<&Transform, (With<Camera3d>, Without<Particle>)>,
-    mut all: Query<(Entity, &mut Particle, &mut Transform)>,
+    mut all: Query<(Entity, &mut Particle, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
     let dt = time.delta_secs().min(0.05);
-    for (entity, mut particle, mut transform) in &mut all {
+    for (entity, mut particle, mut transform, mut material) in &mut all {
         particle.age += dt;
         if particle.age >= particle.life {
             commands.entity(entity).despawn();
@@ -237,7 +281,13 @@ pub fn particles(
         particle.velocity += acceleration * dt;
         transform.translation += particle.velocity * dt;
         transform.rotation = camera.rotation;
-        let size = (particle.size + particle.growth * particle.age).max(Vec2::splat(MIN_SIZE));
+        if particle.kind.track.is_some() {
+            let now = particle.kind.material(particle.age);
+            if material.0 != now {
+                material.0 = now;
+            }
+        }
+        let size = (particle.size + particle.growth * (particle.age / particle.life)).max(Vec2::splat(MIN_SIZE));
         transform.scale = Vec3::new(size.x, size.y, 1.0);
     }
 }
@@ -248,10 +298,24 @@ fn snow_and_smoke_are_defined_on_the_ice_circuit() {
     let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
     let emitters = parse(jam.get("/GAMEDATA/RACEC1R3/RACEC1R3.EMB").unwrap());
     let snow = &emitters.iter().find(|e| e.0 == "snow").unwrap().1;
-    assert_eq!((snow.interval, snow.life, snow.velocities.len()), (0.012, 1.5, 3));
+    assert_eq!((snow.interval, snow.life, snow.velocities.len()), (1.0 / 12.0, 1.5, 3));
     assert_eq!(snow.material.as_deref(), Some("snowflak"));
     assert!(snow.velocities.iter().all(|v| v.z < -20.0) && snow.duration.is_none());
     let smoke = &emitters.iter().find(|e| e.0 == "smoke").unwrap().1;
     assert_eq!((smoke.size, smoke.growth, smoke.velocities.len()), (Vec2::splat(5.0), Vec2::splat(5.0), 4));
+    assert_eq!((smoke.material.as_deref(), smoke.track), (None, Some(0)));
     assert!(parse(jam.get("/GAMEDATA/COMMON/EMITTER.EMB").unwrap()).len() >= 10);
+}
+
+#[cfg(test)]
+#[test]
+fn every_emitter_has_its_pictures() {
+    for (race, _) in crate::world::circuits() {
+        let Some((_, world)) = crate::world::load(&race) else { return };
+        for (name, def, look) in &world.emitters {
+            assert!(!look.frames.is_empty(), "{race} {name}");
+            assert_eq!(def.track.is_some() && def.material.is_none(), look.track.is_some(), "{race} {name}");
+        }
+        assert!(world.emitters.iter().any(|e| e.0 == "dust" && e.2.frames.len() == 4));
+    }
 }

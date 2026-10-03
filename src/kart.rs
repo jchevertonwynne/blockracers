@@ -126,6 +126,8 @@ pub struct Kart {
     pub touched: Option<i32>,
     /// The horn has just sounded.
     pub honked: bool,
+    /// Where this kart has just struck another.
+    pub sparks: Option<Vec3>,
 }
 
 /// Multipliers from the car's handling, top speed and acceleration ratings.
@@ -216,6 +218,7 @@ impl Kart {
             cues: Cues::default(),
             touched: None,
             honked: false,
+            sparks: None,
         }
     }
 
@@ -534,6 +537,7 @@ pub fn spawn_karts(
             Controls::default(),
             Ai::new(driver.skill * settings.ai_pace(), slot),
             RacerAudio::default(),
+            crate::kart_effects::Effects::default(),
             Transform::default(),
             Visibility::default(),
         ));
@@ -620,8 +624,13 @@ pub fn spawn_karts(
 pub fn player_input(
     keys: Res<ButtonInput<KeyCode>>,
     race: Res<Race>,
+    pause: Res<crate::Pause>,
     mut q: Query<(&Kart, &mut Controls), With<Player>>,
 ) {
+    // The keys are the pause menu's while it is up.
+    if pause.0.is_some() {
+        return;
+    }
     let Ok((kart, mut c)) = q.single_mut() else { return };
     if kart.finished.is_some() || race.demo {
         return;
@@ -800,6 +809,8 @@ pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player
             if a.scrape_cooldown <= 0.0 && b.scrape_cooldown <= 0.0 {
                 let sound = id::CAR_HITS[sfx.roll(2) as usize];
                 sfx.play_at(sound, (a.pos + b.pos) * 0.5);
+                let contact = (a.pos + b.pos) * 0.5 + Vec3::Y * 0.6;
+                (a.sparks, b.sparks) = (Some(contact), Some(contact));
                 a.scrape_cooldown = SCRAPE_COOLDOWN;
                 b.scrape_cooldown = SCRAPE_COOLDOWN;
             }
@@ -814,18 +825,26 @@ pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player
     }
 }
 
+/// What karts are ranked by, biggest first: finishers ahead of everyone still racing
+/// and the earliest of them first, then the rest by how far round they are.
+fn place_key(k: &Kart) -> (bool, f32) {
+    match k.finished {
+        Some(time) => (true, -time),
+        None => (false, k.progress),
+    }
+}
+
 pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut Kart>) {
-    let mut order: Vec<(f32, Mut<Kart>)> = q
+    let mut order: Vec<((bool, f32), Mut<Kart>)> = q
         .iter_mut()
         .map(|mut k| {
             if race.phase == Phase::Racing && k.finished.is_none() && k.lap > settings.laps() {
                 k.finished = Some(race.time);
             }
-            // Finishers rank ahead of everyone still racing, earliest first.
-            (k.finished.map_or(k.progress, |t| 1e9 - t), k)
+            (place_key(&k), k)
         })
         .collect();
-    order.sort_by(|a, b| b.0.total_cmp(&a.0));
+    order.sort_by(|a, b| b.0.0.cmp(&a.0.0).then(b.0.1.total_cmp(&a.0.1)));
     for (i, (_, k)) in order.iter_mut().enumerate() {
         if k.place != i + 1 {
             // Gaining a place is worth a cheer, and losing one a groan.
@@ -869,6 +888,24 @@ pub fn sync_wheels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finishers_are_placed_by_their_times() {
+        let track = Track::new();
+        let kart = |finished: Option<f32>, progress: f32| {
+            let mut kart = Kart::new(&track, 0);
+            (kart.finished, kart.progress) = (finished, progress);
+            kart
+        };
+        // Finishing times under a second apart, and two karts still out on the lap.
+        let mut karts = [kart(Some(49.16), 0.0), kart(None, 310.0), kart(Some(46.79), 0.0), kart(Some(48.56), 0.0), kart(None, 325.0)];
+        karts.sort_by(|a, b| {
+            let (a, b) = (place_key(a), place_key(b));
+            b.0.cmp(&a.0).then(b.1.total_cmp(&a.1))
+        });
+        let order: Vec<_> = karts.iter().map(|k| (k.finished, k.progress)).collect();
+        assert_eq!(order, [(Some(46.79), 0.0), (Some(48.56), 0.0), (Some(49.16), 0.0), (None, 325.0), (None, 310.0)]);
+    }
 
     /// Lets the AI drive one kart alone and returns the times at which it started each lap.
     fn solo_run(track: &Track, seconds: f32) -> Vec<f32> {

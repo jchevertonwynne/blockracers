@@ -8,14 +8,15 @@
 //! | blue   | shield, lasting longer at each level and deflecting shots from level 2 |
 //! | green  | turbo boost, longer at each level              | warp           |
 //!
-//! Behaviour and numbers follow the original's power-up actions; the models and
-//! effects are stand-ins.
+//! Behaviour and numbers follow the original's power-up actions. What is spawned here
+//! is a plain shape; `item_models` puts the original's models and particles on it.
 
 use crate::audio::{Emitter, Sfx, id};
 use crate::events::TrackEvents;
 use crate::kart::{Controls, Kart};
 use crate::meshgen::*;
 use crate::physics::UNIT;
+use crate::scenery::{Models, Motion, Swatches};
 use crate::track::Track;
 use crate::world::LoadedWorld;
 use bevy::prelude::*;
@@ -53,6 +54,9 @@ const MAX_WHITE_BRICKS: u8 = 3;
 const BRICK_RESPAWN: f32 = 5.0;
 /// How close a kart has to come to a brick to collect it.
 const PICKUP_RADIUS: f32 = 2.7;
+/// Bricks float this far above the road.
+const BRICK_HEIGHT: f32 = 1.1;
+const BRICK_SCALE: f32 = 0.8;
 
 const SHIELD_TIMES: [f32; 4] = [4.0, 6.0, 8.0, 10.0];
 /// Shields of this level and up send cannon balls back where they came from.
@@ -133,6 +137,8 @@ pub struct Pickup {
     power: Option<Power>,
     pos: Vec3,
     respawn: f32,
+    /// Shown as the original's model, which turns by itself.
+    modelled: bool,
 }
 
 /// Something a power-up has put into the world. Its position is its `Transform`.
@@ -147,7 +153,8 @@ pub enum Action {
     Missile { owner: Entity, target: Option<Entity>, s: f32, lat: f32, time: f32 },
     OilSlick { owner: Entity, age: f32 },
     Dynamite { owner: Entity, fuse: f32, blasts: u8 },
-    Magnet { owner: Entity, age: f32 },
+    /// Once it has `caught` someone it stays only as long as it holds them.
+    Magnet { owner: Entity, age: f32, caught: bool },
     Curse { owner: Entity, age: f32 },
     Explosion { age: f32, radius: f32 },
 }
@@ -172,6 +179,8 @@ pub fn setup_items(
     mut commands: Commands,
     track: Res<Track>,
     loaded: Option<Res<LoadedWorld>>,
+    models: Option<Res<Models>>,
+    swatches: Option<Res<Swatches>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -200,6 +209,15 @@ pub fn setup_items(
     if let Some(mut fire) = materials.get_mut(&assets.fire) {
         fire.alpha_mode = AlphaMode::Blend;
     }
+    // The oil slick's own picture, where there is one.
+    if let (Some(picture), Some(mut oil)) = (swatches.and_then(|s| s.0.get("oilslck").cloned()), materials.get_mut(&assets.oil)) {
+        *oil = StandardMaterial {
+            base_color_texture: Some(picture),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        };
+    }
     commands.insert_resource(assets);
 
     let mut brick = BrickMesh::default();
@@ -222,12 +240,35 @@ pub fn setup_items(
             Some(p) => &coloured[powers.iter().position(|&q| q == p).unwrap()],
             None => &white,
         };
-        commands.spawn((
-            Pickup { power, pos, respawn: 0.0 },
-            Mesh3d(brick.clone()),
-            MeshMaterial3d(mat.clone()),
-            Transform::from_translation(pos),
-        ));
+        // The original's brick and the glow around it, or a plain brick.
+        let names = match power {
+            Some(Power::Red) => ["gen-p", "genblen-p"],
+            Some(Power::Yellow) => ["gen-m", "genblen-m"],
+            Some(Power::Blue) => ["gen-s", "genblen-s"],
+            Some(Power::Green) => ["gen-t", "genblen-t"],
+            None => ["enh", "enhblen"],
+        };
+        let at = Transform::from_translation(pos + Vec3::Y * BRICK_HEIGHT).with_scale(Vec3::splat(BRICK_SCALE));
+        let model = models.as_ref().and_then(|models| {
+            let brick = models.spawn(&mut commands, names[0], at, Motion::Loop)?;
+            if let Some(glow) = models.spawn(&mut commands, names[1], Transform::IDENTITY, Motion::Loop) {
+                commands.entity(brick).add_child(glow);
+            }
+            Some(brick)
+        });
+        match model {
+            Some(brick) => {
+                commands.entity(brick).insert(Pickup { power, pos, respawn: 0.0, modelled: true });
+            }
+            None => {
+                commands.spawn((
+                    Pickup { power, pos, respawn: 0.0, modelled: false },
+                    Mesh3d(brick.clone()),
+                    MeshMaterial3d(mat.clone()),
+                    Transform::from_translation(pos),
+                ));
+            }
+        }
     };
 
     // Circuits from the original game come with their own brick placements.
@@ -273,8 +314,10 @@ pub fn pickups(
             }
             continue;
         }
-        tf.rotation = Quat::from_rotation_y(t * 2.0);
-        tf.translation.y = p.pos.y + 1.1 + (t * 3.0 + p.pos.x).sin() * 0.15;
+        if !p.modelled {
+            tf.rotation = Quat::from_rotation_y(t * 2.0);
+            tf.translation.y = p.pos.y + 1.1 + (t * 3.0 + p.pos.x).sin() * 0.15;
+        }
         for mut k in &mut karts {
             if k.pos.distance_squared(p.pos) > PICKUP_RADIUS * PICKUP_RADIUS {
                 continue;
@@ -414,7 +457,7 @@ pub fn use_items(
                 spawn(action, &assets.stick, &assets.red, landing + Vec3::Y * 0.45, Vec3::ONE);
             }
             (Power::Yellow, 2) => {
-                spawn(Action::Magnet { owner, age: 0.0 }, &assets.disc, &assets.magnet, behind + Vec3::Y * 0.08, Vec3::new(1.2, 3.0, 1.2));
+                spawn(Action::Magnet { owner, age: 0.0, caught: false }, &assets.disc, &assets.magnet, behind + Vec3::Y * 0.08, Vec3::new(1.2, 3.0, 1.2));
             }
             (Power::Yellow, _) => {
                 spawn(Action::Curse { owner, age: 0.0 }, &assets.disc, &assets.curse, behind + Vec3::Y * 0.08, Vec3::new(1.2, 3.0, 1.2));
@@ -699,17 +742,19 @@ pub fn actions(
                     done = *left == 0;
                 }
             }
-            Action::Magnet { owner, age } => {
+            Action::Magnet { owner, age, caught } => {
                 *age += dt;
                 done = *age > MAGNET_ARMED_TIME;
                 sfx.sustain(entity, 0, id::MAGNET_LOOP, Emitter::at(pos));
                 for (e, mut k) in &mut karts {
+                    if *caught {
+                        break;
+                    }
                     if e != *owner && !k.shielded() && k.warp <= 0.0 && touching(&k, pos, TRAP_RADIUS) {
                         k.magnet = MAGNET_HOLD_TIME;
                         k.cues.reaction = Some(false);
                         sfx.play_at(id::MAGNET_GRAB, pos);
-                        done = true;
-                        break;
+                        (*caught, *age) = (true, MAGNET_ARMED_TIME - MAGNET_HOLD_TIME);
                     }
                 }
             }

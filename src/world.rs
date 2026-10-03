@@ -2,6 +2,7 @@
 //! textures for rendering, an AI route as the racing line, and the power-up bricks.
 
 use crate::assets::{
+    mab,
     Jam,
     bvb::Volume,
     gdb::{Batch, Bone, Model, Vertex, parse_skeleton},
@@ -32,9 +33,12 @@ fn to_world(p: [f32; 3]) -> Vec3 {
 
 pub struct Surface {
     mesh: Mesh,
-    texture: Option<image::Pixels>,
+    pub texture: Option<image::Pixels>,
     cutout: bool,
     blend: bool,
+    additive: bool,
+    /// Which of the model's materials this is.
+    pub material: usize,
 }
 
 /// A pair of wheels: the game rigs each axle as one bone of the wheel model.
@@ -69,8 +73,10 @@ pub struct LoadedWorld {
     pub karts: Vec<KartModel>,
     /// Scenery and animated models around the track.
     pub props: Vec<scenery::PropDef>,
+    /// The models power-ups are made of.
+    pub models: Vec<scenery::PropDef>,
     /// Particle emitters by name, with the picture each one's particles use.
-    pub emitters: Vec<(String, particles::EmitterDef, Option<image::Pixels>)>,
+    pub emitters: Vec<(String, particles::EmitterDef, particles::Look)>,
     /// Pictures of materials that hazards swap onto models, by material name.
     pub swatches: Vec<(String, image::Pixels)>,
 }
@@ -106,8 +112,40 @@ impl<'a> Library<'a> {
     pub fn texture(&self, material: &str) -> Option<image::Pixels> {
         let name = self.materials.get(material)?.texture.clone()?;
         let definition = self.textures.get(&name).cloned().unwrap_or_default();
-        let data = self.dirs.iter().find_map(|dir| self.jam.get(&format!("{dir}/{name}.BMP")))?;
-        image::decode_bmp(data, definition.color_key)
+        let mut pixels = self.picture(&name, &definition)?;
+        if definition.flip {
+            let row = pixels.width as usize * 4;
+            pixels.rgba = pixels.rgba.chunks(row).rev().flatten().copied().collect();
+        }
+        Some(pixels)
+    }
+
+    /// A material's picture in the material's own colour and at its own strength, for
+    /// things drawn without lighting or vertex colours.
+    pub fn tinted(&self, material: &str) -> Option<image::Pixels> {
+        let mut pixels = self.texture(material)?;
+        let info = self.materials.get(material)?;
+        let tint = [info.diffuse[0], info.diffuse[1], info.diffuse[2], info.alpha.unwrap_or(255)];
+        for pixel in pixels.rgba.chunks_exact_mut(4) {
+            for (value, scale) in pixel.iter_mut().zip(tint) {
+                *value = (*value as u16 * scale as u16 / 255) as u8;
+            }
+        }
+        Some(pixels)
+    }
+
+    /// Whether a material is added to what is behind it.
+    pub fn additive(&self, material: &str) -> bool {
+        self.materials.get(material).is_some_and(|m| m.additive)
+    }
+
+    /// A texture's pixels, from whichever of the folders holds it.
+    fn picture(&self, name: &str, definition: &materials::Texture) -> Option<image::Pixels> {
+        let file = |ext: &str| self.dirs.iter().find_map(|dir| self.jam.get(&format!("{dir}/{name}.{ext}")));
+        if definition.tga {
+            return image::decode_tga(file("TGA")?);
+        }
+        image::decode_bmp(file("BMP")?, definition.color_key)
     }
 
     /// One mesh per material out of the batches of `model` that pass `keep`.
@@ -126,18 +164,13 @@ impl<'a> Library<'a> {
             let info = model.materials.get(*material).and_then(|name| self.materials.get(name));
             let texture_name = info.and_then(|m| m.texture.clone()).unwrap_or_default();
             let definition = self.textures.get(&texture_name).cloned().unwrap_or_default();
-            let texture = self
-                .dirs
-                .iter()
-                .find_map(|dir| self.jam.get(&format!("{dir}/{texture_name}.BMP")))
-                .and_then(|d| image::decode_bmp(d, definition.color_key))
-                .map(|mut pixels| {
-                    if definition.flip {
-                        let row = pixels.width as usize * 4;
-                        pixels.rgba = pixels.rgba.chunks(row).rev().flatten().copied().collect();
-                    }
-                    pixels
-                });
+            let texture = self.picture(&texture_name, &definition).map(|mut pixels| {
+                if definition.flip {
+                    let row = pixels.width as usize * 4;
+                    pixels.rgba = pixels.rgba.chunks(row).rev().flatten().copied().collect();
+                }
+                pixels
+            });
 
             let vertex = |&i: &u32| model.vertices[i as usize];
             // Lighting is baked into vertex colours, which multiply the texture.
@@ -163,7 +196,9 @@ impl<'a> Library<'a> {
                 mesh,
                 texture,
                 cutout: definition.color_key.is_some() || info.is_some_and(|m| m.alpha_test),
-                blend: info.is_some_and(|m| m.blend),
+                blend: definition.tga || info.is_some_and(|m| m.blend),
+                additive: info.is_some_and(|m| m.additive),
+                material: *material,
             });
         }
         surfaces
@@ -485,24 +520,54 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
     }
     let track_model = model_file.rsplit('/').next().unwrap_or_default().trim_end_matches(".GDB").to_lowercase();
     let props = scenery::load(&jam, &dir, &library, &track_model);
+    let powerups = ["POWERUP", "DTURBO0", "DTURBO1", "DTURBO2", "CURSE", "BARREL", "WARPHOLE", "CGREEN", "GRAPPLE", "DBRICKS", "DTUBE"];
+    let powerups: Vec<String> = powerups.iter().flat_map(|n| [format!("{COMMON}/{n}.MDB"), format!("{COMMON}/{n}.TDB")]).collect();
+    let powerups = Library::new(&jam, powerups.iter().map(String::as_str), &[COMMON]);
+    let files = [format!("{COMMON}/POWERUP.WDB"), format!("{COMMON}/TURBO3.WDB")];
+    let models = scenery::load_files(&jam, COMMON, &files.each_ref().map(String::as_str), &powerups, "");
     // The circuit's own emitters first, then the ones every circuit shares.
     let shared = [format!("{COMMON}/EMITTER.MDB"), format!("{COMMON}/EMITTER.TDB")];
     let shared = Library::new(&jam, shared.iter().map(String::as_str), &[COMMON]);
+    let animation = |file: &str| jam.get(file).and_then(mab::MaterialAnimation::parse).unwrap_or_default();
     let mut emitters = Vec::new();
     let shared_file = format!("{COMMON}/EMITTER.EMB");
-    for (file, library) in with_ext(".EMB").map(|f| (f, &library)).chain([(shared_file.as_str(), &shared)]) {
+    let sources = with_ext(".EMB")
+        .map(|f| (f, &library, animation(&format!("{dir}/EMIT{}.MAB", &race[race.len().saturating_sub(4)..]))))
+        .chain([(shared_file.as_str(), &shared, animation(&format!("{COMMON}/EMITTER.MAB")))]);
+    for (file, library, animation) in sources {
         for (name, def) in jam.get(file).map(particles::parse).unwrap_or_default() {
-            let pixels = def.material.as_deref().and_then(|m| library.texture(m));
+            let look = match (&def.material, def.track) {
+                (Some(material), _) => particles::Look {
+                    frames: library.tinted(material).map(|p| (0, p)).into_iter().collect(),
+                    track: None,
+                    additive: library.additive(material),
+                },
+                (None, Some(track)) => particles::Look {
+                    frames: animation
+                        .materials(track)
+                        .iter()
+                        .filter_map(|(material, frame)| Some((*frame, library.tinted(material)?)))
+                        .collect(),
+                    track: animation.tracks.get(track).copied(),
+                    additive: animation.materials(track).first().is_some_and(|m| library.additive(&m.0)),
+                },
+                _ => particles::Look::default(),
+            };
+            if look.frames.is_empty() {
+                warn!("no picture for the particles of {name}");
+            }
             if !emitters.iter().any(|e: &(String, _, _)| e.0 == name) {
-                emitters.push((name, def, pixels));
+                emitters.push((name, def, look));
             }
         }
     }
+    let picture = |library: &Library, material: &str| Some((material.to_string(), library.texture(material)?));
     let swatches = crate::hazards::SWATCHES
         .iter()
-        .filter_map(|&material| Some((material.to_string(), library.texture(material)?)))
+        .filter_map(|material| picture(&library, material))
+        .chain(crate::item_models::PICTURES.iter().filter_map(|material| picture(&powerups, material)))
         .collect();
-    Some((track, LoadedWorld { surfaces, bricks, karts, props, emitters, swatches }))
+    Some((track, LoadedWorld { surfaces, bricks, karts, props, models, emitters, swatches }))
 }
 
 /// Render components for one surface.
@@ -533,7 +598,9 @@ pub fn surface_bundle(
         // Winding isn't consistent enough across the original models to cull.
         cull_mode: None,
         double_sided: true,
-        alpha_mode: if surface.blend {
+        alpha_mode: if surface.additive {
+            AlphaMode::Add
+        } else if surface.blend {
             AlphaMode::Blend
         } else if surface.cutout {
             AlphaMode::Mask(0.5)
