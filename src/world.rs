@@ -9,6 +9,7 @@ use crate::assets::{
     tokens::{Token, tokenize},
 };
 use crate::items::Power;
+use crate::particles;
 use crate::scenery;
 use crate::physics::UNIT;
 use crate::track::{Checkpoint, Track};
@@ -68,6 +69,8 @@ pub struct LoadedWorld {
     pub karts: Vec<KartModel>,
     /// Scenery and animated models around the track.
     pub props: Vec<scenery::PropDef>,
+    /// Particle emitters by name, with the picture each one's particles use.
+    pub emitters: Vec<(String, particles::EmitterDef, Option<image::Pixels>)>,
 }
 
 /// Materials and texture definitions, plus where to look for the textures themselves.
@@ -95,6 +98,14 @@ impl<'a> Library<'a> {
             }
         }
         library
+    }
+
+    /// The picture a material is drawn with.
+    pub fn texture(&self, material: &str) -> Option<image::Pixels> {
+        let name = self.materials.get(material)?.texture.clone()?;
+        let definition = self.textures.get(&name).cloned().unwrap_or_default();
+        let data = self.dirs.iter().find_map(|dir| self.jam.get(&format!("{dir}/{name}.BMP")))?;
+        image::decode_bmp(data, definition.color_key)
     }
 
     /// One mesh per material out of the batches of `model` that pass `keep`.
@@ -472,7 +483,20 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
     }
     let track_model = model_file.rsplit('/').next().unwrap_or_default().trim_end_matches(".GDB").to_lowercase();
     let props = scenery::load(&jam, &dir, &library, &track_model);
-    Some((track, LoadedWorld { surfaces, bricks, karts, props }))
+    // The circuit's own emitters first, then the ones every circuit shares.
+    let shared = [format!("{COMMON}/EMITTER.MDB"), format!("{COMMON}/EMITTER.TDB")];
+    let shared = Library::new(&jam, shared.iter().map(String::as_str), &[COMMON]);
+    let mut emitters = Vec::new();
+    let shared_file = format!("{COMMON}/EMITTER.EMB");
+    for (file, library) in with_ext(".EMB").map(|f| (f, &library)).chain([(shared_file.as_str(), &shared)]) {
+        for (name, def) in jam.get(file).map(particles::parse).unwrap_or_default() {
+            let pixels = def.material.as_deref().and_then(|m| library.texture(m));
+            if !emitters.iter().any(|e: &(String, _, _)| e.0 == name) {
+                emitters.push((name, def, pixels));
+            }
+        }
+    }
+    Some((track, LoadedWorld { surfaces, bricks, karts, props, emitters }))
 }
 
 /// Render components for one surface.

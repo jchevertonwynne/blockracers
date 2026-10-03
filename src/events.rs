@@ -76,9 +76,11 @@ struct PartAnimation {
     state: u8,
 }
 
-/// Starts another event a while after its own starts (`TimerResource`).
+/// Holds another event open for a while once its own starts — or, for some, once
+/// its own ends (`TimerResource`).
 struct Delay {
     event: i32,
+    on_end: bool,
     seconds: f32,
     then: Option<i32>,
     remaining: Option<f32>,
@@ -234,6 +236,7 @@ fn parse_delays(tokens: &[Token]) -> Vec<Delay> {
             let after = |key: u16| fields.iter().position(|t| *t == Token::Key(key));
             Delay {
                 event: number(header.first()) as i32,
+                on_end: header.contains(&Token::Key(0x3c)),
                 seconds: after(0x49).map_or(0.0, |i| number(fields.get(i + 1)) / 1000.0),
                 then: after(0x27).map(|i| number(fields.get(i + 2)) as i32),
                 remaining: None,
@@ -329,6 +332,20 @@ impl TrackEvents {
         }
     }
 
+    /// Starts the events that timers hold open after `event` starts or ends.
+    fn hold(&mut self, event: i32, ended: bool, sfx: &mut Sfx) {
+        let mut held = Vec::new();
+        for delay in &mut self.delays {
+            if delay.event == event && delay.on_end == ended && delay.remaining.is_none() {
+                delay.remaining = Some(delay.seconds);
+                held.extend(delay.then);
+            }
+        }
+        for event in held {
+            self.start(event, None, sfx);
+        }
+    }
+
     /// Starts and at once ends an event (`RaceEventTable::FireEventsAt`).
     pub fn fire(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
         self.start(event, at, sfx);
@@ -337,10 +354,9 @@ impl TrackEvents {
 
     /// `RaceEventTable::StartEventsAt`.
     pub fn start(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+        debug!("event {event} starts");
         self.fired.push(Fired { event, start: true, at, racer: None });
-        for delay in self.delays.iter_mut().filter(|d| d.event == event && d.remaining.is_none()) {
-            delay.remaining = Some(delay.seconds);
-        }
+        self.hold(event, false, sfx);
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if !sound.on_end && !sound.active {
                 Self::start_sound(sound, at, sfx);
@@ -350,7 +366,9 @@ impl TrackEvents {
 
     /// `RaceEventTable::EndEventsAt`.
     pub fn end(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+        debug!("event {event} ends");
         self.fired.push(Fired { event, start: false, at, racer: None });
+        self.hold(event, true, sfx);
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if sound.on_end && !sound.active {
                 Self::start_sound(sound, at, sfx);
@@ -367,7 +385,7 @@ pub fn track_events(
     race: Res<Race>,
     events: Option<ResMut<TrackEvents>>,
     mut sfx: ResMut<Sfx>,
-    karts: Query<(Entity, &Kart)>,
+    mut karts: Query<(Entity, &mut Kart)>,
 ) {
     let Some(mut events) = events else { return };
     let events = &mut *events;
@@ -394,6 +412,9 @@ pub fn track_events(
     for i in 0..events.triggers.len() {
         let trigger = &events.triggers[i];
         let (centre, radius, event, active) = (trigger.centre, trigger.radius, trigger.event, trigger.active);
+        if event < 0 {
+            continue;
+        }
         let inside: Vec<Entity> =
             karts.iter().filter(|(_, k)| k.pos.distance_squared(centre) < radius * radius).map(|(e, _)| e).collect();
         let touched = !inside.is_empty();
@@ -416,7 +437,14 @@ pub fn track_events(
     }
 
     // Surfaces that set off events as racers drive on and off them.
-    for (entity, k) in &karts {
+    for (entity, mut k) in &mut karts {
+        // Driving through a surface that isn't solid, or sounding the horn, are events too.
+        let horn = std::mem::take(&mut k.honked).then_some(999);
+        for event in [k.touched.take(), horn].into_iter().flatten() {
+            events.fired.push(Fired { event, start: true, at: Some(k.pos), racer: Some(entity) });
+            events.fire(event, Some(k.pos), &mut sfx);
+            events.fired.push(Fired { event, start: false, at: Some(k.pos), racer: Some(entity) });
+        }
         let now = [k.surface.enter_event, k.surface.leave_event, k.surface.touch_event];
         let before = events.surfaces.insert(entity, now).unwrap_or_default();
         if now != before {
@@ -453,7 +481,7 @@ pub fn track_events(
         }
     }
 
-    // Events that follow others after a while.
+    // Events held open for a while come to their end.
     for i in 0..events.delays.len() {
         let delay = &mut events.delays[i];
         let Some(remaining) = &mut delay.remaining else { continue };
@@ -461,7 +489,7 @@ pub fn track_events(
         if *remaining <= 0.0 {
             delay.remaining = None;
             if let Some(then) = delay.then {
-                events.fire(then, None, &mut sfx);
+                events.end(then, None, &mut sfx);
             }
         }
     }

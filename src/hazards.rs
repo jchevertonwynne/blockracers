@@ -2,8 +2,8 @@
 //! doors that open when shot, and the rest. Each follows its class in the original's
 //! `race/hazards`; what they look like comes from the circuit's own animated models.
 //!
-//! Not here: the snowfall, the smoke vent and the rippling water (all only looks,
-//! needing particles and scrolling textures), and the hints of the code puzzle.
+//! Not here: the hints of the code puzzle and the sphinx's explosion, which are
+//! material animations.
 
 use crate::assets::{
     Jam,
@@ -13,6 +13,7 @@ use crate::audio::{Emitter, Sfx, id};
 use crate::events::TrackEvents;
 use crate::items::{Action, Beam, ItemAssets};
 use crate::kart::Kart;
+use crate::particles::{Emitter as Particles, Emitters};
 use crate::physics::{self, UNIT};
 use crate::scenery::{Animated, Prop, Scenery, to_world};
 use crate::track::Track;
@@ -70,9 +71,28 @@ enum Kind {
     SweepCannon { prop: Option<String>, source: Vec3, period: f32, sweep: [f32; 3], time: f32, cooldown: f32, beam: Option<Entity> },
     Grabber { prop: String, strength: f32, frames: (f32, f32), held: f32, rest: f32 },
     WarpPad,
-    /// Looks only; not done.
-    Scenery,
+    /// Snow falling ahead of the camera.
+    Snowfall { emitter: Option<Entity> },
+    SmokeVent { emitter: Option<Entity> },
+    /// Water whose texture sloshes back and forth.
+    Oscillator { prop: String, amplitude: Vec2, time: f32 },
+    Unknown,
 }
+
+/// Where around the vent its smoke comes out.
+const SMOKE_OFFSETS: [Vec3; 4] = [
+    Vec3::new(-24.45, 26.74, -19.56),
+    Vec3::new(-35.72, 9.41, -18.41),
+    Vec3::new(-6.9, -9.13, -15.49),
+    Vec3::new(4.37, 8.54, -16.65),
+];
+/// Snow starts this far ahead of the camera, this far up and up to this far to
+/// either side.
+const SNOW_AHEAD: f32 = 100.0;
+const SNOW_ABOVE: f32 = 40.0;
+const SNOW_SPREAD: u32 = 200;
+/// The water's slosh takes this long to come round.
+const OSCILLATOR_PERIOD: f32 = 10.0;
 
 struct Hazard {
     /// The event that sets it going and stops it.
@@ -82,7 +102,11 @@ struct Hazard {
 }
 
 #[derive(Resource, Default)]
-pub struct Hazards(Vec<Hazard>);
+pub struct Hazards {
+    all: Vec<Hazard>,
+    /// Set once they have been put in their starting state.
+    ready: bool,
+}
 
 fn number(token: Option<&Token>) -> f32 {
     match token {
@@ -150,6 +174,16 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
             0x2c => (0, Kind::LavaGeyser { cooldown: 0.0, flying: false }),
             0x2d => (-1, Kind::CodePuzzle { code: [false; 3], progress: 0, opened: 0.0 }),
             0x2e => (1, Kind::Rocket { open: false }),
+            0x2f => (-1, Kind::Snowfall { emitter: None }),
+            0x30 => (10, Kind::SmokeVent { emitter: None }),
+            0x36 => {
+                let prop = match fields.first() {
+                    Some(Token::Str(name)) => name.to_lowercase(),
+                    _ => String::new(),
+                };
+                let amplitude = Vec2::new(number(fields.get(1)), number(fields.get(2)));
+                (-1, Kind::Oscillator { prop, amplitude, time: 0.0 })
+            }
             0x32 => (1, Kind::Crane { pending: true }),
             0x33 => {
                 let (source, target) = (to_world(vec3(after(fields, 0x37))), to_world(vec3(after(fields, 0x38))));
@@ -195,7 +229,7 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
                 (trigger, Kind::Grabber { prop: name(0x42), strength: number(values.first()), frames, held: 0.0, rest: 0.0 })
             }
             0x49 => (0, Kind::WarpPad),
-            _ => (-1, Kind::Scenery),
+            _ => (-1, Kind::Unknown),
         };
         hazards.push(Hazard { trigger, active: false, kind });
     }
@@ -205,7 +239,7 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
 /// Loads the hazards of a race (a folder name such as `RACEC0R0`).
 pub fn load(race: &str) -> Option<Hazards> {
     let jam = Jam::open(std::env::var("LEGO_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()))?;
-    Some(Hazards(parse(&tokenize(jam.get(&format!("/GAMEDATA/{race}/HAZARDS.HZB"))?))))
+    Some(Hazards { all: parse(&tokenize(jam.get(&format!("/GAMEDATA/{race}/HAZARDS.HZB"))?)), ready: false })
 }
 
 /// Spins a kart round once, as most hazards do to whoever touches them.
@@ -232,9 +266,12 @@ pub fn hazards(
     mut track: ResMut<Track>,
     mut sfx: ResMut<Sfx>,
     mut karts: Query<(Entity, &mut Kart)>,
-    mut props: Query<(&Prop, Option<&mut Animated>, &mut Visibility)>,
+    mut props: Query<(&mut Prop, Option<&mut Animated>, &mut Visibility)>,
     balls: Query<(), With<Action>>,
     mut beams: Query<&mut Beam>,
+    emitters: Option<Res<Emitters>>,
+    camera: Single<&Transform, (With<Camera3d>, Without<Particles>)>,
+    mut smokes: Query<(&mut Transform, &mut Particles)>,
 ) {
     let (Some(mut hazards), Some(mut events), Some(scenery), Some(assets)) = (hazards, events, scenery, assets) else {
         return;
@@ -242,7 +279,9 @@ pub fn hazards(
     let events = &mut *events;
     let dt = time.delta_secs().min(0.05);
     let fired = std::mem::take(&mut events.fired);
-    let reset = race.phase == Phase::Intro;
+    // A new race, or a restart, puts everything back.
+    let reset = race.phase == Phase::Intro || !hazards.ready;
+    hazards.ready = true;
     if reset {
         // Every surface back to how the circuit starts out.
         let Track { surfaces, collision, .. } = &mut *track;
@@ -275,10 +314,24 @@ pub fn hazards(
         };
     }
 
-    for (index, hazard) in hazards.0.iter_mut().enumerate() {
+    // An emitter of the hazard's own, made when first wanted and put where it should be.
+    macro_rules! place {
+        ($emitter:expr, $name:expr, $at:expr) => {
+            match $emitter.and_then(|e| smokes.get_mut(e).ok()) {
+                Some((mut transform, _)) => transform.translation = $at,
+                None => {
+                    let particles = emitters.as_ref().and_then(|e| e.emitter($name));
+                    *$emitter = particles.map(|p| commands.spawn((p, Transform::from_translation($at))).id());
+                }
+            }
+        };
+    }
+
+    for (index, hazard) in hazards.all.iter_mut().enumerate() {
         let slot = LOOP_SLOT + index as u16;
         if reset {
-            hazard.active = false;
+            // The weather and the water are always at work; the rest wait for a trigger.
+            hazard.active = matches!(hazard.kind, Kind::Snowfall { .. } | Kind::Oscillator { .. });
             match &mut hazard.kind {
                 Kind::FallingPillar { fallen } => {
                     *fallen = false;
@@ -317,7 +370,7 @@ pub fn hazards(
         }
 
         // Its trigger starting and ending sets it going and stops it.
-        for event in fired.iter().filter(|f| f.event == hazard.trigger) {
+        for event in fired.iter().filter(|f| f.event == hazard.trigger && hazard.trigger >= 0) {
             match (&mut hazard.kind, event.start) {
                 (Kind::WarpPad, true) => {
                     if let Some((_, mut k)) = event.racer.and_then(|e| karts.get_mut(e).ok()) {
@@ -328,6 +381,7 @@ pub fn hazards(
                 }
                 (_, true) if !hazard.active => {
                     hazard.active = true;
+                    debug!("hazard {index} set going by event {}", event.event);
                     match &mut hazard.kind {
                         Kind::Hammer { raised } => *raised = true,
                         Kind::Crane { pending } => *pending = true,
@@ -362,7 +416,18 @@ pub fn hazards(
                     }
                 }
                 (Kind::FallingPillar { .. } | Kind::Sphinx { .. } | Kind::TriggeredAnimation { .. }, false) => {}
-                (_, false) => hazard.active = false,
+                (Kind::SmokeVent { emitter }, false) => {
+                    hazard.active = false;
+                    if let Some(entity) = emitter.take() {
+                        commands.entity(entity).try_despawn();
+                    }
+                }
+                (_, false) => {
+                    if hazard.active {
+                        debug!("hazard {index} stopped by event {}", event.event);
+                    }
+                    hazard.active = false;
+                }
                 _ => {}
             }
         }
@@ -392,16 +457,20 @@ pub fn hazards(
                     }
                 }
                 for f in fired.iter().filter(|f| f.start && f.racer.is_none()) {
-                    // 200 to 205 are the two choices at each of the three steps.
-                    let Some(choice) = f.event.checked_sub(200).filter(|c| (0..6).contains(c)) else { continue };
-                    let (step, right) = ((choice / 2) as usize, (choice % 2 == 0) == code[(choice / 2) as usize]);
-                    events.fire(if choice % 2 == 0 { 21 } else { 30 }, f.at, &mut sfx);
-                    if !right {
+                    // 207 to 209 show each step's answer in turn.
+                    if let Some(step) = f.event.checked_sub(207).filter(|s| (0..3).contains(s)) {
+                        events.fire(if code[step as usize] { 29 } else { 20 }, f.at, &mut sfx);
+                    }
+                    // 200 to 205 are the two pads at each of the three steps.
+                    let Some(pad) = f.event.checked_sub(200).filter(|c| (0..6).contains(c)) else { continue };
+                    let (step, first) = ((pad / 2) as u8, pad % 2 == 0);
+                    events.fire(if first { 21 } else { 30 }, f.at, &mut sfx);
+                    if first != code[step as usize] {
                         *progress = 0;
-                    } else if step as u8 == *progress {
+                    } else if step == 0 {
+                        *progress = 1;
+                    } else if *progress == step {
                         *progress += 1;
-                    } else if step > 0 {
-                        *progress = 0;
                     }
                     if *progress == 3 {
                         events.fire(18, None, &mut sfx);
@@ -589,6 +658,26 @@ pub fn hazards(
                     assets.lightning(&mut commands, entity);
                 }
             }
+            Kind::Snowfall { emitter } => {
+                let forward = camera.forward().as_vec3();
+                let side = forward.cross(Vec3::Y).normalize_or_zero();
+                let across = sfx.roll(SNOW_SPREAD) as f32 - SNOW_SPREAD as f32 / 2.0;
+                let at = camera.translation + (forward * SNOW_AHEAD + Vec3::Y * SNOW_ABOVE + side * across) * UNIT;
+                place!(emitter, "snow", at);
+            }
+            Kind::SmokeVent { emitter } => {
+                let Some((vent, _)) = bone!("dp_def", 0) else { continue };
+                let Some(rotation) = prop("dp_def").and_then(|e| props.get(e).ok()).map(|(p, ..)| p.rotation) else { continue };
+                let offset = SMOKE_OFFSETS[sfx.roll(4) as usize];
+                place!(emitter, "smoke", vent + to_world(rotation * offset));
+            }
+            Kind::Oscillator { prop: name, amplitude, time } => {
+                *time = (*time + dt) % OSCILLATOR_PERIOD;
+                let slosh = (*time / OSCILLATOR_PERIOD * TAU).sin();
+                if let Some((mut water, ..)) = prop(name).and_then(|e| props.get_mut(e).ok()) {
+                    water.scroll = *amplitude * slosh;
+                }
+            }
             Kind::Grabber { prop: name, strength, frames, held, rest } => {
                 let Some((centre, frame)) = bone!(name, 0) else { continue };
                 *rest = (*rest - dt).max(0.0);
@@ -622,7 +711,7 @@ mod tests {
     fn every_circuit_s_hazards_load() {
         let mut kinds = 0;
         for (race, name) in crate::world::circuits() {
-            let hazards = load(&race).unwrap().0;
+            let hazards = load(&race).unwrap().all;
             println!("{race} {name}: {} hazards, triggers {:?}", hazards.len(), hazards.iter().map(|h| h.trigger).collect::<Vec<_>>());
             kinds += hazards.len();
             for hazard in &hazards {

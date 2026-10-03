@@ -9,6 +9,7 @@ mod kart;
 mod menu;
 mod meshgen;
 mod mixer;
+mod particles;
 mod physics;
 mod racer_sounds;
 mod scenery;
@@ -65,6 +66,10 @@ struct DemoShot {
     at: f32,
     path: String,
     cycle: bool,
+    /// `BRICK_CAM=x,y,z,tx,ty,tz` (the game's coordinates): look from one place at another.
+    camera: Option<(Vec3, Vec3)>,
+    /// `BRICK_EVENTS=18@3,12@5.5`: circuit events to set off, and when.
+    events: Vec<(i32, f32)>,
 }
 
 fn main() {
@@ -72,7 +77,16 @@ fn main() {
         let mut parts = v.split(':');
         let (at, path) = (parts.next()?.parse().ok()?, parts.next()?.to_string());
         let mode = parts.next();
-        Some((DemoShot { at, path, cycle: mode == Some("cycle") }, mode == Some("menu")))
+        let numbers = |name: &str| -> Vec<f32> {
+            let value = std::env::var(name).unwrap_or_default();
+            value.split([',', '@']).filter_map(|n| n.parse().ok()).collect()
+        };
+        let camera = match numbers("BRICK_CAM")[..] {
+            [x, y, z, tx, ty, tz] => Some((Vec3::new(x, y, z), Vec3::new(tx, ty, tz))),
+            _ => None,
+        };
+        let events = numbers("BRICK_EVENTS").chunks_exact(2).map(|pair| (pair[0] as i32, pair[1])).collect();
+        Some((DemoShot { at, path, cycle: mode == Some("cycle"), camera, events }, mode == Some("menu")))
     });
     let circuits = Circuits::find();
     let settings = Settings::new(&circuits);
@@ -127,10 +141,10 @@ fn main() {
                 events::track_events,
                 events::part_animations,
                 hazards::hazards,
-                scenery::animate,
+                (scenery::animate, scenery::scroll, particles::emit).chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
-                chase_camera,
+                (chase_camera, particles::particles).chain(),
                 hud::update_hud,
                 tag_race_entities,
             )
@@ -235,7 +249,16 @@ fn demo_shot(
     mut next: ResMut<NextState<Screen>>,
     mut taken: Local<bool>,
     mut cycled: Local<u8>,
+    mut fired: Local<usize>,
+    events: Option<ResMut<events::TrackEvents>>,
+    mut sfx: ResMut<audio::Sfx>,
 ) {
+    if let Some(mut events) = events {
+        while let Some(&(event, _)) = demo.events.get(*fired).filter(|e| time.elapsed_secs() >= e.1) {
+            events.fire(event, None, &mut sfx);
+            *fired += 1;
+        }
+    }
     if demo.cycle {
         // Out to the menu a third of the way in, back to the race at two thirds.
         let stage = (time.elapsed_secs() / demo.at * 3.0) as u8;
@@ -307,11 +330,17 @@ fn race_flow(
 fn chase_camera(
     time: Res<Time>,
     race: Res<Race>,
+    demo: Option<Res<DemoShot>>,
     player: Single<&Kart, With<Player>>,
     camera: Single<(&mut Transform, &mut Projection), With<Camera3d>>,
     mut cam_yaw: ResMut<ChaseYaw>,
 ) {
     let (mut t, mut projection) = camera.into_inner();
+    if let Some((from, to)) = demo.and_then(|d| d.camera) {
+        t.translation = scenery::to_world(from);
+        t.look_at(scenery::to_world(to), Vec3::Y);
+        return;
+    }
     let ease = |rate: f32| 1.0 - (-rate * time.delta_secs()).exp();
 
     // The camera's heading lags the kart's, so powerslides show the kart side-on.

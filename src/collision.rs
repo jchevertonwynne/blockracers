@@ -65,6 +65,11 @@ impl Collision {
     /// First triangle crossed going from `from` to `to`, among those whose (unsigned)
     /// normal passes `accept`.
     fn segment(&self, from: Vec3, to: Vec3, accept: impl Fn(Vec3) -> bool) -> Option<Hit> {
+        self.segment_through(from, to, accept, false)
+    }
+
+    /// As `segment`, but among either the solid triangles or the passable ones.
+    fn segment_through(&self, from: Vec3, to: Vec3, accept: impl Fn(Vec3) -> bool, passable: bool) -> Option<Hit> {
         let dir = to - from;
         let (lo, hi) = (from.min(to), from.max(to));
         let (lo, hi) = (cell_of(lo.x, lo.z), cell_of(hi.x, hi.z));
@@ -73,7 +78,7 @@ impl Collision {
             for z in lo.1..=hi.1 {
                 for &i in self.cells.get(&(x, z)).into_iter().flatten() {
                     let tri = &self.triangles[i as usize];
-                    if !accept(tri.normal) || self.passable.get(tri.tag).is_some_and(|&p| p) {
+                    if !accept(tri.normal) || self.passable.get(tri.tag).is_some_and(|&p| p) != passable {
                         continue;
                     }
                     // Möller–Trumbore, both faces.
@@ -109,6 +114,11 @@ impl Collision {
             self.passable.resize(tag + 1, false);
         }
         self.passable[tag] = passable;
+    }
+
+    /// A surface that isn't solid but notices being driven through, between two points.
+    pub fn touched(&self, from: Vec3, to: Vec3) -> Option<Hit> {
+        self.segment_through(from, to, |_| true, true).filter(|hit| hit.surface.touch_event.is_some())
     }
 
     /// Drivable surface on the way straight down from `from`, at most `depth` below.

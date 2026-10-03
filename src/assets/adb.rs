@@ -16,17 +16,16 @@ struct Track {
 }
 
 pub struct Part {
-    pub name: String,
     pub frames: f32,
     pub ms_per_frame: f32,
     /// The part's first track; bone `n` uses the one `n` after it.
     track: usize,
 }
 
-impl Part {
-    pub fn seconds(&self) -> f32 {
-        self.frames * self.ms_per_frame / 1000.0
-    }
+/// A rotation as the files give it, turned into one of ours.
+pub fn turn(rotation: [f32; 4]) -> Quat {
+    let rotation = Quat::from_array(rotation);
+    if rotation.length_squared() > 1e-6 { rotation.normalize().conjugate() } else { Quat::IDENTITY }
 }
 
 #[derive(Default)]
@@ -58,7 +57,8 @@ impl Animation {
                             }
                             Token::Key(0x29) => {
                                 for _ in 0..r.list_header()? {
-                                    animation.rotations.push(Quat::from_array(r.floats()?).normalize());
+                                    // The original applies its rotations the other way round from us.
+                                    animation.rotations.push(turn(r.floats()?));
                                 }
                                 r.expect(Token::RCurly)?;
                             }
@@ -92,7 +92,8 @@ impl Animation {
                 Token::Key(0x2c) => {
                     for _ in 0..r.list_header()? {
                         r.expect(Token::Key(0x2c))?;
-                        let mut part = Part { name: r.string()?.to_lowercase(), frames: 1.0, ms_per_frame: 33.0, track: 0 };
+                        r.string()?;
+                        let mut part = Part { frames: 1.0, ms_per_frame: 33.0, track: 0 };
                         r.expect(Token::LCurly)?;
                         loop {
                             match r.next()? {
@@ -111,10 +112,6 @@ impl Animation {
             }
         }
         (!animation.parts.is_empty()).then_some(animation)
-    }
-
-    pub fn part(&self, name: &str) -> Option<usize> {
-        self.parts.iter().position(|p| p.name == name)
     }
 
     /// The keys either side of `frame` and how far between them it is, wrapping from

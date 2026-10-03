@@ -122,6 +122,10 @@ pub struct Kart {
     pub engine_pitch: f32,
     /// Sounds owed for things that have just happened to this kart.
     pub cues: Cues,
+    /// The event of a pass-through surface the kart has just driven through.
+    pub touched: Option<i32>,
+    /// The horn has just sounded.
+    pub honked: bool,
 }
 
 /// Multipliers from the car's handling, top speed and acceleration ratings.
@@ -210,6 +214,8 @@ impl Kart {
             stats: Stats::from_ratings([50.0; 3]),
             engine_pitch: 1.0,
             cues: Cues::default(),
+            touched: None,
+            honked: false,
         }
     }
 
@@ -741,6 +747,10 @@ impl Kart {
         if k.air_time > 4.0 || k.pos.y < track.pts[idx].y - 60.0 {
             k.place(track, s, 0.0);
         } else {
+            let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
+            if let Some(hit) = track.collision.touched(from + lift, k.pos + lift) {
+                k.touched = hit.surface.touch_event;
+            }
             k.follow_course(track, from);
         }
     }

@@ -4,10 +4,11 @@
 
 use crate::assets::{
     Jam,
-    adb::Animation,
+    adb::{Animation, turn},
     gdb::{Bone, Model, parse_skeleton},
     tokens::{Token, tokenize},
 };
+use crate::particles::Emitters;
 use crate::physics::UNIT;
 use crate::world::{Library, LoadedWorld, Surface, surface_bundle};
 use bevy::prelude::*;
@@ -33,6 +34,8 @@ pub struct PropDef {
     position: Vec3,
     rotation: Quat,
     scale: f32,
+    /// How fast its textures slide, in widths a second.
+    scroll: Vec2,
 }
 
 /// A skeleton and what moves it.
@@ -48,6 +51,15 @@ pub struct Prop {
     pub position: Vec3,
     pub rotation: Quat,
     pub scale: f32,
+    /// How fast its textures slide, in widths a second.
+    pub scroll: Vec2,
+}
+
+/// The materials of a prop whose textures slide, and how far they have slid.
+#[derive(Component, Default)]
+pub struct Scrolling {
+    offset: Vec2,
+    materials: Vec<Handle<StandardMaterial>>,
 }
 
 /// A prop with a skeleton, playing one part of its animation.
@@ -96,7 +108,7 @@ impl Animated {
     fn local(&self, bone: usize, frame: f32) -> (Quat, Vec3) {
         let rest = &self.rig.bones[bone];
         let (position, rotation) = self.rig.animation.sample(self.part, bone, frame);
-        (rotation.unwrap_or(Quat::from_array(rest.rotation)), position.unwrap_or(Vec3::from(rest.position)))
+        (rotation.unwrap_or(turn(rest.rotation)), position.unwrap_or(Vec3::from(rest.position)))
     }
 
     /// A bone's rotation and position in the model's own space, `frame` frames in.
@@ -212,6 +224,7 @@ pub fn load(jam: &Jam, dir: &str, library: &Library, skip: &str) -> Vec<PropDef>
                 position: vec3(0x31, 0).unwrap_or_default(),
                 rotation,
                 scale,
+                scroll: Vec2::new(field(0x3f, 0).unwrap_or(0.0), field(0x3f, 1).unwrap_or(0.0)),
             });
         }
     }
@@ -232,14 +245,15 @@ pub fn spawn_scenery(
             rotation: basis() * def.rotation,
             scale: Vec3::splat(def.scale * UNIT),
         };
-        let prop = Prop { position: def.position, rotation: def.rotation, scale: def.scale };
+        let prop = Prop { position: def.position, rotation: def.rotation, scale: def.scale, scroll: def.scroll };
+        let mut scrolling = Scrolling::default();
         let root = commands.spawn((prop, transform, Visibility::default())).id();
         // One entity per bone, each inside its parent, with the bone's meshes on it.
         let mut joints = Vec::new();
         if let Some(rig) = &def.rig {
             for (bone, rest) in rig.bones.iter().enumerate() {
                 let transform = Transform::from_translation(Vec3::from(rest.position))
-                    .with_rotation(Quat::from_array(rest.rotation));
+                    .with_rotation(turn(rest.rotation));
                 let joint = commands.spawn((Joint { prop: root, bone }, transform, Visibility::default())).id();
                 joints.push(joint);
             }
@@ -253,13 +267,18 @@ pub fn spawn_scenery(
         for (bone, surfaces) in def.surfaces {
             let parent = bone.and_then(|b| joints.get(b)).copied().unwrap_or(root);
             for surface in surfaces {
-                let mesh = commands.spawn(surface_bundle(surface, &mut meshes, &mut materials, &mut images)).id();
+                let bundle = surface_bundle(surface, &mut meshes, &mut materials, &mut images);
+                scrolling.materials.push(bundle.1.0.clone());
+                let mesh = commands.spawn(bundle).id();
                 commands.entity(parent).add_child(mesh);
             }
         }
+        commands.entity(root).insert(scrolling);
         scenery.0.insert(def.name, root);
     }
     commands.insert_resource(scenery);
+    let emitters = std::mem::take(&mut world.emitters);
+    commands.insert_resource(Emitters::new(emitters, &mut meshes, &mut materials, &mut images));
 }
 
 /// Runs the animations on and poses the bones.
@@ -290,5 +309,21 @@ pub fn animate(
         let Ok(animated) = props.get(joint.prop) else { continue };
         let (rotation, position) = animated.local(joint.bone, animated.frame());
         (transform.rotation, transform.translation) = (rotation, position);
+    }
+}
+
+/// Slides the textures of props that have them moving: water, lava, flags.
+pub fn scroll(time: Res<Time>, mut props: Query<(&Prop, &mut Scrolling)>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    let dt = time.delta_secs().min(0.05);
+    for (prop, mut scrolling) in &mut props {
+        if prop.scroll == Vec2::ZERO {
+            continue;
+        }
+        scrolling.offset = (scrolling.offset + prop.scroll * dt).fract();
+        for handle in &scrolling.materials {
+            if let Some(mut material) = materials.get_mut(handle) {
+                material.uv_transform.translation = scrolling.offset;
+            }
+        }
     }
 }

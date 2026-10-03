@@ -233,6 +233,7 @@ pub fn racer_sounds(
         }
         let cues = std::mem::take(&mut k.cues);
         if cues.horn {
+            k.honked = true;
             let place = places.as_ref().and_then(|p| p.0.get(k.slot)).copied().unwrap_or(0);
             sfx.play_at(if is_player { id::PLAYER_HORN } else { id::HORNS[place.min(5)] }, k.pos);
         }
