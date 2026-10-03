@@ -3,6 +3,7 @@
 
 pub mod adb;
 pub mod bvb;
+pub mod font;
 pub mod gdb;
 pub mod image;
 pub mod jam;

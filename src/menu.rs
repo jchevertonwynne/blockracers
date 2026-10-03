@@ -33,19 +33,19 @@ impl Circuits {
     }
 }
 
-const LAP_CHOICES: [i32; 4] = [1, 3, 5, 7];
-const MAX_OPPONENTS: usize = 5;
-const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("Hard", 1.06)];
+pub const LAP_CHOICES: [i32; 4] = [1, 3, 5, 7];
+pub const MAX_OPPONENTS: usize = 5;
+pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("Hard", 1.06)];
 
 #[derive(Resource)]
 pub struct Settings {
     pub circuit: usize,
-    lap_choice: usize,
+    pub lap_choice: usize,
     pub opponents: usize,
-    difficulty: usize,
+    pub difficulty: usize,
     /// Steps of the original's volume sliders, 0 to 20.
-    music: usize,
-    sound: usize,
+    pub music: usize,
+    pub sound: usize,
 }
 
 impl Settings {
@@ -75,7 +75,7 @@ impl Settings {
     }
 }
 
-const MAX_VOLUME: usize = 20;
+pub const MAX_VOLUME: usize = 20;
 const ROWS: usize = 7;
 
 #[derive(Component)]
@@ -87,8 +87,12 @@ struct Cursor(usize);
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Cursor>()
-        .add_systems(OnEnter(Screen::Menu), spawn_menu)
-        .add_systems(Update, menu.run_if(in_state(Screen::Menu)));
+        // The plain menu is only for when the original's menu data isn't there.
+        .add_systems(OnEnter(Screen::Menu), spawn_menu.run_if(not(resource_exists::<crate::frontend::Art>)))
+        .add_systems(
+            Update,
+            menu.run_if(in_state(Screen::Menu)).run_if(not(resource_exists::<crate::frontend::Art>)),
+        );
 }
 
 fn spawn_menu(mut commands: Commands) {

@@ -1,7 +1,13 @@
+//! The race display. With the original game's data it is drawn as the original draws
+//! it (see `original`); without, as plain text.
+
 use crate::kart::{Kart, Player};
 use crate::menu::Settings;
 use crate::{Phase, Race};
 use bevy::prelude::*;
+
+#[path = "hud_original.rs"]
+pub mod original;
 
 #[derive(Component)]
 pub struct LapText;
@@ -24,7 +30,7 @@ fn corner(top: Val, bottom: Val, left: Val, right: Val) -> Node {
     Node { position_type: PositionType::Absolute, top, bottom, left, right, ..default() }
 }
 
-pub fn setup_hud(mut commands: Commands) {
+pub fn setup_text_hud(mut commands: Commands) {
     let (auto, edge) = (Val::Auto, Val::Px(16.0));
     commands.spawn((LapText, Text::new(""), font(34.0), TextShadow::default(), corner(edge, auto, edge, auto)));
     commands.spawn((PlaceText, Text::new(""), font(48.0), TextShadow::default(), corner(edge, auto, auto, edge)));
@@ -70,7 +76,7 @@ fn clock(t: f32) -> String {
     format!("{}:{:05.2}", (t / 60.0) as u32, t % 60.0)
 }
 
-pub fn update_hud(
+pub fn update_text_hud(
     race: Res<Race>,
     settings: Res<Settings>,
     karts: Query<(&Kart, Has<Player>)>,

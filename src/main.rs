@@ -2,6 +2,7 @@ mod assets;
 mod audio;
 mod collision;
 mod events;
+mod frontend;
 mod hazards;
 mod hud;
 mod items;
@@ -70,6 +71,8 @@ struct DemoShot {
     camera: Option<(Vec3, Vec3)>,
     /// `BRICK_EVENTS=18@3,12@5.5`: circuit events to set off, and when.
     events: Vec<(i32, f32)>,
+    /// `BRICK_KEYS=Enter@1.5,Down@2`: keys to press, and when.
+    keys: Vec<(KeyCode, f32)>,
 }
 
 fn main() {
@@ -86,7 +89,22 @@ fn main() {
             _ => None,
         };
         let events = numbers("BRICK_EVENTS").chunks_exact(2).map(|pair| (pair[0] as i32, pair[1])).collect();
-        Some((DemoShot { at, path, cycle: mode == Some("cycle"), camera, events }, mode == Some("menu")))
+        let keys = std::env::var("BRICK_KEYS").unwrap_or_default();
+        let keys = keys.split(',').filter_map(|press| {
+            let (key, at) = press.split_once('@')?;
+            let key = match key {
+                "Enter" => KeyCode::Enter,
+                "Esc" => KeyCode::Escape,
+                "Up" => KeyCode::ArrowUp,
+                "Down" => KeyCode::ArrowDown,
+                "Left" => KeyCode::ArrowLeft,
+                "Right" => KeyCode::ArrowRight,
+                _ => return None,
+            };
+            Some((key, at.parse().ok()?))
+        });
+        let keys = keys.collect();
+        Some((DemoShot { at, path, cycle: mode == Some("cycle"), camera, events, keys }, mode == Some("menu")))
     });
     let circuits = Circuits::find();
     let settings = Settings::new(&circuits);
@@ -99,6 +117,7 @@ fn main() {
     match demo {
         Some((shot, on_menu)) => {
             app.insert_resource(shot).add_systems(Update, demo_shot);
+            app.add_systems(PreUpdate, demo_keys.after(bevy::input::InputSystems));
             app.insert_state(if on_menu { Screen::Menu } else { Screen::Race });
         }
         None => {
@@ -110,7 +129,7 @@ fn main() {
         .insert_resource(circuits)
         .insert_resource(settings)
         .init_resource::<ChaseYaw>()
-        .add_plugins((menu::plugin, audio::plugin))
+        .add_plugins((menu::plugin, frontend::plugin, audio::plugin))
         .add_systems(Startup, setup_scene)
         .add_systems(
             OnEnter(Screen::Race),
@@ -121,7 +140,8 @@ fn main() {
                 setup_brick_world.run_if(not(resource_exists::<LoadedWorld>)),
                 kart::spawn_karts,
                 items::setup_items,
-                hud::setup_hud,
+                hud::original::load,
+                hud::setup_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
             )
                 .chain(),
         )
@@ -140,12 +160,13 @@ fn main() {
                 racer_sounds::racer_sounds,
                 events::track_events,
                 events::part_animations,
-                hazards::hazards,
+                (hazards::hazards, hazards::code_lights).chain(),
                 (scenery::animate, scenery::scroll, particles::emit).chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
                 (chase_camera, particles::particles).chain(),
-                hud::update_hud,
+                hud::update_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
+                hud::original::draw.run_if(resource_exists::<hud::original::Art>),
                 tag_race_entities,
             )
                 .chain()
@@ -239,6 +260,17 @@ fn setup_brick_world(
         })),
         Transform::from_xyz(0.0, -0.08, 0.0),
     ));
+}
+
+/// Presses the keys a demo asks for, each for one frame.
+fn demo_keys(time: Res<Time>, demo: Res<DemoShot>, mut keys: ResMut<ButtonInput<KeyCode>>, mut pressed: Local<usize>) {
+    for &(key, _) in demo.keys.iter().take(*pressed) {
+        keys.release(key);
+    }
+    if let Some(&(key, _)) = demo.keys.get(*pressed).filter(|k| time.elapsed_secs() >= k.1) {
+        keys.press(key);
+        *pressed += 1;
+    }
 }
 
 fn demo_shot(

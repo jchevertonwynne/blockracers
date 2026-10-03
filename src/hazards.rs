@@ -15,7 +15,7 @@ use crate::items::{Action, Beam, ItemAssets};
 use crate::kart::Kart;
 use crate::particles::{Emitter as Particles, Emitters};
 use crate::physics::{self, UNIT};
-use crate::scenery::{Animated, Prop, Scenery, to_world};
+use crate::scenery::{Animated, Prop, Scenery, Scrolling, Swatches, to_world};
 use crate::track::Track;
 use crate::{Phase, Race};
 use bevy::prelude::*;
@@ -34,6 +34,13 @@ const LAVA_SOUND: usize = id::AMBIENT + 2;
 const GHOST_LOOP: usize = id::AMBIENT + 12;
 const GHOST_NEAR: usize = id::AMBIENT + 13;
 const GHOST_HIT: usize = id::AMBIENT + 15;
+
+/// Materials swapped onto models: the code puzzle's lights show red where the first
+/// pad of a pair is the right one and blue where the second is.
+pub const SWATCHES: [&str; 2] = ["mmredco", "mmblueco"];
+const CODE_LIGHTS: [&str; 3] = ["mmcode1", "mmcode2", "mmcode3"];
+/// How fast each light flickers while the doors are open, in changes a second.
+const CODE_FLICKER: [f32; 3] = [3.0, 4.0, 5.0];
 
 /// Where the lava leaps between, and the frames of its animation at which it leaves
 /// and lands.
@@ -698,6 +705,36 @@ pub fn hazards(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Shows the code puzzle's answer on its three lights.
+pub fn code_lights(
+    time: Res<Time>,
+    hazards: Option<Res<Hazards>>,
+    scenery: Option<Res<Scenery>>,
+    swatches: Option<Res<Swatches>>,
+    props: Query<&Scrolling>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let (Some(hazards), Some(scenery), Some(swatches)) = (hazards, scenery, swatches) else { return };
+    let puzzle = hazards.all.iter().find_map(|h| match &h.kind {
+        Kind::CodePuzzle { code, opened, .. } => Some((*code, *opened > 0.0)),
+        _ => None,
+    });
+    let Some((code, opened)) = puzzle else { return };
+    for (step, name) in CODE_LIGHTS.iter().enumerate() {
+        // With the doors open the lights flicker; otherwise they give the answer.
+        let first = if opened { (time.elapsed_secs() * CODE_FLICKER[step]) as u32 % 2 == 0 } else { code[step] };
+        let Some(picture) = swatches.0.get(SWATCHES[if first { 0 } else { 1 }]) else { continue };
+        let Some(light) = scenery.0.get(*name).and_then(|&e| props.get(e).ok()) else { continue };
+        for handle in &light.materials {
+            if materials.get(handle).is_some_and(|m| m.base_color_texture.as_ref() != Some(picture)) {
+                if let Some(mut material) = materials.get_mut(handle) {
+                    material.base_color_texture = Some(picture.clone());
+                }
+            }
         }
     }
 }

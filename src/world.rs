@@ -71,6 +71,8 @@ pub struct LoadedWorld {
     pub props: Vec<scenery::PropDef>,
     /// Particle emitters by name, with the picture each one's particles use.
     pub emitters: Vec<(String, particles::EmitterDef, Option<image::Pixels>)>,
+    /// Pictures of materials that hazards swap onto models, by material name.
+    pub swatches: Vec<(String, image::Pixels)>,
 }
 
 /// Materials and texture definitions, plus where to look for the textures themselves.
@@ -312,8 +314,8 @@ fn open_jam() -> Option<Jam> {
 /// Display names for the race folders. The archive's own race definitions mostly carry
 /// a placeholder name, so these are matched up from each folder's scenery.
 const CIRCUIT_NAMES: [(&str, &str); 13] = [
-    ("RACEC0R0", "Imperial Grand Prix"),
-    ("RACEC0R1", "Royal Knights Raceway"),
+    ("RACEC0R0", "Royal Knights Raceway"),
+    ("RACEC0R1", "Imperial Grand Prix"),
     ("RACEC0R2", "Desert Adventure Dragway"),
     ("RACEC0R3", "Magma Moon Marathon"),
     ("RACEC1R0", "Dark Forest Dash"),
@@ -496,7 +498,11 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
             }
         }
     }
-    Some((track, LoadedWorld { surfaces, bricks, karts, props, emitters }))
+    let swatches = crate::hazards::SWATCHES
+        .iter()
+        .filter_map(|&material| Some((material.to_string(), library.texture(material)?)))
+        .collect();
+    Some((track, LoadedWorld { surfaces, bricks, karts, props, emitters, swatches }))
 }
 
 /// Render components for one surface.

@@ -11,7 +11,11 @@ use crate::assets::{
 use crate::particles::Emitters;
 use crate::physics::UNIT;
 use crate::world::{Library, LoadedWorld, Surface, surface_bundle};
-use bevy::prelude::*;
+use bevy::{
+    asset::RenderAssetUsages,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -59,8 +63,12 @@ pub struct Prop {
 #[derive(Component, Default)]
 pub struct Scrolling {
     offset: Vec2,
-    materials: Vec<Handle<StandardMaterial>>,
+    pub materials: Vec<Handle<StandardMaterial>>,
 }
+
+/// Pictures that hazards swap onto models, by material name.
+#[derive(Resource, Default)]
+pub struct Swatches(pub HashMap<String, Handle<Image>>);
 
 /// A prop with a skeleton, playing one part of its animation.
 #[derive(Component)]
@@ -277,6 +285,13 @@ pub fn spawn_scenery(
         scenery.0.insert(def.name, root);
     }
     commands.insert_resource(scenery);
+    let mut swatches = Swatches::default();
+    for (name, pixels) in std::mem::take(&mut world.swatches) {
+        let size = Extent3d { width: pixels.width, height: pixels.height, depth_or_array_layers: 1 };
+        let image = Image::new(size, TextureDimension::D2, pixels.rgba, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
+        swatches.0.insert(name, images.add(image));
+    }
+    commands.insert_resource(swatches);
     let emitters = std::mem::take(&mut world.emitters);
     commands.insert_resource(Emitters::new(emitters, &mut meshes, &mut materials, &mut images));
 }

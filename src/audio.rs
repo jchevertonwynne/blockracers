@@ -102,6 +102,7 @@ pub mod id {
     // The front end's bank (`GENC0R0.SBK`), which the original numbers from zero too.
     pub const MENU: usize = 5000;
     pub const MENU_BACK: usize = MENU + 1; // backup
+    pub const MENU_REFUSE: usize = MENU + 7; // cantdo2
     pub const MENU_CONFIRM: usize = MENU + 8; // confirm
     pub const MENU_HIGHLIGHT: usize = MENU + 13; // hilight1
     pub const MENU_SELECT: usize = MENU + 22; // setselct
