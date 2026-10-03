@@ -12,6 +12,8 @@ use crate::assets::{
 use crate::audio::{Emitter, Sfx};
 use crate::kart::Kart;
 use crate::physics::UNIT;
+use crate::scenery::{Animated, Scenery};
+use crate::track::Track;
 use crate::{Phase, Race};
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -46,6 +48,42 @@ struct Trigger {
     active: bool,
 }
 
+/// An event starting or ending, for the hazards and animations that hang on it.
+pub struct Fired {
+    pub event: i32,
+    pub start: bool,
+    pub at: Option<Vec3>,
+    /// The racer who set it off, for events that are about one racer.
+    pub racer: Option<Entity>,
+}
+
+/// Plays parts of a model's animation as an event comes and goes
+/// (`PartAnimationResource`): an optional start part, an active part, an optional
+/// end part, then back to the idle part.
+struct PartAnimation {
+    event: i32,
+    on_end: bool,
+    prop: String,
+    active: usize,
+    idle: usize,
+    start: Option<usize>,
+    end: Option<usize>,
+    looping: bool,
+    no_end: bool,
+    /// Events that run while the start, active and end parts play.
+    state_events: [Option<i32>; 3],
+    /// 0 idle, 1 starting, 2 active, 3 ending.
+    state: u8,
+}
+
+/// Starts another event a while after its own starts (`TimerResource`).
+struct Delay {
+    event: i32,
+    seconds: f32,
+    then: Option<i32>,
+    remaining: Option<f32>,
+}
+
 struct Timer {
     /// How long its event runs and how long it rests, and whether each is random.
     on: (f32, bool),
@@ -63,6 +101,14 @@ pub struct TrackEvents {
     timers: Vec<Timer>,
     /// The enter, leave and touch events of the surface each kart is on.
     surfaces: HashMap<Entity, [Option<i32>; 3]>,
+    animations: Vec<PartAnimation>,
+    delays: Vec<Delay>,
+    /// Collision volumes that open while a model is away from its resting part.
+    doors: Vec<(String, String)>,
+    /// Which racers are inside each trigger.
+    inside: Vec<Vec<Entity>>,
+    /// Everything that has started or ended since the hazards last looked.
+    pub fired: Vec<Fired>,
 }
 
 fn to_world(p: [f32; 3]) -> Vec3 {
@@ -130,6 +176,84 @@ fn parse_sounds(tokens: &[Token]) -> Vec<EventSound> {
         .collect()
 }
 
+fn parse_animations(tokens: &[Token]) -> Vec<PartAnimation> {
+    records(tokens, 0x28)
+        .into_iter()
+        .map(|(header, fields)| {
+            let mut animation = PartAnimation {
+                event: number(header.first()) as i32,
+                on_end: header.contains(&Token::Key(0x3c)),
+                prop: String::new(),
+                active: 0,
+                idle: 0,
+                start: None,
+                end: None,
+                looping: false,
+                no_end: false,
+                state_events: [None; 3],
+                state: 0,
+            };
+            let mut i = 0;
+            while i < fields.len() {
+                let value = number(fields.get(i + 1)) as usize;
+                match &fields[i] {
+                    // `event <state> <id>`: an event tied to one of the parts.
+                    Token::Key(0x27) => {
+                        let state = match fields.get(i + 1) {
+                            Some(Token::Key(0x36)) => 0,
+                            Some(Token::Key(0x34)) => 1,
+                            _ => 2,
+                        };
+                        animation.state_events[state] = Some(number(fields.get(i + 2)) as i32);
+                        i += 2;
+                    }
+                    Token::Key(0x33) => {
+                        if let Some(Token::Str(name)) = fields.get(i + 1) {
+                            animation.prop = name.to_lowercase();
+                        }
+                    }
+                    Token::Key(0x34) => animation.active = value,
+                    Token::Key(0x35) => animation.idle = value,
+                    Token::Key(0x36) => animation.start = Some(value),
+                    Token::Key(0x37) => animation.end = Some(value),
+                    Token::Key(0x2d) => animation.looping = true,
+                    Token::Key(0x3a) => animation.no_end = true,
+                    _ => {}
+                }
+                i += 1;
+            }
+            animation
+        })
+        .collect()
+}
+
+fn parse_delays(tokens: &[Token]) -> Vec<Delay> {
+    records(tokens, 0x4b)
+        .into_iter()
+        .map(|(header, fields)| {
+            let after = |key: u16| fields.iter().position(|t| *t == Token::Key(key));
+            Delay {
+                event: number(header.first()) as i32,
+                seconds: after(0x49).map_or(0.0, |i| number(fields.get(i + 1)) / 1000.0),
+                then: after(0x27).map(|i| number(fields.get(i + 2)) as i32),
+                remaining: None,
+            }
+        })
+        .collect()
+}
+
+/// The (model, collision volume) pairs of the node transforms section.
+fn parse_doors(tokens: &[Token]) -> Vec<(String, String)> {
+    let name = |fields: &[Token], key: u16| {
+        let at = fields.iter().position(|t| *t == Token::Key(key))?;
+        match fields.get(at + 1)? {
+            Token::Str(name) => Some(name.to_lowercase()),
+            _ => None,
+        }
+    };
+    records(tokens, 0x52).into_iter().filter_map(|(_, fields)| Some((name(fields, 0x33)?, name(fields, 0x4a)?))).collect()
+}
+
 fn parse_timers(tokens: &[Token]) -> Vec<Timer> {
     records(tokens, 0x27)
         .into_iter()
@@ -163,7 +287,11 @@ pub fn load(race: &str) -> Option<TrackEvents> {
     let with_ext = |ext: &'static str| files.iter().copied().filter(move |f| f.ends_with(ext)).filter_map(|f| jam.get(f));
     let mut events = TrackEvents::default();
     for data in with_ext(".EVB") {
-        events.sounds.extend(parse_sounds(&tokenize(data)));
+        let tokens = tokenize(data);
+        events.sounds.extend(parse_sounds(&tokens));
+        events.animations.extend(parse_animations(&tokens));
+        events.delays.extend(parse_delays(&tokens));
+        events.doors.extend(parse_doors(&tokens));
     }
     for data in with_ext(".TRB") {
         events.triggers.extend(route::parse_triggers(data).into_iter().map(|(centre, radius, event)| Trigger {
@@ -201,8 +329,18 @@ impl TrackEvents {
         }
     }
 
-    /// `RaceEventTable::StartEventsAt`, for the sounds.
-    fn start(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+    /// Starts and at once ends an event (`RaceEventTable::FireEventsAt`).
+    pub fn fire(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+        self.start(event, at, sfx);
+        self.end(event, at, sfx);
+    }
+
+    /// `RaceEventTable::StartEventsAt`.
+    pub fn start(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+        self.fired.push(Fired { event, start: true, at, racer: None });
+        for delay in self.delays.iter_mut().filter(|d| d.event == event && d.remaining.is_none()) {
+            delay.remaining = Some(delay.seconds);
+        }
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if !sound.on_end && !sound.active {
                 Self::start_sound(sound, at, sfx);
@@ -210,8 +348,9 @@ impl TrackEvents {
         }
     }
 
-    /// `RaceEventTable::EndEventsAt`, for the sounds.
-    fn end(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+    /// `RaceEventTable::EndEventsAt`.
+    pub fn end(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+        self.fired.push(Fired { event, start: false, at, racer: None });
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if sound.on_end && !sound.active {
                 Self::start_sound(sound, at, sfx);
@@ -240,6 +379,10 @@ pub fn track_events(
             sound.retrigger = TrackEvents::retrigger_delay(&mut sfx);
         }
         events.triggers.iter_mut().for_each(|t| t.active = false);
+        events.inside.clear();
+        events.fired.clear();
+        events.delays.iter_mut().for_each(|d| d.remaining = None);
+        events.animations.iter_mut().for_each(|a| a.state = 0);
         for timer in &mut events.timers {
             timer.active = false;
             timer.remaining = (timer.delay <= 0.0).then(|| phase_length(timer.off, &mut sfx));
@@ -251,8 +394,20 @@ pub fn track_events(
     for i in 0..events.triggers.len() {
         let trigger = &events.triggers[i];
         let (centre, radius, event, active) = (trigger.centre, trigger.radius, trigger.event, trigger.active);
-        let touched = karts.iter().any(|(_, k)| k.pos.distance_squared(centre) < radius * radius);
+        let inside: Vec<Entity> =
+            karts.iter().filter(|(_, k)| k.pos.distance_squared(centre) < radius * radius).map(|(e, _)| e).collect();
+        let touched = !inside.is_empty();
         events.triggers[i].active = touched;
+        // Each racer's own comings and goings matter to some hazards.
+        events.inside.resize(events.triggers.len(), Vec::new());
+        let before = std::mem::replace(&mut events.inside[i], inside.clone());
+        let at = Some(centre);
+        for &racer in inside.iter().filter(|e| !before.contains(e)) {
+            events.fired.push(Fired { event, start: true, at, racer: Some(racer) });
+        }
+        for &racer in before.iter().filter(|e| !inside.contains(e)) {
+            events.fired.push(Fired { event, start: false, at, racer: Some(racer) });
+        }
         match (touched, active) {
             (true, false) => events.start(event, Some(centre), &mut sfx),
             (false, true) => events.end(event, Some(centre), &mut sfx),
@@ -295,6 +450,19 @@ pub fn track_events(
             events.end(event, None, &mut sfx);
         } else {
             events.start(event, None, &mut sfx);
+        }
+    }
+
+    // Events that follow others after a while.
+    for i in 0..events.delays.len() {
+        let delay = &mut events.delays[i];
+        let Some(remaining) = &mut delay.remaining else { continue };
+        *remaining -= dt;
+        if *remaining <= 0.0 {
+            delay.remaining = None;
+            if let Some(then) = delay.then {
+                events.fire(then, None, &mut sfx);
+            }
         }
     }
 
@@ -364,5 +532,80 @@ mod tests {
         assert_eq!(events.sounds[0].emitter.pos, Vec3::X);
         events.end(1, None, &mut sfx);
         assert!(!events.sounds[0].active && events.sounds[1].active);
+    }
+}
+
+/// Runs the animations that events drive, and opens the collision volumes that move
+/// with them.
+pub fn part_animations(
+    events: Option<ResMut<TrackEvents>>,
+    scenery: Option<Res<Scenery>>,
+    track: Option<ResMut<Track>>,
+    mut sfx: ResMut<Sfx>,
+    mut props: Query<&mut Animated>,
+) {
+    let (Some(mut events), Some(scenery), Some(mut track)) = (events, scenery, track) else { return };
+    let events = &mut *events;
+    let mut notices: Vec<(Option<i32>, Option<i32>)> = Vec::new();
+    for animation in &mut events.animations {
+        let Some(mut prop) = scenery.0.get(&animation.prop).and_then(|&e| props.get_mut(e).ok()) else { continue };
+        let once = |part: usize| Some((part, false));
+        let idle = Some((animation.idle, true));
+        for fired in events.fired.iter().filter(|f| f.event == animation.event && f.racer.is_none()) {
+            let resting = animation.state == 0 || animation.state == 3;
+            if fired.start != animation.on_end && resting {
+                // `OnStartAt`: the start part if there is one, else straight to the active part.
+                prop.queued = animation.start.map_or(Some((animation.active, true)), once);
+            }
+            if !fired.start && !animation.no_end && animation.state != 0 && prop.part != animation.idle {
+                prop.queued = match animation.end {
+                    Some(end) if prop.part != end => once(end),
+                    _ => idle,
+                };
+            }
+        }
+        // Each part hands on to the next when it has played out.
+        if prop.queued.is_none() {
+            match animation.state {
+                1 if Some(prop.part) == animation.start => prop.queued = Some((animation.active, animation.looping)),
+                2 if !animation.looping && prop.part == animation.active => {
+                    prop.queued = animation.end.map_or(idle, once);
+                }
+                3 if Some(prop.part) == animation.end => prop.queued = idle,
+                _ => {}
+            }
+        }
+        let state = if Some(prop.part) == animation.start {
+            1
+        } else if prop.part == animation.active {
+            2
+        } else if Some(prop.part) == animation.end {
+            3
+        } else {
+            0
+        };
+        // Events tied to the parts start and end as the parts do (`NotifyStateChange`).
+        if state != animation.state && !(state == 2 && animation.state == 0 && animation.active == animation.idle) {
+            let tied = |state: u8| state.checked_sub(1).and_then(|s| animation.state_events[s as usize]);
+            notices.push((tied(animation.state), tied(state)));
+            animation.state = state;
+        }
+    }
+    for (ending, starting) in notices {
+        if let Some(event) = ending {
+            events.end(event, None, &mut sfx);
+        }
+        if let Some(event) = starting {
+            events.start(event, None, &mut sfx);
+        }
+    }
+    for (prop, volume) in &events.doors {
+        let resting = events.animations.iter().find(|a| a.prop == *prop).map(|a| a.idle);
+        let (Some(resting), Some(animated)) = (resting, scenery.0.get(prop).and_then(|&e| props.get(e).ok())) else {
+            continue;
+        };
+        if let Some(&(tag, _)) = track.surfaces.get(volume) {
+            track.collision.set_passable(tag, animated.part != resting);
+        }
     }
 }

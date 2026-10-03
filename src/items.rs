@@ -12,6 +12,7 @@
 //! effects are stand-ins.
 
 use crate::audio::{Emitter, Sfx, id};
+use crate::events::TrackEvents;
 use crate::kart::{Controls, Kart};
 use crate::meshgen::*;
 use crate::physics::UNIT;
@@ -137,7 +138,8 @@ pub struct Pickup {
 /// Something a power-up has put into the world. Its position is its `Transform`.
 #[derive(Component)]
 pub enum Action {
-    Cannonball { owner: Entity, vel: Vec3, travelled: f32 },
+    /// `on_hit` is an event of the circuit's to set off where it lands.
+    Cannonball { owner: Entity, vel: Vec3, travelled: f32, on_hit: Option<i32> },
     /// Flying until `pulling` is set, then reeling owner and victim together.
     Hook { owner: Entity, vel: Vec3, time: f32, pulling: Option<Entity> },
     Lightning { owner: Entity, time: f32, crackle: f32 },
@@ -386,7 +388,7 @@ pub fn use_items(
                 let target = aim(&positions, owner, k.pos, forward, AIM_CONE)
                     .map_or(muzzle + forward * CANNONBALL_RANGE - Vec3::Y * LAUNCH_HEIGHT, |t| t.1 + Vec3::Y * 0.6);
                 let vel = lob(muzzle, target, CANNONBALL_SPEED, CANNONBALL_GRAVITY);
-                spawn(Action::Cannonball { owner, vel, travelled: 0.0 }, &assets.sphere, &assets.black, muzzle, Vec3::splat(0.5));
+                spawn(Action::Cannonball { owner, vel, travelled: 0.0, on_hit: None }, &assets.sphere, &assets.black, muzzle, Vec3::splat(0.5));
             }
             (Power::Red, 1) => {
                 let target = aim(&positions, owner, k.pos, forward, HOOK_CONE)
@@ -432,6 +434,41 @@ pub fn use_items(
     }
 }
 
+/// Something other than a kart that a lightning bolt comes from.
+#[derive(Component)]
+pub struct Beam {
+    pub from: Vec3,
+    pub forward: Vec3,
+}
+
+impl ItemAssets {
+    /// A cannon ball fired by the circuit itself, from one place at another.
+    pub fn cannonball(&self, commands: &mut Commands, from: Vec3, to: Vec3, on_hit: Option<i32>) -> Entity {
+        let vel = if from.with_y(0.0).distance(to.with_y(0.0)) < 1.0 {
+            Vec3::ZERO
+        } else {
+            lob(from, to, CANNONBALL_SPEED, CANNONBALL_GRAVITY)
+        };
+        let action = Action::Cannonball { owner: Entity::PLACEHOLDER, vel, travelled: 0.0, on_hit };
+        let transform = Transform::from_translation(from).with_scale(Vec3::splat(0.5));
+        commands.spawn((action, Mesh3d(self.sphere.clone()), MeshMaterial3d(self.black.clone()), transform)).id()
+    }
+
+    /// A mummy's curse left lying in wait by the circuit.
+    pub fn curse(&self, commands: &mut Commands, at: Vec3) {
+        let action = Action::Curse { owner: Entity::PLACEHOLDER, age: 0.0 };
+        let transform = Transform::from_translation(at).with_scale(Vec3::new(1.2, 3.0, 1.2));
+        commands.spawn((action, Mesh3d(self.disc.clone()), MeshMaterial3d(self.curse.clone()), transform));
+    }
+
+    /// A lightning bolt from `beam`, an entity with a [`Beam`].
+    pub fn lightning(&self, commands: &mut Commands, beam: Entity) {
+        let action = Action::Lightning { owner: beam, time: LIGHTNING_TIME, crackle: 0.0 };
+        let transform = Transform::from_scale(Vec3::new(0.3, 0.3, LIGHTNING_RANGE));
+        commands.spawn((action, Mesh3d(self.cube.clone()), MeshMaterial3d(self.bolt.clone()), transform));
+    }
+}
+
 fn flight_sound(at: Vec3, vel: Vec3) -> Emitter {
     Emitter::at(at).moving(vel).range(FLIGHT_SOUND_RANGE.0, FLIGHT_SOUND_RANGE.1)
 }
@@ -443,8 +480,10 @@ pub fn actions(
     assets: Res<ItemAssets>,
     track: Res<Track>,
     mut sfx: ResMut<Sfx>,
+    mut events: Option<ResMut<TrackEvents>>,
     mut actions: Query<(Entity, &mut Action, &mut Transform)>,
     mut karts: Query<(Entity, &mut Kart)>,
+    beams: Query<&Beam>,
 ) {
     let dt = time.delta_secs();
     // Blasts are collected and set off once every action has had its turn.
@@ -455,7 +494,7 @@ pub fn actions(
         let pos = tf.translation;
         let mut done = false;
         match &mut *action {
-            Action::Cannonball { owner, vel, travelled } => {
+            Action::Cannonball { owner, vel, travelled, on_hit } => {
                 vel.y -= CANNONBALL_GRAVITY * dt;
                 let next = pos + *vel * dt;
                 *travelled += vel.length() * dt;
@@ -480,9 +519,18 @@ pub fn actions(
                         }
                         done = true;
                     }
-                } else if track.collision.any(pos, next).is_some() || *travelled > CANNONBALL_RANGE * 1.5 {
+                } else if let Some(hit) = track.collision.any(pos, next) {
+                    // Some surfaces answer to being shot.
+                    if let (Some(event), Some(events)) = (hit.surface.shot_event, &mut events) {
+                        events.fire(event, Some(hit.point), &mut sfx);
+                    }
+                    blasts.push((hit.point, CANNONBALL_BLAST, *owner, Some(id::EXPLOSION)));
+                    done = true;
+                } else if *travelled > CANNONBALL_RANGE * 1.5 {
                     blasts.push((next, CANNONBALL_BLAST, *owner, Some(id::EXPLOSION)));
                     done = true;
+                }                if let (true, Some(event), Some(events)) = (done, *on_hit, &mut events) {
+                    events.fire(event, Some(next), &mut sfx);
                 }
             }
             Action::Hook { owner, vel, time, pulling } => {
@@ -551,7 +599,8 @@ pub fn actions(
             Action::Lightning { owner, time, crackle } => {
                 *time -= dt;
                 done = *time <= 0.0;
-                let Ok((from, forward, vel)) = karts.get(*owner).map(|(_, k)| (k.pos, (k.rot * Vec3::NEG_Z).normalize(), k.vel)) else {
+                let wielder = karts.get(*owner).map(|(_, k)| (k.pos, (k.rot * Vec3::NEG_Z).normalize(), k.vel));
+                let Ok((from, forward, vel)) = wielder.or(beams.get(*owner).map(|b| (b.from, b.forward, Vec3::ZERO))) else {
                     commands.entity(entity).despawn();
                     continue;
                 };

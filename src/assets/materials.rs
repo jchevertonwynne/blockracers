@@ -94,6 +94,8 @@ pub struct Surface {
     pub enter_event: Option<i32>,
     pub leave_event: Option<i32>,
     pub touch_event: Option<i32>,
+    /// Set off when a shot hits it.
+    pub shot_event: Option<i32>,
 }
 
 impl Default for Surface {
@@ -109,6 +111,7 @@ impl Default for Surface {
             enter_event: None,
             leave_event: None,
             touch_event: None,
+            shot_event: None,
         }
     }
 }
@@ -121,6 +124,7 @@ pub fn parse_tmb(data: &[u8]) -> HashMap<String, Surface> {
             0x28 => s.enter_event = Some(r.int()?),
             0x29 => s.leave_event = Some(r.int()?),
             0x2a => s.touch_event = Some(r.int()?),
+            0x2b => s.shot_event = Some(r.int()?),
             0x2d => s.force = r.floats()?,
             0x2e => s.sound = Some(r.int()? as usize),
             0x33 => s.friction = r.float()?,

@@ -33,6 +33,8 @@ pub struct Hit {
 pub struct Collision {
     triangles: Vec<Triangle>,
     cells: HashMap<(i32, i32), Vec<u32>>,
+    /// Tags whose triangles are, for now, not there at all (an open door, say).
+    passable: Vec<bool>,
 }
 
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
@@ -71,7 +73,7 @@ impl Collision {
             for z in lo.1..=hi.1 {
                 for &i in self.cells.get(&(x, z)).into_iter().flatten() {
                     let tri = &self.triangles[i as usize];
-                    if !accept(tri.normal) {
+                    if !accept(tri.normal) || self.passable.get(tri.tag).is_some_and(|&p| p) {
                         continue;
                     }
                     // Möller–Trumbore, both faces.
@@ -99,6 +101,14 @@ impl Collision {
             surface: tri.surface,
             tag: tri.tag,
         })
+    }
+
+    /// Opens or closes every triangle with this tag.
+    pub fn set_passable(&mut self, tag: usize, passable: bool) {
+        if self.passable.len() <= tag {
+            self.passable.resize(tag + 1, false);
+        }
+        self.passable[tag] = passable;
     }
 
     /// Drivable surface on the way straight down from `from`, at most `depth` below.

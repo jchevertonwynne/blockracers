@@ -9,6 +9,7 @@ use crate::assets::{
     tokens::{Token, tokenize},
 };
 use crate::items::Power;
+use crate::scenery;
 use crate::physics::UNIT;
 use crate::track::{Checkpoint, Track};
 use bevy::{
@@ -65,10 +66,12 @@ pub struct LoadedWorld {
     pub bricks: Vec<(Option<Power>, Vec3)>,
     /// One per grid slot, in the order of the driver roster.
     pub karts: Vec<KartModel>,
+    /// Scenery and animated models around the track.
+    pub props: Vec<scenery::PropDef>,
 }
 
 /// Materials and texture definitions, plus where to look for the textures themselves.
-struct Library<'a> {
+pub struct Library<'a> {
     jam: &'a Jam,
     dirs: Vec<String>,
     materials: HashMap<String, materials::Material>,
@@ -95,7 +98,7 @@ impl<'a> Library<'a> {
     }
 
     /// One mesh per material out of the batches of `model` that pass `keep`.
-    fn surfaces(
+    pub fn surfaces(
         &self,
         model: &Model,
         keep: impl Fn(&Batch) -> bool,
@@ -351,19 +354,37 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
     // The biggest volume is the track; the small ones are checkpoints and the start line.
     let volume_file = with_ext(".BVB").max_by_key(|f| jam.get(f).map_or(0, <[u8]>::len))?;
     let volume = Volume::parse(jam.get(volume_file)?)?;
+    // Each surface material gets a tag, so that hazards can open and close it.
+    for (index, name) in volume.materials.iter().enumerate() {
+        let surface = surface_table.get(name).copied().unwrap_or_default();
+        // The original stops cars at its invisible barriers (surfaces that only shots
+        // pass through); here karts may drive through them too.
+        let passable = surface.non_solid || surface.shots_pass;
+        track.collision.set_passable(index + 1, passable);
+        track.surfaces.insert(name.clone(), (index + 1, passable));
+    }
     for tri in &volume.triangles {
         let name = volume.materials.get(tri[3] as usize);
         let mut surface = name.and_then(|n| surface_table.get(n)).copied().unwrap_or_default();
         surface.force = to_world(surface.force).to_array();
-        // The original stops cars at its invisible barriers (surfaces that only shots
-        // pass through); here karts may drive through them too.
-        if !surface.non_solid && !surface.shots_pass {
-            let corner = |i: u16| volume.vertices.get(i as usize).copied().map(to_world);
-            track.collision.add([corner(tri[0])?, corner(tri[1])?, corner(tri[2])?], surface);
-        }
+        let corner = |i: u16| volume.vertices.get(i as usize).copied().map(to_world);
+        track.collision.add_tagged([corner(tri[0])?, corner(tri[1])?, corner(tri[2])?], surface, tri[3] as usize + 1);
     }
+    // The race definition names the volume that is the finish line.
+    let finish_volume = with_ext(".RAB")
+        .filter_map(|f| jam.get(f))
+        .find_map(|data| {
+            let tokens = tokenize(data);
+            let at = tokens.iter().position(|t| *t == Token::Key(0x2b))?;
+            match tokens.get(at + 3)? {
+                Token::Str(name) => Some(name.to_lowercase()),
+                _ => None,
+            }
+        })
+        .unwrap_or("startfin".into());
 
     // Race rules: checkpoint gates, the finish line and the starting grid.
+    let has_finish_volume = jam.get(&format!("{dir}/{finish_volume}.BVB")).is_some();
     for (name, position, forward, up) in
         with_ext(".WDB").filter_map(|f| jam.get(f)).flat_map(route::parse_placements)
     {
@@ -378,6 +399,15 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
             let v = Vec3::from(volume.vertices[i as usize]);
             to_world((origin + forward * v.x + left * v.y + up * v.z).to_array())
         };
+        // The finish line is the volume the race definition names; some circuits name
+        // one that isn't there, and then it is the one called "start" something.
+        let is_finish = name == finish_volume || (!has_finish_volume && name.starts_with("st"));
+        // Anything else is a door: open until an animated model closes it.
+        let door = track.surfaces.len() + 1000;
+        if !name.starts_with("chckpt") && !is_finish {
+            track.collision.set_passable(door, true);
+            track.surfaces.insert(name.clone(), (door, true));
+        }
         for tri in &volume.triangles {
             let corners = [place(tri[0]), place(tri[1]), place(tri[2])];
             let gate = volume.materials.get(tri[3] as usize).and_then(|m| m.parse::<usize>().ok());
@@ -385,7 +415,8 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
             match (name.starts_with("chckpt"), gate) {
                 (true, Some(gate)) => track.course.gates.add_tagged(corners, default(), gate),
                 (true, None) => {}
-                (false, _) => track.course.finish.add(corners, default()),
+                (false, _) if is_finish => track.course.finish.add(corners, default()),
+                (false, _) => track.collision.add_tagged(corners, default(), door),
             }
         }
     }
@@ -439,7 +470,9 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
     if karts.len() != KART_PREFIXES.len() {
         warn!("could not load the original kart models");
     }
-    Some((track, LoadedWorld { surfaces, bricks, karts }))
+    let track_model = model_file.rsplit('/').next().unwrap_or_default().trim_end_matches(".GDB").to_lowercase();
+    let props = scenery::load(&jam, &dir, &library, &track_model);
+    Some((track, LoadedWorld { surfaces, bricks, karts, props }))
 }
 
 /// Render components for one surface.

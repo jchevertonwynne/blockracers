@@ -4,6 +4,7 @@
 
 use crate::meshgen::*;
 use bevy::prelude::*;
+use std::collections::HashMap;
 use crate::assets::materials::Surface;
 use crate::collision::Collision;
 
@@ -51,6 +52,9 @@ pub struct Track {
     pub road: f32,
     pub collision: Collision,
     pub course: Course,
+    /// The collision surfaces by name: each one's tag in `collision`, and whether it
+    /// starts out passable. Hazards open and close some of them.
+    pub surfaces: HashMap<String, (usize, bool)>,
 }
 
 /// A gate of the checkpoint graph that orders the racers and guards against shortcuts.
@@ -241,6 +245,7 @@ impl Track {
             road,
             collision: Collision::default(),
             course: Course::default(),
+            surfaces: HashMap::new(),
         }
     }
 

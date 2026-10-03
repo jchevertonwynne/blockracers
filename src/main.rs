@@ -2,6 +2,7 @@ mod assets;
 mod audio;
 mod collision;
 mod events;
+mod hazards;
 mod hud;
 mod items;
 mod kart;
@@ -10,6 +11,7 @@ mod meshgen;
 mod mixer;
 mod physics;
 mod racer_sounds;
+mod scenery;
 mod track;
 mod world;
 
@@ -101,6 +103,7 @@ fn main() {
             (
                 load_race,
                 world::spawn_world.run_if(resource_exists::<LoadedWorld>),
+                scenery::spawn_scenery.run_if(resource_exists::<LoadedWorld>),
                 setup_brick_world.run_if(not(resource_exists::<LoadedWorld>)),
                 kart::spawn_karts,
                 items::setup_items,
@@ -122,6 +125,9 @@ fn main() {
                 items::pickups,
                 racer_sounds::racer_sounds,
                 events::track_events,
+                events::part_animations,
+                hazards::hazards,
+                scenery::animate,
                 kart::sync_karts,
                 kart::sync_wheels,
                 chase_camera,
@@ -172,6 +178,10 @@ fn load_race(
     match circuit.race.as_deref().and_then(events::load) {
         Some(events) => commands.insert_resource(events),
         None => commands.remove_resource::<events::TrackEvents>(),
+    }
+    match circuit.race.as_deref().and_then(hazards::load) {
+        Some(hazards) => commands.insert_resource(hazards),
+        None => commands.remove_resource::<hazards::Hazards>(),
     }
     commands.insert_resource(Rng(0x1EC0_1999));
     commands.insert_resource(ChaseYaw::default());
