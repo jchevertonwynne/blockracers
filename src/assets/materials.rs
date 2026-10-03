@@ -86,6 +86,14 @@ pub struct Surface {
     pub force: [f32; 3],
     /// Triggers and checkpoints: not part of the solid world.
     pub non_solid: bool,
+    /// Lets shots through. On its own this marks the original's invisible barriers.
+    pub shots_pass: bool,
+    /// The sound of driving on it, from the circuit's sound bank.
+    pub sound: Option<usize>,
+    /// Events set off as a kart drives onto it, off it, or touches it.
+    pub enter_event: Option<i32>,
+    pub leave_event: Option<i32>,
+    pub touch_event: Option<i32>,
 }
 
 impl Default for Surface {
@@ -96,6 +104,11 @@ impl Default for Surface {
             lateral_grip: 3.0,
             force: [0.0; 3],
             non_solid: false,
+            shots_pass: false,
+            sound: None,
+            enter_event: None,
+            leave_event: None,
+            touch_event: None,
         }
     }
 }
@@ -105,11 +118,16 @@ pub fn parse_tmb(data: &[u8]) -> HashMap<String, Surface> {
     entries(data, |name, key, r| {
         let s = out.entry(name.to_string()).or_default();
         match key {
+            0x28 => s.enter_event = Some(r.int()?),
+            0x29 => s.leave_event = Some(r.int()?),
+            0x2a => s.touch_event = Some(r.int()?),
             0x2d => s.force = r.floats()?,
+            0x2e => s.sound = Some(r.int()? as usize),
             0x33 => s.friction = r.float()?,
             0x34 => s.lateral_grip = r.float()?,
             0x36 => s.rolling_resistance = r.float()?,
             0x37 => s.non_solid = true,
+            0x38 => s.shots_pass = true,
             _ => {}
         }
         Some(())

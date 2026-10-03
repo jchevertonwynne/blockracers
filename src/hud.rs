@@ -1,4 +1,5 @@
-use crate::kart::{Kart, LAPS, Player};
+use crate::kart::{Kart, Player};
+use crate::menu::Settings;
 use crate::{Phase, Race};
 use bevy::prelude::*;
 
@@ -71,6 +72,7 @@ fn clock(t: f32) -> String {
 
 pub fn update_hud(
     race: Res<Race>,
+    settings: Res<Settings>,
     karts: Query<(&Kart, Has<Player>)>,
     mut lap: Single<&mut Text, (With<LapText>, Without<PlaceText>, Without<TimeText>, Without<ItemText>, Without<CenterText>)>,
     mut place: Single<&mut Text, (With<PlaceText>, Without<TimeText>, Without<ItemText>, Without<CenterText>)>,
@@ -86,7 +88,7 @@ pub fn update_hud(
         }
     };
 
-    set(&mut lap, format!("LAP {}/{}", player.display_lap(), LAPS));
+    set(&mut lap, format!("LAP {}/{}", player.display_lap(settings.laps()), settings.laps()));
     set(&mut place, ordinal(player.place).to_string());
     set(&mut timer, clock(player.finished.unwrap_or(race.time)));
 
@@ -106,9 +108,7 @@ pub fn update_hud(
     item_box.set_if_neq(BackgroundColor(colour));
 
     let message = match race.phase {
-        Phase::Title => "BRICK RACERS\n\nPress ENTER to race\n\n\
-            WASD / arrows: drive    Shift: powerslide    Space: use power-up"
-            .to_string(),
+        Phase::Intro => String::new(),
         Phase::Countdown => format!("{}", race.countdown.ceil() as u32),
         Phase::Racing if race.time < 1.0 => "GO!".to_string(),
         Phase::Racing if player.wrong_way() => "WRONG WAY".to_string(),
@@ -121,7 +121,7 @@ pub fn update_hud(
                 let time = k.finished.map_or("--".to_string(), clock);
                 out += &format!("{}  {}  {}\n", ordinal(k.place), k.name, time);
             }
-            out + "\nPress ENTER to race again"
+            out + "\nENTER: race again    ESC: menu"
         }
     };
     set(&mut center, message);

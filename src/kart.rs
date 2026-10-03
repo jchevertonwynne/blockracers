@@ -6,14 +6,15 @@ use crate::meshgen::*;
 use crate::assets::materials::Surface;
 use crate::physics::{self, MAX_SPEED, UNIT};
 use crate::track::{Checkpoint, Track};
-use crate::world::{Chassis, LoadedWorld, surface_bundle};
+use crate::audio::{Sfx, id};
+use crate::racer_sounds::{Cues, RacerAudio};
+use crate::menu::Settings;
+use crate::world::{Chassis, KartModel, LoadedWorld, surface_bundle};
 use crate::{Phase, Race};
 use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-pub const LAPS: i32 = 3;
 const WHEEL_RADIUS: f32 = 0.45;
-const KART_RADIUS: f32 = 1.1;
 /// Lateral acceleration the AI is willing to corner at; a little under what the tyres
 /// hold before slip steering sets in.
 const AI_LAT_ACCEL: f32 = 30.0;
@@ -85,6 +86,10 @@ pub struct Kart {
     /// Blown into the air, with no control.
     pub spin_out: f32,
     pub boost: f32,
+    /// Level of the turbo in use.
+    pub boost_level: u8,
+    /// Time until this kart may make another scraping sound.
+    pub scrape_cooldown: f32,
     pub shield: f32,
     pub shield_level: u8,
     /// Steering reversed and top speed halved.
@@ -110,7 +115,13 @@ pub struct Kart {
     // The car itself.
     pub wheels: [Vec3; 4],
     pub body: [Vec3; 4],
+    /// Half-width, and the Z of the car's nose and tail, for bumping into other cars.
+    pub outline: [f32; 3],
     pub stats: Stats,
+    /// How high the engine revs, from the chassis table.
+    pub engine_pitch: f32,
+    /// Sounds owed for things that have just happened to this kart.
+    pub cues: Cues,
 }
 
 /// Multipliers from the car's handling, top speed and acceleration ratings.
@@ -180,6 +191,8 @@ impl Kart {
             spin: 0.0,
             spin_out: 0.0,
             boost: 0.0,
+            boost_level: 0,
+            scrape_cooldown: 0.0,
             shield: 0.0,
             shield_level: 0,
             cursed: 0.0,
@@ -193,17 +206,21 @@ impl Kart {
             zones: [0, 2, 1],
             wheels: physics::WHEELS,
             body: physics::BODY_POINTS,
+            outline: [1.2, -1.6, 1.6],
             stats: Stats::from_ratings([50.0; 3]),
+            engine_pitch: 1.0,
+            cues: Cues::default(),
         }
     }
 
     pub fn reset(&mut self, track: &Track) {
-        let (wheels, body, stats) = (self.wheels, self.body, self.stats);
-        *self = Kart { wheels, body, stats, ..Kart::new(track, self.slot) };
+        let (wheels, body, outline, stats, engine_pitch) = (self.wheels, self.body, self.outline, self.stats, self.engine_pitch);
+        *self = Kart { wheels, body, outline, stats, engine_pitch, ..Kart::new(track, self.slot) };
     }
 
     /// Takes the car's contact points, footprint and ratings from the chassis table.
-    fn set_chassis(&mut self, chassis: &Chassis) {
+    fn set_chassis(&mut self, chassis: &Chassis, outline: [f32; 3]) {
+        self.outline = [outline[0] * UNIT, -outline[1] * UNIT, outline[2] * UNIT];
         // The game's cars have X forward and Y left; ours face -Z with X to the right.
         let local = |v: Vec3| Vec3::new(-v.y, 0.0, -v.x) * UNIT;
         self.wheels = chassis.wheels.map(local);
@@ -212,6 +229,7 @@ impl Kart {
             Vec3::new(x * half.x * UNIT, physics::BODY_POINT_HEIGHT, z * half.y * UNIT)
         });
         self.stats = Stats::from_ratings(chassis.stats);
+        self.engine_pitch = chassis.engine_pitch;
     }
 
     /// Sets the kart down on the road at rest, pointing along the racing line.
@@ -252,8 +270,8 @@ impl Kart {
         }
     }
 
-    pub fn display_lap(&self) -> i32 {
-        self.lap.clamp(1, LAPS)
+    pub fn display_lap(&self, laps: i32) -> i32 {
+        self.lap.clamp(1, laps)
     }
 
     /// Whether the last gate was crossed backwards.
@@ -472,6 +490,7 @@ fn wheel_mesh() -> Mesh {
 pub fn spawn_karts(
     mut commands: Commands,
     track: Res<Track>,
+    settings: Res<Settings>,
     mut loaded: Option<ResMut<LoadedWorld>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -490,23 +509,29 @@ pub fn spawn_karts(
         ..default()
     });
     // The original cars, if the game data provided them.
-    let mut models = loaded.as_mut().map(|l| std::mem::take(&mut l.karts)).unwrap_or_default();
-    models.reverse();
+    let models = loaded.as_mut().map(|l| std::mem::take(&mut l.karts)).unwrap_or_default();
+    let mut models: Vec<Option<KartModel>> = models.into_iter().map(Some).collect();
 
+    // The player is the last driver on the roster; opponents fill it from the front.
+    let player_slot = DRIVERS.len() - 1;
     for (slot, driver) in DRIVERS.iter().enumerate() {
-        let model = models.pop();
+        if slot != player_slot && slot >= settings.opponents {
+            continue;
+        }
+        let model = models.get_mut(slot).and_then(Option::take);
         let mut state = Kart::new(&track, slot);
         if let Some(model) = &model {
-            state.set_chassis(&model.chassis);
+            state.set_chassis(&model.chassis, model.outline);
         }
         let mut kart = commands.spawn((
             state,
             Controls::default(),
-            Ai::new(driver.skill, slot),
+            Ai::new(driver.skill * settings.ai_pace(), slot),
+            RacerAudio::default(),
             Transform::default(),
             Visibility::default(),
         ));
-        if slot == DRIVERS.len() - 1 {
+        if slot == player_slot {
             kart.insert(Player);
         }
         let id = kart.id();
@@ -651,6 +676,9 @@ pub fn ai_drive(
     }
 }
 
+/// Gap between one kart's scraping sounds.
+const SCRAPE_COOLDOWN: f32 = 0.25;
+
 pub fn kart_physics(time: Res<Time>, track: Res<Track>, mut q: Query<(&mut Kart, &Controls)>) {
     let dt = time.delta_secs().min(0.05);
     for (mut kart, c) in &mut q {
@@ -718,30 +746,69 @@ impl Kart {
     }
 }
 
-pub fn kart_collisions(mut q: Query<&mut Kart>) {
+impl Kart {
+    /// The car's shape for bumping into other cars: circles as wide as the car at its
+    /// nose, middle and tail. Returns their centres and radius.
+    fn hull(&self) -> ([Vec3; 3], f32) {
+        let [width, front, rear] = self.outline;
+        let middle = (front + rear) / 2.0;
+        let ends = [(front + width).min(middle), middle, (rear - width).max(middle)];
+        (ends.map(|z| self.pos + self.rot * Vec3::new(0.0, 0.0, z)), width)
+    }
+}
+
+pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player>)>) {
     let mut pairs = q.iter_combinations_mut();
-    while let Some([mut a, mut b]) = pairs.fetch_next() {
-        let d = (b.pos - a.pos).with_y(0.0);
-        let dist = d.length();
-        if dist < 2.0 * KART_RADIUS && dist > 1e-3 {
-            let normal = d / dist;
-            let push = normal * (2.0 * KART_RADIUS - dist) * 0.5;
-            a.pos -= push;
-            b.pos += push;
-            let closing = (b.vel - a.vel).dot(normal);
-            if closing < 0.0 {
-                a.vel += normal * closing * 0.6;
-                b.vel -= normal * closing * 0.6;
+    while let Some([(mut a, a_player), (mut b, b_player)]) = pairs.fetch_next() {
+        // Karts on different levels (a bridge, say) or in warp pass each other by.
+        if (a.pos.y - b.pos.y).abs() > 2.0 || a.warp > 0.0 || b.warp > 0.0 {
+            continue;
+        }
+        let ((ends_a, radius_a), (ends_b, radius_b)) = (a.hull(), b.hull());
+        // The deepest overlap between any of a's circles and any of b's.
+        let mut worst: Option<(f32, Vec3)> = None;
+        for ca in ends_a {
+            for cb in ends_b {
+                let d = (cb - ca).with_y(0.0);
+                let overlap = radius_a + radius_b - d.length();
+                if overlap > 0.0 && worst.is_none_or(|w| overlap > w.0) {
+                    worst = Some((overlap, d.try_normalize().unwrap_or(Vec3::X)));
+                }
+            }
+        }
+        let Some((overlap, normal)) = worst else { continue };
+        a.pos -= normal * overlap * 0.5;
+        b.pos += normal * overlap * 0.5;
+        let closing = (b.vel - a.vel).dot(normal);
+        if closing < 0.0 {
+            a.vel += normal * closing * 0.6;
+            b.vel -= normal * closing * 0.6;
+            // Only bumps the player is part of are heard.
+            if !(a_player || b_player) {
+                continue;
+            }
+            if a.scrape_cooldown <= 0.0 && b.scrape_cooldown <= 0.0 {
+                let sound = id::CAR_HITS[sfx.roll(2) as usize];
+                sfx.play_at(sound, (a.pos + b.pos) * 0.5);
+                a.scrape_cooldown = SCRAPE_COOLDOWN;
+                b.scrape_cooldown = SCRAPE_COOLDOWN;
+            }
+            // Whoever ran into the other grumbles, unless a shield spared them.
+            let (hitter, hit) = if a.vel.length_squared() > b.vel.length_squared() { (&mut a, &mut b) } else { (&mut b, &mut a) };
+            if hitter.shielded() {
+                hit.cues.reaction = Some(false);
+            } else {
+                hitter.cues.reaction = Some(false);
             }
         }
     }
 }
 
-pub fn update_places(race: Res<Race>, mut q: Query<&mut Kart>) {
+pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut Kart>) {
     let mut order: Vec<(f32, Mut<Kart>)> = q
         .iter_mut()
         .map(|mut k| {
-            if race.phase == Phase::Racing && k.finished.is_none() && k.lap > LAPS {
+            if race.phase == Phase::Racing && k.finished.is_none() && k.lap > settings.laps() {
                 k.finished = Some(race.time);
             }
             // Finishers rank ahead of everyone still racing, earliest first.
@@ -751,6 +818,10 @@ pub fn update_places(race: Res<Race>, mut q: Query<&mut Kart>) {
     order.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (i, (_, k)) in order.iter_mut().enumerate() {
         if k.place != i + 1 {
+            // Gaining a place is worth a cheer, and losing one a groan.
+            if race.phase == Phase::Racing && k.finished.is_none() {
+                k.cues.reaction = Some(i + 1 < k.place);
+            }
             k.place = i + 1;
         }
     }
@@ -819,15 +890,18 @@ mod tests {
     /// Needs the original game data; silently passes without it.
     #[test]
     fn ai_laps_the_original_circuits() {
-        for race in ["RACEC0R0", "RACEC1R1", "RACEC2R0"] {
-            // SAFETY: tests that read this variable all run in this one thread.
-            unsafe { std::env::set_var("LEGO_RACE", race) };
-            if crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM").is_none() {
-                return;
+        let mut failed = Vec::new();
+        for (race, name) in crate::world::circuits() {
+            let Some((track, _)) = crate::world::load(&race) else {
+                failed.push(format!("{race} {name}: did not load"));
+                continue;
+            };
+            print!("{race} {name}: ");
+            let laps = solo_run(&track, 240.0);
+            if laps.len() < 3 {
+                failed.push(format!("{race} {name}: {} laps", laps.len()));
             }
-            let (track, _) = crate::world::load().unwrap_or_else(|| panic!("{race} failed to load"));
-            let laps = solo_run(&track, 200.0);
-            assert!(laps.len() >= 3, "{race}: {laps:?}");
         }
+        assert!(failed.is_empty(), "{failed:#?}");
     }
 }

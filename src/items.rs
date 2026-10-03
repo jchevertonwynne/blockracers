@@ -11,6 +11,7 @@
 //! Behaviour and numbers follow the original's power-up actions; the models and
 //! effects are stand-ins.
 
+use crate::audio::{Emitter, Sfx, id};
 use crate::kart::{Controls, Kart};
 use crate::meshgen::*;
 use crate::physics::UNIT;
@@ -49,6 +50,8 @@ impl Power {
 
 const MAX_WHITE_BRICKS: u8 = 3;
 const BRICK_RESPAWN: f32 = 5.0;
+/// How close a kart has to come to a brick to collect it.
+const PICKUP_RADIUS: f32 = 2.7;
 
 const SHIELD_TIMES: [f32; 4] = [4.0, 6.0, 8.0, 10.0];
 /// Shields of this level and up send cannon balls back where they came from.
@@ -104,6 +107,25 @@ const DROP_GRACE: f32 = 1.0;
 const KART_RADIUS: f32 = 1.5;
 const EXPLOSION_TIME: f32 = 0.4;
 
+/// Bricks are heard from this far off, in the original's units.
+const BRICK_SOUND_RANGE: (f32, f32) = (30.0, 150.0);
+/// The hum of a shot in flight carries this far; only the one nearest the player is heard.
+const FLIGHT_SOUND_RANGE: (f32, f32) = (200.0, 500.0);
+/// The lightning wand's hum drops by this much as it gives out, over this long.
+const LIGHTNING_FADE: (f32, f32) = (0.1, 0.5);
+/// It crackles this often (a minimum plus up to this much more), somewhere along its reach.
+const LIGHTNING_CRACKLE: (f32, f32) = (0.2, 0.3);
+/// A curse lying in wait hovers this far above the road.
+const CURSE_HEIGHT: f32 = 13.0 * UNIT;
+
+/// Loops of which only the one nearest the player sounds.
+mod flight {
+    pub const CANNONBALL: u16 = 100;
+    pub const MISSILE: u16 = 101;
+    pub const HOOK: u16 = 102;
+    pub const HOOK_PULL: u16 = 103;
+}
+
 #[derive(Component)]
 pub struct Pickup {
     /// `None` is a white brick.
@@ -118,7 +140,7 @@ pub enum Action {
     Cannonball { owner: Entity, vel: Vec3, travelled: f32 },
     /// Flying until `pulling` is set, then reeling owner and victim together.
     Hook { owner: Entity, vel: Vec3, time: f32, pulling: Option<Entity> },
-    Lightning { owner: Entity, time: f32 },
+    Lightning { owner: Entity, time: f32, crackle: f32 },
     /// Follows the racing line at (s, lat) until close to its target.
     Missile { owner: Entity, target: Option<Entity>, s: f32, lat: f32, time: f32 },
     OilSlick { owner: Entity, age: f32 },
@@ -233,6 +255,7 @@ pub fn setup_items(
 
 pub fn pickups(
     time: Res<Time>,
+    mut sfx: ResMut<Sfx>,
     mut picks: Query<(&mut Pickup, &mut Transform, &mut Visibility)>,
     mut karts: Query<&mut Kart>,
 ) {
@@ -242,19 +265,31 @@ pub fn pickups(
             p.respawn -= time.delta_secs();
             if p.respawn <= 0.0 {
                 *vis = Visibility::Inherited;
+                if p.power.is_some() {
+                    sfx.emit(id::BRICK_RESPAWN, brick_sound(p.pos));
+                }
             }
             continue;
         }
         tf.rotation = Quat::from_rotation_y(t * 2.0);
         tf.translation.y = p.pos.y + 1.1 + (t * 3.0 + p.pos.x).sin() * 0.15;
         for mut k in &mut karts {
-            if k.pos.distance_squared(p.pos) > 2.0 * 2.0 {
+            if k.pos.distance_squared(p.pos) > PICKUP_RADIUS * PICKUP_RADIUS {
                 continue;
             }
             match p.power {
                 // A new colour replaces the old one; white bricks are kept.
-                Some(power) => k.held = Some(power),
-                None if k.whites < MAX_WHITE_BRICKS => k.whites += 1,
+                Some(power) => {
+                    let swapped = k.held.replace(power).is_some();
+                    sfx.emit(if swapped { id::BRICK_SWAP } else { id::BRICK_COLLECT }, brick_sound(p.pos));
+                }
+                None if k.whites < MAX_WHITE_BRICKS => {
+                    sfx.play(id::WHITE_BRICK + k.whites as usize);
+                    k.whites += 1;
+                    if k.whites == MAX_WHITE_BRICKS {
+                        k.cues.reaction = Some(true);
+                    }
+                }
                 // Already carrying all the white bricks there's room for.
                 None => continue,
             }
@@ -263,6 +298,10 @@ pub fn pickups(
             break;
         }
     }
+}
+
+fn brick_sound(at: Vec3) -> Emitter {
+    Emitter::at(at).range(BRICK_SOUND_RANGE.0, BRICK_SOUND_RANGE.1)
 }
 
 /// The nearest kart other than `owner` inside a cone around `forward`.
@@ -297,6 +336,7 @@ pub fn use_items(
     mut commands: Commands,
     assets: Res<ItemAssets>,
     track: Res<Track>,
+    mut sfx: ResMut<Sfx>,
     mut q: Query<(Entity, &mut Kart, &mut Controls)>,
 ) {
     let positions: Vec<(Entity, Vec3)> = q.iter().map(|(e, k, _)| (e, k.pos)).collect();
@@ -307,12 +347,32 @@ pub fn use_items(
         if k.spin > 0.0 || k.spin_out > 0.0 || k.magnet > 0.0 || k.warp > 0.0 {
             continue;
         }
-        let Some(power) = k.held.take() else { continue };
+        // With nothing to fire, the button sounds the horn.
+        let Some(power) = k.held.take() else {
+            k.cues.horn = true;
+            continue;
+        };
         let level = std::mem::take(&mut k.whites).min(3);
+
+        let behind = track.surface_point(k.s - 2.5, k.lat);
+        match (power, level) {
+            (Power::Red, 0) => sfx.play_at(id::CANNON_FIRE, k.pos),
+            (Power::Red, 1) => sfx.play_at(id::HOOK_FIRE, k.pos),
+            (Power::Red, 2) => {}
+            (Power::Red, _) => sfx.play_at(id::MISSILE_FIRE, k.pos),
+            (Power::Yellow, 0) => sfx.play_at(id::OIL_DROP, behind),
+            (Power::Yellow, 2) => sfx.play_at(id::MAGNET_DROP, behind),
+            // Dynamite and curses only make the sounds they keep up; shields and
+            // turbos are heard from the kart.
+            _ => {}
+        }
+        // Drivers are pleased with themselves for anything but a shot.
+        if power != Power::Red && !(power == Power::Green && level == 3) {
+            k.cues.reaction = Some(true);
+        }
 
         let forward = (k.rot * Vec3::NEG_Z).normalize();
         let muzzle = k.pos + Vec3::Y * LAUNCH_HEIGHT;
-        let behind = track.surface_point(k.s - 2.5, k.lat);
         let mut spawn = |action: Action, mesh: &Handle<Mesh>, material: &Handle<StandardMaterial>, at: Vec3, size: Vec3| {
             commands.spawn((
                 action,
@@ -336,7 +396,7 @@ pub fn use_items(
             }
             (Power::Red, 2) => {
                 let size = Vec3::new(0.3, 0.3, LIGHTNING_RANGE);
-                spawn(Action::Lightning { owner, time: LIGHTNING_TIME }, &assets.cube, &assets.bolt, muzzle, size);
+                spawn(Action::Lightning { owner, time: LIGHTNING_TIME, crackle: 0.0 }, &assets.cube, &assets.bolt, muzzle, size);
             }
             (Power::Red, _) => {
                 let target = aim(&positions, owner, k.pos, forward, MISSILE_CONE).map(|t| t.0);
@@ -360,11 +420,20 @@ pub fn use_items(
             (Power::Blue, level) => {
                 k.shield = SHIELD_TIMES[level as usize];
                 k.shield_level = level;
+                // A shield lifts a curse.
+                k.cursed = 0.0;
             }
             (Power::Green, 3) => k.warp = WARP_TIME,
-            (Power::Green, level) => k.boost = TURBO_TIMES[level as usize],
+            (Power::Green, level) => {
+                k.boost = TURBO_TIMES[level as usize];
+                k.boost_level = level;
+            }
         }
     }
+}
+
+fn flight_sound(at: Vec3, vel: Vec3) -> Emitter {
+    Emitter::at(at).moving(vel).range(FLIGHT_SOUND_RANGE.0, FLIGHT_SOUND_RANGE.1)
 }
 
 /// Runs everything power-ups have put into the world.
@@ -373,12 +442,13 @@ pub fn actions(
     time: Res<Time>,
     assets: Res<ItemAssets>,
     track: Res<Track>,
+    mut sfx: ResMut<Sfx>,
     mut actions: Query<(Entity, &mut Action, &mut Transform)>,
     mut karts: Query<(Entity, &mut Kart)>,
 ) {
     let dt = time.delta_secs();
     // Blasts are collected and set off once every action has had its turn.
-    let mut blasts: Vec<(Vec3, f32, Entity)> = Vec::new();
+    let mut blasts: Vec<(Vec3, f32, Entity, Option<usize>)> = Vec::new();
     let touching = |k: &Kart, at: Vec3, radius: f32| (k.pos + Vec3::Y * 0.6).distance_squared(at) < radius * radius;
 
     for (entity, mut action, mut tf) in &mut actions {
@@ -390,8 +460,15 @@ pub fn actions(
                 let next = pos + *vel * dt;
                 *travelled += vel.length() * dt;
                 tf.translation = next;
+                sfx.sustain_nearest(flight::CANNONBALL, id::CANNON_FLIGHT, flight_sound(next, *vel), FLIGHT_SOUND_RANGE.1);
                 let struck = karts.iter_mut().find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, next, KART_RADIUS));
                 if let Some((victim, mut k)) = struck {
+                    if k.shielded() {
+                        k.cues.reaction = Some(true);
+                        k.cues.shield_hit = true;
+                    } else {
+                        k.cues.reaction = Some(false);
+                    }
                     if k.shielded() && k.shield_level >= DEFLECTING_SHIELD {
                         // Sent back; it now belongs to whoever deflected it.
                         *vel = -*vel;
@@ -399,12 +476,12 @@ pub fn actions(
                     } else {
                         if !k.shielded() {
                             k.whites = k.whites.saturating_sub(1);
-                            blasts.push((next, CANNONBALL_BLAST, *owner));
+                            blasts.push((k.pos, CANNONBALL_BLAST, *owner, Some(id::EXPLOSION)));
                         }
                         done = true;
                     }
                 } else if track.collision.any(pos, next).is_some() || *travelled > CANNONBALL_RANGE * 1.5 {
-                    blasts.push((next, CANNONBALL_BLAST, *owner));
+                    blasts.push((next, CANNONBALL_BLAST, *owner, Some(id::EXPLOSION)));
                     done = true;
                 }
             }
@@ -416,15 +493,33 @@ pub fn actions(
                         vel.y -= HOOK_GRAVITY * dt;
                         let next = pos + *vel * dt;
                         tf.translation = next;
-                        let caught = karts.iter().find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, next, KART_RADIUS));
-                        if let Some((victim, k)) = caught {
+                        sfx.sustain_nearest(flight::HOOK, id::HOOK_FLIGHT, flight_sound(next, *vel), FLIGHT_SOUND_RANGE.1);
+                        let caught = karts.iter_mut().find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, next, KART_RADIUS));
+                        let mut missed = track.collision.any(pos, next).is_some() || done;
+                        let mut hooked = false;
+                        if let Some((victim, mut k)) = caught {
                             if k.shielded() {
-                                done = true;
+                                k.cues.reaction = Some(true);
+                                k.cues.shield_hit = true;
+                                missed = true;
                             } else {
                                 *pulling = Some(victim);
                                 *time = HOOK_PULL_TIME;
+                                k.cues.reaction = Some(false);
+                                k.whites = k.whites.saturating_sub(1);
+                                sfx.play_at(id::HOOK_HIT, k.pos);
+                                (missed, hooked) = (false, true);
                             }
-                        } else if track.collision.any(pos, next).is_some() {
+                        }
+                        if hooked {
+                            if let Ok((_, mut k)) = karts.get_mut(*owner) {
+                                k.cues.reaction = Some(true);
+                            }
+                        }
+                        if missed {
+                            // The line snaps back.
+                            sfx.play_at(id::HOOK_MISS, next);
+                            sfx.play_at(id::HOOK_RETRACT, next);
                             done = true;
                         }
                     }
@@ -433,7 +528,8 @@ pub fn actions(
                         let ends = (karts.get(*owner).map(|k| k.1.pos), karts.get(victim).map(|k| (k.1.pos, k.1.shielded())));
                         if let (Ok(from), Ok((to, shielded))) = ends {
                             let rope = to - from;
-                            if shielded || rope.length() < HOOK_RELEASE_DISTANCE {
+                            if shielded || rope.length() < HOOK_RELEASE_DISTANCE || done {
+                                sfx.play_at(id::HOOK_RELEASE, to);
                                 done = true;
                             } else {
                                 let pull = rope.normalize() * HOOK_PULL;
@@ -444,6 +540,7 @@ pub fn actions(
                                     k.external_force -= pull;
                                 }
                                 tf.translation = to + Vec3::Y * 0.8;
+                                sfx.sustain_nearest(flight::HOOK_PULL, id::HOOK_PULL, flight_sound(to, Vec3::ZERO), FLIGHT_SOUND_RANGE.1);
                             }
                         } else {
                             done = true;
@@ -451,13 +548,26 @@ pub fn actions(
                     }
                 }
             }
-            Action::Lightning { owner, time } => {
+            Action::Lightning { owner, time, crackle } => {
                 *time -= dt;
                 done = *time <= 0.0;
-                let Ok((from, forward)) = karts.get(*owner).map(|(_, k)| (k.pos, (k.rot * Vec3::NEG_Z).normalize())) else {
+                let Ok((from, forward, vel)) = karts.get(*owner).map(|(_, k)| (k.pos, (k.rot * Vec3::NEG_Z).normalize(), k.vel)) else {
                     commands.entity(entity).despawn();
                     continue;
                 };
+                // The wand hums, sinking as it gives out, and crackles along its reach.
+                let fading = ((LIGHTNING_FADE.1 - *time) / LIGHTNING_FADE.1).clamp(0.0, 1.0);
+                let hum = Emitter::at(from).moving(vel).pitch(1.0 - LIGHTNING_FADE.0 * fading);
+                sfx.sustain(entity, 0, id::LIGHTNING_LOOP, hum);
+                *crackle -= dt;
+                if *crackle <= 0.0 && *time > LIGHTNING_FADE.1 {
+                    let along = sfx.roll((LIGHTNING_RANGE / UNIT) as u32) as f32 * UNIT;
+                    sfx.play_at(id::LIGHTNING_CRACKLE, from + forward * along);
+                    *crackle = LIGHTNING_CRACKLE.0 + sfx.roll(1000) as f32 * 0.001 * LIGHTNING_CRACKLE.1;
+                }
+                if done {
+                    sfx.play_at(id::LIGHTNING_END, from);
+                }
                 // The bolt reaches out ahead of the kart holding the wand.
                 tf.translation = from + Vec3::Y * 0.9 + forward * LIGHTNING_RANGE * 0.5;
                 tf.rotation = Transform::IDENTITY.looking_to(forward, Vec3::Y).rotation;
@@ -468,6 +578,10 @@ pub fn actions(
                         && (LIGHTNING_MIN_RANGE..LIGHTNING_RANGE).contains(&distance)
                         && to.dot(forward) / distance >= LIGHTNING_CONE
                     {
+                        if k.spin_out <= 0.0 && !k.shielded() {
+                            sfx.play_at(id::LIGHTNING_ZAP, k.pos);
+                            k.cues.reaction = Some(false);
+                        }
                         k.launch();
                     }
                 }
@@ -489,25 +603,34 @@ pub fn actions(
                 };
                 tf.look_to(next - pos, Vec3::Y);
                 tf.translation = next;
+                let vel = (next - pos) / dt.max(1e-4);
+                sfx.sustain_nearest(flight::MISSILE, id::MISSILE_FLIGHT, flight_sound(next, vel), FLIGHT_SOUND_RANGE.1);
                 let struck = karts.iter_mut().find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, next, KART_RADIUS));
                 if let Some((_, mut k)) = struck {
-                    if !k.shielded() {
+                    if k.shielded() {
+                        k.cues.reaction = Some(true);
+                        k.cues.shield_hit = true;
+                    } else {
+                        k.cues.reaction = Some(false);
+                        k.whites = k.whites.saturating_sub(1);
                         k.spin_round(MISSILE_SPIN_TURNS);
-                        blasts.push((next, BIG_BLAST, *owner));
+                        blasts.push((k.pos, BIG_BLAST, *owner, Some(id::MISSILE_EXPLODE)));
                     }
                     done = true;
                 } else if *time <= 0.0 {
-                    blasts.push((next, BIG_BLAST, *owner));
+                    blasts.push((next, BIG_BLAST, *owner, Some(id::MISSILE_EXPLODE)));
                     done = true;
                 }
             }
             Action::OilSlick { owner, age } => {
                 *age += dt;
                 done = *age > OIL_TIME;
+                sfx.sustain(entity, 0, id::OIL_LOOP, Emitter::at(pos));
                 for (e, mut k) in &mut karts {
                     let armed = e != *owner || *age > DROP_GRACE;
                     if armed && k.contacts > 0 && k.spin <= 0.0 && touching(&k, pos, KART_RADIUS) {
                         k.spin_round(OIL_SPIN_TURNS);
+                        sfx.emit(id::OIL_SLIP, Emitter::at(k.pos).far());
                         done = true;
                         break;
                     }
@@ -515,8 +638,13 @@ pub fn actions(
             }
             Action::Dynamite { owner, fuse, blasts: left } => {
                 *fuse -= dt;
+                // Only the first of the blasts is heard; until then the fuse fizzes.
+                let first = *left == DYNAMITE_BLASTS;
+                if first && *fuse > 0.0 {
+                    sfx.sustain(entity, 0, id::DYNAMITE_FUSE, Emitter::at(pos));
+                }
                 if *fuse <= 0.0 {
-                    blasts.push((pos, BIG_BLAST, *owner));
+                    blasts.push((pos, BIG_BLAST, *owner, first.then_some(id::EXPLOSION)));
                     *left -= 1;
                     *fuse = DYNAMITE_BLAST_INTERVAL;
                     done = *left == 0;
@@ -525,9 +653,12 @@ pub fn actions(
             Action::Magnet { owner, age } => {
                 *age += dt;
                 done = *age > MAGNET_ARMED_TIME;
+                sfx.sustain(entity, 0, id::MAGNET_LOOP, Emitter::at(pos));
                 for (e, mut k) in &mut karts {
                     if e != *owner && !k.shielded() && k.warp <= 0.0 && touching(&k, pos, TRAP_RADIUS) {
                         k.magnet = MAGNET_HOLD_TIME;
+                        k.cues.reaction = Some(false);
+                        sfx.play_at(id::MAGNET_GRAB, pos);
                         done = true;
                         break;
                     }
@@ -536,6 +667,7 @@ pub fn actions(
             Action::Curse { owner, age } => {
                 *age += dt;
                 done = *age > CURSE_ARMED_TIME;
+                sfx.sustain(entity, 0, id::CURSE_LOOP, Emitter::at(pos + Vec3::Y * CURSE_HEIGHT));
                 for (e, mut k) in &mut karts {
                     if e != *owner && !k.shielded() && k.warp <= 0.0 && touching(&k, pos, TRAP_RADIUS) {
                         k.cursed = CURSE_TIME;
@@ -558,7 +690,10 @@ pub fn actions(
     }
 
     // Blasts throw every kart in reach except the one whose weapon it was.
-    for (at, radius, owner) in blasts {
+    for (at, radius, owner, sound) in blasts {
+        if let Some(sound) = sound {
+            sfx.emit(sound, Emitter::at(at).far());
+        }
         for (e, mut k) in &mut karts {
             if e != owner && touching(&k, at, radius + KART_RADIUS) {
                 k.launch();
@@ -608,6 +743,7 @@ mod tests {
         let victim = spawn(&mut world, 1, 200.0 + gap);
         world.insert_resource(track);
         world.insert_resource(Time::<()>::default());
+        world.init_resource::<Sfx>();
         (world, owner, victim)
     }
 

@@ -7,6 +7,7 @@ pub mod image;
 pub mod jam;
 pub mod materials;
 pub mod route;
+pub mod sound;
 pub mod tokens;
 
 pub use jam::Jam;

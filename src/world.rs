@@ -20,8 +20,6 @@ use bevy::{
 use std::collections::HashMap;
 
 const DEFAULT_JAM: &str = "Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM";
-/// Imperial Grand Prix.
-const DEFAULT_RACE: &str = "RACEC0R0";
 /// Half-width of the band around the recorded racing line that the AI may use.
 const LANE: f32 = 4.0;
 
@@ -56,6 +54,9 @@ pub struct KartModel {
     pub driver: Vec<Surface>,
     pub driver_scale: f32,
     pub chassis: Chassis,
+    /// Half-width, and how far the car reaches ahead of and behind its origin, in
+    /// game units.
+    pub outline: [f32; 3],
 }
 
 #[derive(Resource)]
@@ -123,9 +124,9 @@ impl<'a> Library<'a> {
                 });
 
             let vertex = |&i: &u32| model.vertices[i as usize];
-            // Lighting is baked into vertex colours, where 0x80 is full brightness.
+            // Lighting is baked into vertex colours, which multiply the texture.
             let colour = |v: Vertex| {
-                let c = |x: u8| (x as f32 / 127.5).powf(2.2);
+                let c = |x: u8| (x as f32 / 255.0).powf(2.2);
                 [c(v.color[0]), c(v.color[1]), c(v.color[2]), v.color[3] as f32 / 255.0]
             };
             let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
@@ -212,7 +213,23 @@ fn load_kart(jam: &Jam, prefix: &str) -> Option<KartModel> {
         driver_surfaces.extend(library.surfaces(&driver, |b| b.bone == Some(bone), place));
     }
 
+    // The car's outline, from the body and the wheels at the ends of each axle.
+    let mut outline = [0.0f32; 3];
+    let mut cover = |x: f32, y: f32| {
+        outline = [outline[0].max(y.abs()), outline[1].max(x), outline[2].max(-x)];
+    };
+    for v in &body.vertices {
+        cover(v.pos[0] * body.scale, v.pos[1] * body.scale);
+    }
+    for axle in &axles {
+        let reach = wheels.vertices.iter().map(|v| v.pos[0].abs()).fold(0.0, f32::max);
+        for x in [-axle.radius, axle.radius] {
+            cover((axle.position.x + x) * wheels.scale, reach * wheels.scale);
+        }
+    }
+
     Some(KartModel {
+        outline,
         body: body_surfaces,
         body_scale: body.scale,
         axles,
@@ -233,6 +250,8 @@ pub struct Chassis {
     pub footprint: Vec2,
     /// Handling, top speed and acceleration, 0..100.
     pub stats: [f32; 3],
+    /// How high the engine revs.
+    pub engine_pitch: f32,
 }
 
 fn chassis(jam: &Jam, prefix: &str) -> Option<Chassis> {
@@ -265,17 +284,49 @@ fn chassis(jam: &Jam, prefix: &str) -> Option<Chassis> {
         wheels: [vec3(&contacts[3..6]), vec3(&contacts[0..3]), vec3(&contacts[9..12]), vec3(&contacts[6..9])],
         footprint: Vec2::new(footprint[0], footprint[1]),
         stats: [numbers(0x3a, 0, 1)?[0], numbers(0x3b, 0, 1)?[0], numbers(0x3c, 0, 1)?[0]],
+        engine_pitch: numbers(0x2f, 0, 1).map_or(1.0, |v| v[0]),
     })
 }
 
 /// Champions whose cars the six racers drive, in roster order.
-const KART_PREFIXES: [&str; 6] = ["rr", "cr", "kk", "bb", "jt", "vv"];
+pub const KART_PREFIXES: [&str; 6] = ["rr", "cr", "kk", "bb", "jt", "vv"];
 
-/// Loads the race named by `$LEGO_RACE` from the archive at `$LEGO_JAM`, falling back
-/// to the defaults above. `None` if the game data isn't there.
-pub fn load() -> Option<(Track, LoadedWorld)> {
-    let jam = Jam::open(std::env::var("LEGO_JAM").unwrap_or(DEFAULT_JAM.into()))?;
-    let race = std::env::var("LEGO_RACE").unwrap_or(DEFAULT_RACE.into());
+fn open_jam() -> Option<Jam> {
+    Jam::open(std::env::var("LEGO_JAM").unwrap_or(DEFAULT_JAM.into()))
+}
+
+/// Display names for the race folders. The archive's own race definitions mostly carry
+/// a placeholder name, so these are matched up from each folder's scenery.
+const CIRCUIT_NAMES: [(&str, &str); 13] = [
+    ("RACEC0R0", "Imperial Grand Prix"),
+    ("RACEC0R1", "Royal Knights Raceway"),
+    ("RACEC0R2", "Desert Adventure Dragway"),
+    ("RACEC0R3", "Magma Moon Marathon"),
+    ("RACEC1R0", "Dark Forest Dash"),
+    ("RACEC1R1", "Tribal Island Trail"),
+    ("RACEC1R2", "Amazon Adventure Alley"),
+    ("RACEC1R3", "Ice Planet Pathway"),
+    ("RACEC2R0", "Knightmare-athon"),
+    ("RACEC2R1", "Pirate Skull Pass"),
+    ("RACEC2R2", "Adventure Temple Trail"),
+    ("RACEC2R3", "Alien Rally Asteroid"),
+    ("RACEC3R0", "Rocket Racer Run"),
+];
+
+/// The circuits in the original game's archive, as (folder, display name).
+pub fn circuits() -> Vec<(String, String)> {
+    let Some(jam) = open_jam() else { return Vec::new() };
+    CIRCUIT_NAMES
+        .iter()
+        .filter(|(race, _)| jam.get(&format!("/GAMEDATA/{race}/{race}.RAB")).is_some())
+        .map(|(race, name)| (race.to_string(), name.to_string()))
+        .collect()
+}
+
+/// Loads a race (a folder name such as `RACEC0R0`) from the archive at `$LEGO_JAM`.
+/// `None` if the game data isn't there or doesn't hold what we need.
+pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
+    let jam = open_jam()?;
     let dir = format!("/GAMEDATA/{race}");
     let mut files: Vec<&str> = jam.list(&dir).collect();
     files.sort();
@@ -304,7 +355,9 @@ pub fn load() -> Option<(Track, LoadedWorld)> {
         let name = volume.materials.get(tri[3] as usize);
         let mut surface = name.and_then(|n| surface_table.get(n)).copied().unwrap_or_default();
         surface.force = to_world(surface.force).to_array();
-        if !surface.non_solid {
+        // The original stops cars at its invisible barriers (surfaces that only shots
+        // pass through); here karts may drive through them too.
+        if !surface.non_solid && !surface.shots_pass {
             let corner = |i: u16| volume.vertices.get(i as usize).copied().map(to_world);
             track.collision.add([corner(tri[0])?, corner(tri[1])?, corner(tri[2])?], surface);
         }
