@@ -82,13 +82,21 @@ pub struct Surface {
     pub rolling_resistance: f32,
     pub friction: f32,
     pub lateral_grip: f32,
+    /// Push applied to karts standing on it (a current, say), in game coordinates.
+    pub force: [f32; 3],
     /// Triggers and checkpoints: not part of the solid world.
     pub non_solid: bool,
 }
 
 impl Default for Surface {
     fn default() -> Self {
-        Surface { rolling_resistance: 0.0, friction: 0.25, lateral_grip: 3.0, non_solid: false }
+        Surface {
+            rolling_resistance: 0.0,
+            friction: 0.25,
+            lateral_grip: 3.0,
+            force: [0.0; 3],
+            non_solid: false,
+        }
     }
 }
 
@@ -97,6 +105,7 @@ pub fn parse_tmb(data: &[u8]) -> HashMap<String, Surface> {
     entries(data, |name, key, r| {
         let s = out.entry(name.to_string()).or_default();
         match key {
+            0x2d => s.force = r.floats()?,
             0x33 => s.friction = r.float()?,
             0x34 => s.lateral_grip = r.float()?,
             0x36 => s.rolling_resistance = r.float()?,

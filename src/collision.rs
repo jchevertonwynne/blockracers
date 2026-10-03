@@ -15,6 +15,7 @@ struct Triangle {
     ac: Vec3,
     normal: Vec3,
     surface: Surface,
+    tag: usize,
 }
 
 pub struct Hit {
@@ -24,6 +25,8 @@ pub struct Hit {
     /// Unit normal, on the side the segment came from.
     pub normal: Vec3,
     pub surface: Surface,
+    /// Whatever the triangle was tagged with when added (a checkpoint number, say).
+    pub tag: usize,
 }
 
 #[derive(Default)]
@@ -37,13 +40,17 @@ fn cell_of(x: f32, z: f32) -> (i32, i32) {
 }
 
 impl Collision {
-    pub fn add(&mut self, [a, b, c]: [Vec3; 3], surface: Surface) {
+    pub fn add(&mut self, triangle: [Vec3; 3], surface: Surface) {
+        self.add_tagged(triangle, surface, 0);
+    }
+
+    pub fn add_tagged(&mut self, [a, b, c]: [Vec3; 3], surface: Surface, tag: usize) {
         let normal = (b - a).cross(c - a).normalize_or_zero();
         if normal == Vec3::ZERO {
             return;
         }
         let index = self.triangles.len() as u32;
-        self.triangles.push(Triangle { a, ab: b - a, ac: c - a, normal, surface });
+        self.triangles.push(Triangle { a, ab: b - a, ac: c - a, normal, surface, tag });
         let (lo, hi) = (a.min(b).min(c), a.max(b).max(c));
         let (lo, hi) = (cell_of(lo.x, lo.z), cell_of(hi.x, hi.z));
         for x in lo.0..=hi.0 {
@@ -90,12 +97,18 @@ impl Collision {
             point: from + dir * t,
             normal: if tri.normal.dot(dir) > 0.0 { -tri.normal } else { tri.normal },
             surface: tri.surface,
+            tag: tri.tag,
         })
     }
 
     /// Drivable surface on the way straight down from `from`, at most `depth` below.
     pub fn ground(&self, from: Vec3, depth: f32) -> Option<Hit> {
         self.segment(from, from - Vec3::Y * depth, |n| n.y.abs() >= WALKABLE)
+    }
+
+    /// Anything at all between two points.
+    pub fn any(&self, from: Vec3, to: Vec3) -> Option<Hit> {
+        self.segment(from, to, |_| true)
     }
 
     /// Wall between two points.

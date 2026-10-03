@@ -38,8 +38,6 @@ const MIN_TURN_RADIUS: f32 = 40.0 * UNIT;
 const MAX_TURN_RADIUS: f32 = 4096.0 * UNIT;
 /// Grip-limited radius assumed while airborne.
 const FALLBACK_TURN_RADIUS: f32 = 100.0 * UNIT;
-/// A mid-range handling stat (0.7 + 0.003 * 50).
-const HANDLING: f32 = 0.85;
 /// Below this speed the turn radius is cut to a fifth.
 const LOW_SPEED: f32 = 40.0 * UNIT;
 const LOW_SPEED_STEER_SCALE: f32 = 0.2;
@@ -63,18 +61,29 @@ const MASS: f32 = 4500.0;
 /// (yaw gain, slip ratio, maximum angle between body and direction of travel)
 type Slip = (f32, f32, f32);
 
-const WHEELS: [Vec3; 4] = [
+/// Where the brick-built kart's wheels touch the ground: front left, front right, rear
+/// left, rear right.
+pub const WHEELS: [Vec3; 4] = [
     Vec3::new(-0.95, 0.0, -1.0),
     Vec3::new(0.95, 0.0, -1.0),
     Vec3::new(-0.95, 0.0, 1.0),
     Vec3::new(0.95, 0.0, 1.0),
 ];
-const BODY_POINTS: [Vec3; 4] = [
-    Vec3::new(-0.95, 0.6, -1.5),
-    Vec3::new(0.95, 0.6, -1.5),
-    Vec3::new(-0.95, 0.6, 1.5),
-    Vec3::new(0.95, 0.6, 1.5),
+/// Corners of its body, which are what hit walls.
+pub const BODY_POINTS: [Vec3; 4] = [
+    Vec3::new(-0.95, BODY_POINT_HEIGHT, -1.5),
+    Vec3::new(0.95, BODY_POINT_HEIGHT, -1.5),
+    Vec3::new(-0.95, BODY_POINT_HEIGHT, 1.5),
+    Vec3::new(0.95, BODY_POINT_HEIGHT, 1.5),
 ];
+pub const BODY_POINT_HEIGHT: f32 = 0.6;
+/// Yaw rate of a kart that has been spun, rad/s.
+pub const SPIN_RATE: f32 = 7.0;
+/// Being blown up throws a kart forwards and upwards at these speeds, and takes its
+/// controls away for a moment.
+pub const LAUNCH_FORWARD_SPEED: f32 = 80.0 / MASS * 1000.0 * UNIT;
+pub const LAUNCH_UP_SPEED: f32 = 200.0 / MASS * 1000.0 * UNIT;
+pub const SPIN_OUT_TIME: f32 = 0.6;
 /// Tallest ledge the wheels will climb.
 const STEP_UP: f32 = 0.5;
 /// How far below a wheel the ground may be and still count as contact.
@@ -87,7 +96,7 @@ fn tangent(v: Vec3, normal: Vec3, fallback: Vec3) -> Vec3 {
 /// Advances one kart by `dt` (which should be small: a hundredth of a second or so).
 pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     let grounded = k.contacts > 0;
-    let spinning = k.spin > 0.0;
+    let spinning = k.spin > 0.0 || k.spin_out > 0.0;
     let boosting = k.boost > 0.0;
     let up = if grounded { k.ground_normal } else { Vec3::Y };
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, Vec3::NEG_Z);
@@ -99,23 +108,25 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
 
     // --- DriveController: throttle to thrust.
     let throttle = if spinning { 0.0 } else { c.throttle };
-    let mut thrust = THRUST * throttle;
+    let mut thrust = THRUST * k.stats.acceleration * throttle;
     if throttle * vf < 0.0 {
         thrust *= BRAKE_SCALE;
     }
-    let mut max_speed = MAX_SPEED * k.top_factor;
+    let mut max_speed = MAX_SPEED * k.stats.top_speed * k.top_factor;
     let mut grip_scale = 1.0;
-    if k.slow > 0.0 {
+    if k.cursed > 0.0 {
         max_speed *= 0.5;
     }
     if boosting {
-        thrust = TURBO_THRUST * if k.wall_contact { 0.5 } else { 1.0 };
-        max_speed = BOOST_MAX_SPEED;
+        thrust = TURBO_THRUST * k.stats.acceleration * if k.wall_contact { 0.5 } else { 1.0 };
+        max_speed = BOOST_MAX_SPEED * k.stats.top_speed;
         grip_scale = BOOST_GRIP_SCALE;
     }
 
     // --- DriveController: steering input to turn radius (positive turns left).
-    let input = if spinning { 0.0 } else { k.steer * HANDLING };
+    // A cursed driver's steering is reversed.
+    let curse = if k.cursed > 0.0 { -1.0 } else { 1.0 };
+    let input = if spinning { 0.0 } else { k.steer * curse * k.stats.handling };
     let mut radius = 0.0;
     if input.abs() > 1e-3 {
         radius = 1.0 / (INV_MAX_TURN_RADIUS + (INV_MIN_TURN_RADIUS - INV_MAX_TURN_RADIUS) * input.abs());
@@ -189,6 +200,9 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
         let forward_vel = facing * vf;
         let lateral_vel = k.vel - forward_vel - up * k.vel.dot(up);
         let mut contact_scale = 1.0;
+        if k.spin_out <= 0.0 {
+            acc += Vec3::from(k.surface.force);
+        }
         let slip_ratio = if spinning { Some(0.85) } else { slip.map(|s| s.1) };
         if let Some(ratio) = slip_ratio {
             if speed > 0.5 {
@@ -217,6 +231,10 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
             }
         }
     }
+    acc += k.external_force;
+    if k.spin > 0.0 {
+        yaw_rate = SPIN_RATE;
+    }
     let drag = thrust.abs() / (max_speed * max_speed) + k.surface.rolling_resistance / MASS / UNIT;
     acc -= k.vel * speed * drag;
 
@@ -226,6 +244,8 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     // --- RacerCarBody::UpdateFacingDirection.
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, body_fwd);
     match slip {
+        // A spinning kart keeps travelling the way it was going.
+        _ if k.spin > 0.0 => {}
         Some((_, _, max_lag)) if grounded && k.contacts > 2 && vf >= CREEP_SPEED && thrust > 0.0 => {
             let lag = facing.angle_between(body_fwd) + (facing_rate * dt).abs();
             facing = if lag > max_lag {
@@ -248,7 +268,7 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     }
     k.facing = facing.normalize_or(body_fwd);
 
-    let previous_centre = k.pos + Vec3::Y * BODY_POINTS[0].y;
+    let previous_centre = k.pos + Vec3::Y * BODY_POINT_HEIGHT;
     k.pos += k.vel * dt;
     collide_walls(k, world, previous_centre);
     probe_ground(k, world, dt);
@@ -272,13 +292,13 @@ fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
         k.wall_contact = true;
     };
 
-    let centre = k.pos + Vec3::Y * BODY_POINTS[0].y;
+    let centre = k.pos + Vec3::Y * BODY_POINT_HEIGHT;
     if let Some(hit) = world.wall(previous_centre, centre) {
-        k.pos = hit.point - Vec3::Y * BODY_POINTS[0].y;
+        k.pos = hit.point - Vec3::Y * BODY_POINT_HEIGHT;
         respond(k, hit.normal, 0.3);
     }
     for _ in 0..2 {
-        for corner in BODY_POINTS {
+        for corner in k.body {
             let centre = k.pos + Vec3::Y * corner.y;
             let reach = k.pos + k.rot * corner - centre;
             if let Some(hit) = world.wall(centre, centre + reach) {
@@ -297,12 +317,14 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     let mut lift = 0.0;
     let mut normal_sum = Vec3::ZERO;
     k.contacts = 0;
-    for (wheel, hit_point) in WHEELS.iter().zip(&mut hits) {
+    let mut force = Vec3::ZERO;
+    for (wheel, hit_point) in k.wheels.iter().zip(&mut hits) {
         let foot = k.pos + k.rot * *wheel;
         let Some(hit) = world.ground(foot + Vec3::Y * STEP_UP, STEP_UP + reach) else { continue };
         *hit_point = Some(hit.point);
         lift += hit.point.y - foot.y;
         normal_sum += if hit.normal.y < 0.0 { -hit.normal } else { hit.normal };
+        force += Vec3::from(hit.surface.force);
         if k.contacts == 0 {
             k.surface = hit.surface;
         } else {
@@ -322,6 +344,7 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     k.surface.rolling_resistance /= count;
     k.surface.lateral_grip /= count;
     k.surface.friction /= count;
+    k.surface.force = (force / count).to_array();
     k.air_time = 0.0;
     k.pos.y += lift / count;
 

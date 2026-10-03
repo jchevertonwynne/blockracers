@@ -50,6 +50,77 @@ pub struct Track {
     /// grid spread across.
     pub road: f32,
     pub collision: Collision,
+    pub course: Course,
+}
+
+/// A gate of the checkpoint graph that orders the racers and guards against shortcuts.
+pub struct Checkpoint {
+    /// Racers going the right way cross the gate against this.
+    pub normal: Vec3,
+    pub position: Vec3,
+    /// Gates that can follow; the first is the main route.
+    pub next: Vec<usize>,
+    /// How far round the lap this gate is, 0..1. Gate 0 is at 0.
+    pub fraction: f32,
+}
+
+/// The race rules' view of a circuit.
+#[derive(Default)]
+pub struct Course {
+    pub checkpoints: Vec<Checkpoint>,
+    /// Gate surfaces, tagged with their checkpoint's index.
+    pub gates: Collision,
+    pub finish: Collision,
+    /// Trigger spheres (centre, radius) for the lap zones: a lap only counts if the
+    /// kart went through zone 2 and then zone 0 on its way back to the line.
+    pub zones: Vec<(Vec3, f32, u8)>,
+    /// Starting position and heading per grid slot; empty to line up behind the line.
+    pub grid: Vec<(Vec3, Vec3)>,
+}
+
+impl Course {
+    /// Spreads lap fractions along the main route (following each gate's first
+    /// successor from gate 0), then interpolates along alternative branches.
+    pub fn compute_fractions(&mut self) {
+        let count = self.checkpoints.len();
+        for c in &mut self.checkpoints {
+            c.fraction = -1.0;
+        }
+        let mut main = vec![0];
+        while let Some(&next) = self.checkpoints[*main.last().unwrap()].next.first() {
+            if next == 0 || main.len() >= count {
+                break;
+            }
+            main.push(next);
+        }
+        for (i, &c) in main.iter().enumerate() {
+            self.checkpoints[c].fraction = i as f32 / main.len() as f32;
+        }
+        for &from in &main {
+            for branch in self.checkpoints[from].next.clone().into_iter().skip(1) {
+                // Walk the branch until it rejoins gates that already have a fraction.
+                let mut path = Vec::new();
+                let mut at = branch;
+                while self.checkpoints[at].fraction < 0.0 && path.len() < count {
+                    path.push(at);
+                    let Some(&next) = self.checkpoints[at].next.first() else { break };
+                    at = next;
+                }
+                let start = self.checkpoints[from].fraction;
+                let end = match self.checkpoints[at].fraction {
+                    f if f > start => f,
+                    _ => 1.0,
+                };
+                let step = (end - start) / (path.len() + 1) as f32;
+                for (i, c) in path.into_iter().enumerate() {
+                    self.checkpoints[c].fraction = start + step * (i + 1) as f32;
+                }
+            }
+        }
+        for c in &mut self.checkpoints {
+            c.fraction = c.fraction.max(0.0);
+        }
+    }
 }
 
 fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
@@ -87,6 +158,31 @@ impl Track {
                 let (a, b) = (at(i, side), at(j, side));
                 quad(a - Vec3::Y, b - Vec3::Y, b + Vec3::Y * 3.0, a + Vec3::Y * 3.0, Surface::default());
             }
+        }
+
+        // Sixteen evenly spaced checkpoint gates, the first on the start line.
+        const GATES: usize = 16;
+        for gate in 0..GATES {
+            let i = gate * n / GATES;
+            let (p, r) = (track.pts[i], track.right[i] * (WALL + 1.0));
+            let (low, high) = (Vec3::Y * -2.0, Vec3::Y * 8.0);
+            let corners = [p - r + low, p + r + low, p + r + high, p - r + high];
+            for tri in [[corners[0], corners[1], corners[2]], [corners[0], corners[2], corners[3]]] {
+                track.course.gates.add_tagged(tri, Surface::default(), gate);
+                if gate == 0 {
+                    track.course.finish.add(tri, Surface::default());
+                }
+            }
+            track.course.checkpoints.push(Checkpoint {
+                normal: -track.flat[i],
+                position: p,
+                next: vec![(gate + 1) % GATES],
+                fraction: 0.0,
+            });
+        }
+        track.course.compute_fractions();
+        for (zone, at) in [(2, n / 3), (0, 2 * n / 3)] {
+            track.course.zones.push((track.pts[at], WALL + 3.0, zone));
         }
         track
     }
@@ -134,7 +230,18 @@ impl Track {
         let curv = (0..n)
             .map(|i| flat[i].angle_between(flat[(i + 1) % n]) / spacing)
             .collect();
-        Track { pts, fwd, flat, right, curv, spacing, length, road, collision: Collision::default() }
+        Track {
+            pts,
+            fwd,
+            flat,
+            right,
+            curv,
+            spacing,
+            length,
+            road,
+            collision: Collision::default(),
+            course: Course::default(),
+        }
     }
 
     pub fn n(&self) -> usize {

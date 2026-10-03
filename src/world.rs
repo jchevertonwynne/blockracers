@@ -10,7 +10,7 @@ use crate::assets::{
 };
 use crate::items::Power;
 use crate::physics::UNIT;
-use crate::track::Track;
+use crate::track::{Checkpoint, Track};
 use bevy::{
     asset::RenderAssetUsages,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor},
@@ -55,8 +55,7 @@ pub struct KartModel {
     pub wheel_scale: f32,
     pub driver: Vec<Surface>,
     pub driver_scale: f32,
-    /// Where the driver sits, in game units relative to the car.
-    pub mount: Vec3,
+    pub chassis: Chassis,
 }
 
 #[derive(Resource)]
@@ -220,21 +219,53 @@ fn load_kart(jam: &Jam, prefix: &str) -> Option<KartModel> {
         wheel_scale: wheels.scale,
         driver: driver_surfaces,
         driver_scale: driver.scale,
-        mount: driver_mount(jam, prefix).unwrap_or(Vec3::Z * 0.8),
+        chassis: chassis(jam, prefix)?,
     })
 }
 
-/// The driver's seat position from the chassis table.
-fn driver_mount(jam: &Jam, prefix: &str) -> Option<Vec3> {
+/// What the chassis table (`CHASSIS.CMB`) says about one car, in game units and axes.
+pub struct Chassis {
+    /// Where the driver sits.
+    pub mount: Vec3,
+    /// Where each wheel meets the ground: front left, front right, rear left, rear right.
+    pub wheels: [Vec3; 4],
+    /// Width and length of the car's footprint.
+    pub footprint: Vec2,
+    /// Handling, top speed and acceleration, 0..100.
+    pub stats: [f32; 3],
+}
+
+fn chassis(jam: &Jam, prefix: &str) -> Option<Chassis> {
     let tokens = tokenize(jam.get(&format!("{COMMON}/CHASSIS.CMB"))?);
     let start = tokens.iter().position(
         |t| matches!(t, Token::Str(name) if name.starts_with(prefix) && name[prefix.len()..].starts_with("cha")),
     )?;
-    let at = start + tokens[start..].iter().position(|t| *t == Token::Key(0x2b))?;
-    match tokens.get(at + 1..at + 4)? {
-        [Token::Float(x), Token::Float(y), Token::Float(z)] => Some(Vec3::new(*x, *y, *z)),
-        _ => None,
-    }
+    // The entry runs up to the next chassis.
+    let end = tokens[start + 1..]
+        .iter()
+        .position(|t| *t == Token::Key(0x27))
+        .map_or(tokens.len(), |i| start + 1 + i);
+    let entry = &tokens[start..end];
+    let numbers = |key: u16, skip: usize, count: usize| -> Option<Vec<f32>> {
+        let at = entry.iter().position(|t| *t == Token::Key(key))?;
+        let values = entry[at + 1..].iter().filter(|t| !matches!(t, Token::LCurly));
+        values.skip(skip).take(count).map(|t| match t {
+            Token::Float(v) => Some(*v),
+            Token::Int(v) => Some(*v as f32),
+            _ => None,
+        }).collect()
+    };
+    let vec3 = |v: &[f32]| Vec3::new(v[0], v[1], v[2]);
+    // Contact points come after two skid-mark widths: front right, front left, rear
+    // right, rear left (Y is left).
+    let contacts = numbers(0x30, 2, 12)?;
+    let footprint = numbers(0x2e, 0, 2)?;
+    Some(Chassis {
+        mount: vec3(&numbers(0x2b, 0, 3)?),
+        wheels: [vec3(&contacts[3..6]), vec3(&contacts[0..3]), vec3(&contacts[9..12]), vec3(&contacts[6..9])],
+        footprint: Vec2::new(footprint[0], footprint[1]),
+        stats: [numbers(0x3a, 0, 1)?[0], numbers(0x3b, 0, 1)?[0], numbers(0x3c, 0, 1)?[0]],
+    })
 }
 
 /// Champions whose cars the six racers drive, in roster order.
@@ -271,11 +302,67 @@ pub fn load() -> Option<(Track, LoadedWorld)> {
     let volume = Volume::parse(jam.get(volume_file)?)?;
     for tri in &volume.triangles {
         let name = volume.materials.get(tri[3] as usize);
-        let surface = name.and_then(|n| surface_table.get(n)).copied().unwrap_or_default();
+        let mut surface = name.and_then(|n| surface_table.get(n)).copied().unwrap_or_default();
+        surface.force = to_world(surface.force).to_array();
         if !surface.non_solid {
             let corner = |i: u16| volume.vertices.get(i as usize).copied().map(to_world);
             track.collision.add([corner(tri[0])?, corner(tri[1])?, corner(tri[2])?], surface);
         }
+    }
+
+    // Race rules: checkpoint gates, the finish line and the starting grid.
+    for (name, position, forward, up) in
+        with_ext(".WDB").filter_map(|f| jam.get(f)).flat_map(route::parse_placements)
+    {
+        let file = format!("{dir}/{name}.BVB");
+        if file.eq_ignore_ascii_case(volume_file) {
+            continue;
+        }
+        let Some(volume) = jam.get(&file).and_then(Volume::parse) else { continue };
+        let (origin, forward, up) = (Vec3::from(position), Vec3::from(forward), Vec3::from(up));
+        let left = up.cross(forward);
+        let place = |i: u16| {
+            let v = Vec3::from(volume.vertices[i as usize]);
+            to_world((origin + forward * v.x + left * v.y + up * v.z).to_array())
+        };
+        for tri in &volume.triangles {
+            let corners = [place(tri[0]), place(tri[1]), place(tri[2])];
+            let gate = volume.materials.get(tri[3] as usize).and_then(|m| m.parse::<usize>().ok());
+            // The checkpoint volume also holds surfaces for unrelated events.
+            match (name.starts_with("chckpt"), gate) {
+                (true, Some(gate)) => track.course.gates.add_tagged(corners, default(), gate),
+                (true, None) => {}
+                (false, _) => track.course.finish.add(corners, default()),
+            }
+        }
+    }
+    if let Some(checkpoints) = with_ext(".CPB").find_map(|f| route::parse_checkpoints(jam.get(f)?)) {
+        track.course.checkpoints = checkpoints
+            .into_iter()
+            .map(|c| Checkpoint {
+                normal: to_world(c.normal).normalize_or_zero(),
+                position: to_world(c.position),
+                next: c.next,
+                fraction: 0.0,
+            })
+            .collect();
+        track.course.compute_fractions();
+    }
+    let lap_zones: Vec<(i32, u8)> =
+        with_ext(".EVB").filter_map(|f| jam.get(f)).flat_map(route::parse_lap_zones).collect();
+    for (centre, radius, event) in
+        with_ext(".TRB").filter_map(|f| jam.get(f)).flat_map(route::parse_triggers)
+    {
+        if let Some(&(_, zone)) = lap_zones.iter().find(|z| z.0 == event && z.1 != 1) {
+            track.course.zones.push((to_world(centre), radius * UNIT, zone));
+        }
+    }
+    if let Some(mut grid) = with_ext(".SPB").find_map(|f| route::parse_start_positions(jam.get(f)?)) {
+        grid.sort_by_key(|g| g.0);
+        track.course.grid = grid
+            .into_iter()
+            .map(|(_, position, forward)| (to_world(position), to_world(forward).normalize_or_zero()))
+            .collect();
     }
 
     let bricks = with_ext(".PWB")

@@ -5,8 +5,8 @@ use crate::items::Power;
 use crate::meshgen::*;
 use crate::assets::materials::Surface;
 use crate::physics::{self, MAX_SPEED, UNIT};
-use crate::track::Track;
-use crate::world::{LoadedWorld, surface_bundle};
+use crate::track::{Checkpoint, Track};
+use crate::world::{Chassis, LoadedWorld, surface_bundle};
 use crate::{Phase, Race};
 use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -19,6 +19,9 @@ const KART_RADIUS: f32 = 1.1;
 const AI_LAT_ACCEL: f32 = 30.0;
 /// Longest physics step; frames are split into steps no longer than this.
 const MAX_STEP: f32 = 1.0 / 120.0;
+/// A warp carries the kart along the racing line this fast, then drops it at this speed.
+const WARP_SPEED: f32 = 600.0 * UNIT;
+const WARP_EXIT_SPEED: f32 = 700.0 / 4500.0 * 1000.0 * UNIT;
 
 struct Driver {
     name: &'static str,
@@ -75,21 +78,78 @@ pub struct Kart {
 
     // Power-ups and their effects (timers in seconds).
     pub held: Option<Power>,
-    pub level: u8,
+    /// White bricks collected: the level the held power-up will fire at.
+    pub whites: u8,
+    /// Whirling round on the spot.
     pub spin: f32,
+    /// Blown into the air, with no control.
+    pub spin_out: f32,
     pub boost: f32,
     pub shield: f32,
-    pub slow: f32,
+    pub shield_level: u8,
+    /// Steering reversed and top speed halved.
+    pub cursed: f32,
+    /// Held in place by a magnet.
+    pub magnet: f32,
+    /// Hurtling along the racing line, out of harm's way.
+    pub warp: f32,
+    /// Extra acceleration for the coming physics step (a grappling hook's pull).
+    pub external_force: Vec3,
+
+    // Race rules.
+    /// Last checkpoint gate crossed, and whether that was in the right direction.
+    pub checkpoint: Option<usize>,
+    pub checkpoint_forward: bool,
+    /// Times gate 0 has been passed forwards, less one.
+    pub checkpoint_count: i32,
+    pub crossed_backward: bool,
+    /// The lap zone the kart is in and the two before it. Zone 1 is the finish line,
+    /// 2 the stretch after it and 0 the rest of the lap.
+    pub zones: [u8; 3],
+
+    // The car itself.
+    pub wheels: [Vec3; 4],
+    pub body: [Vec3; 4],
+    pub stats: Stats,
+}
+
+/// Multipliers from the car's handling, top speed and acceleration ratings.
+#[derive(Clone, Copy)]
+pub struct Stats {
+    pub handling: f32,
+    pub top_speed: f32,
+    pub acceleration: f32,
+}
+
+impl Stats {
+    /// From ratings of 0 to 100, as the original scales them.
+    pub fn from_ratings([handling, top_speed, acceleration]: [f32; 3]) -> Self {
+        Stats {
+            handling: 0.7 + 0.003 * handling,
+            top_speed: 1.0 - (50.0 - top_speed) * 0.001,
+            acceleration: 1.0 - (50.0 - acceleration) * 0.001,
+        }
+    }
 }
 
 impl Kart {
-    fn new(track: &Track, slot: usize) -> Self {
-        let s = -8.0 - (slot / 2) as f32 * 6.0;
-        let lat = track.road * if slot % 2 == 0 { -0.375 } else { 0.375 };
-        let pos = track.surface_point(s, lat);
-        let dir = track.sample(s).2.cross(Vec3::Y).normalize() * -1.0;
+    pub(crate) fn new(track: &Track, slot: usize) -> Self {
+        // The circuit's own grid if it has one (the player starts from slot 0, at the
+        // back); otherwise two columns behind the line.
+        let grid_slot = (slot + 1) % DRIVERS.len();
+        let (pos, dir) = match track.course.grid.get(grid_slot) {
+            Some(&(pos, dir)) if track.course.grid.len() >= DRIVERS.len() => {
+                let ground = track.collision.ground(pos + Vec3::Y * 2.0, 8.0);
+                (ground.map_or(pos, |hit| hit.point), dir)
+            }
+            _ => {
+                let s = -8.0 - (slot / 2) as f32 * 6.0;
+                let lat = track.road * if slot % 2 == 0 { -0.375 } else { 0.375 };
+                (track.surface_point(s, lat), track.sample(s).2.cross(Vec3::NEG_Y).normalize())
+            }
+        };
         let yaw = (-dir.x).atan2(-dir.z);
-        let idx = track.nearest(pos);
+        let (idx, s, lat) = track.project(pos, track.nearest(pos));
         Kart {
             name: DRIVERS[slot].name,
             slot,
@@ -109,35 +169,172 @@ impl Kart {
             wheel_angle: 0.0,
             top_factor: 1.0,
             idx,
-            s: s + track.length,
+            s,
             lat,
             lap: 0,
-            progress: s + track.length,
+            progress: 0.0,
             place: slot + 1,
             finished: None,
             held: None,
-            level: 0,
+            whites: 0,
             spin: 0.0,
+            spin_out: 0.0,
             boost: 0.0,
             shield: 0.0,
-            slow: 0.0,
+            shield_level: 0,
+            cursed: 0.0,
+            magnet: 0.0,
+            warp: 0.0,
+            external_force: Vec3::ZERO,
+            checkpoint: None,
+            checkpoint_forward: true,
+            checkpoint_count: -1,
+            crossed_backward: false,
+            zones: [0, 2, 1],
+            wheels: physics::WHEELS,
+            body: physics::BODY_POINTS,
+            stats: Stats::from_ratings([50.0; 3]),
         }
     }
 
     pub fn reset(&mut self, track: &Track) {
-        *self = Kart::new(track, self.slot);
+        let (wheels, body, stats) = (self.wheels, self.body, self.stats);
+        *self = Kart { wheels, body, stats, ..Kart::new(track, self.slot) };
     }
 
-    /// Spin out, unless shielded.
-    pub fn hit(&mut self) {
-        if self.shield <= 0.0 {
-            self.spin = 1.3;
-            self.vel *= 0.3;
+    /// Takes the car's contact points, footprint and ratings from the chassis table.
+    fn set_chassis(&mut self, chassis: &Chassis) {
+        // The game's cars have X forward and Y left; ours face -Z with X to the right.
+        let local = |v: Vec3| Vec3::new(-v.y, 0.0, -v.x) * UNIT;
+        self.wheels = chassis.wheels.map(local);
+        let half = chassis.footprint * 0.5;
+        self.body = [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)].map(|(x, z)| {
+            Vec3::new(x * half.x * UNIT, physics::BODY_POINT_HEIGHT, z * half.y * UNIT)
+        });
+        self.stats = Stats::from_ratings(chassis.stats);
+    }
+
+    /// Sets the kart down on the road at rest, pointing along the racing line.
+    pub(crate) fn place(&mut self, track: &Track, s: f32, lat: f32) {
+        let dir = track.sample(s).1.with_y(0.0).normalize();
+        self.pos = track.surface_point(s, lat) + Vec3::Y * 0.2;
+        self.vel = Vec3::ZERO;
+        self.yaw = (-dir.x).atan2(-dir.z);
+        self.rot = Quat::from_rotation_y(self.yaw);
+        self.facing = dir;
+        self.air_time = 0.0;
+        (self.idx, self.s, self.lat) = track.project(self.pos, track.nearest(self.pos));
+    }
+
+    pub fn shielded(&self) -> bool {
+        self.shield > 0.0
+    }
+
+    /// Something that would hurt arrives. Returns false if a shield, or being in warp,
+    /// keeps it out.
+    fn vulnerable(&self) -> bool {
+        !self.shielded() && self.warp <= 0.0
+    }
+
+    /// Whirls the kart round `turns` times, unless protected.
+    pub fn spin_round(&mut self, turns: f32) {
+        if self.vulnerable() && self.spin <= 0.0 {
+            self.spin = turns * TAU / physics::SPIN_RATE;
+        }
+    }
+
+    /// Stops the kart dead and throws it forwards and up, unless protected.
+    pub fn launch(&mut self) {
+        if self.vulnerable() && self.spin_out <= 0.0 {
+            self.vel = self.facing * physics::LAUNCH_FORWARD_SPEED + Vec3::Y * physics::LAUNCH_UP_SPEED;
+            self.spin_out = physics::SPIN_OUT_TIME;
+            self.contacts = 0;
         }
     }
 
     pub fn display_lap(&self) -> i32 {
         self.lap.clamp(1, LAPS)
+    }
+
+    /// Whether the last gate was crossed backwards.
+    pub fn wrong_way(&self) -> bool {
+        self.checkpoint.is_some() && !self.checkpoint_forward
+    }
+
+    /// The race rules, applied to the move from `from` to where the kart is now.
+    fn follow_course(&mut self, track: &Track, from: Vec3) {
+        let course = &track.course;
+        let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
+        let travel = self.pos - from;
+        if let Some(hit) = course.gates.any(from + lift, self.pos + lift) {
+            if let Some(gate) = course.checkpoints.get(hit.tag) {
+                self.cross_checkpoint(hit.tag, gate, travel.dot(gate.normal) < 0.0);
+            }
+        }
+        for &(centre, radius, zone) in &course.zones {
+            if centre.distance_squared(self.pos) < radius * radius {
+                self.enter_zone(zone);
+            }
+        }
+        if course.finish.any(from + lift, self.pos + lift).is_some()
+            && course.checkpoints.first().is_none_or(|c| travel.dot(c.normal) < 0.0)
+        {
+            // `Racer::CrossFinishLine`: the line counts only if the kart got here by
+            // way of the zone after the line and then the rest of the lap. The grid
+            // starts in that state, so the first crossing begins lap one.
+            if self.zones == [0, 2, 1] {
+                self.lap += 1;
+            }
+            self.enter_zone(1);
+        }
+
+        // Race order: gates passed, plus how far towards the next one.
+        self.progress = match self.checkpoint.and_then(|i| course.checkpoints.get(i)) {
+            Some(gate) => {
+                let next = gate.next.first().and_then(|&n| course.checkpoints.get(n));
+                let towards = next.map_or(0.0, |next| {
+                    let leg = next.position - gate.position;
+                    let step = (next.fraction - gate.fraction).rem_euclid(1.0);
+                    step * ((self.pos - gate.position).dot(leg) / leg.length_squared()).clamp(0.0, 0.99)
+                });
+                self.checkpoint_count as f32 + gate.fraction + towards
+            }
+            // Still on the grid: nearest the first gate leads.
+            None => course.checkpoints.first().map_or(0.0, |c| {
+                -1.0 - c.position.distance(self.pos) / track.length
+            }),
+        };
+    }
+
+    /// `Racer::OnCheckpointCrossed`: only gate 0 advances the count, and crossing it
+    /// backwards has to be undone before it will count again.
+    fn cross_checkpoint(&mut self, index: usize, gate: &Checkpoint, forward: bool) {
+        if self.checkpoint == Some(index) && self.checkpoint_forward == forward {
+            return;
+        }
+        if gate.fraction == 0.0 {
+            if !forward {
+                self.crossed_backward = true;
+                self.checkpoint_forward = false;
+                self.checkpoint = Some(index);
+                return;
+            }
+            if !self.crossed_backward {
+                self.checkpoint_count += 1;
+            }
+            self.crossed_backward = false;
+        } else if self.crossed_backward {
+            self.checkpoint_count -= 1;
+            self.crossed_backward = false;
+        }
+        self.checkpoint = Some(index);
+        self.checkpoint_forward = forward;
+    }
+
+    fn enter_zone(&mut self, zone: u8) {
+        if self.zones[0] != zone {
+            self.zones = [zone, self.zones[0], self.zones[1]];
+        }
     }
 }
 
@@ -297,8 +494,13 @@ pub fn spawn_karts(
     models.reverse();
 
     for (slot, driver) in DRIVERS.iter().enumerate() {
+        let model = models.pop();
+        let mut state = Kart::new(&track, slot);
+        if let Some(model) = &model {
+            state.set_chassis(&model.chassis);
+        }
         let mut kart = commands.spawn((
-            Kart::new(&track, slot),
+            state,
             Controls::default(),
             Ai::new(driver.skill, slot),
             Transform::default(),
@@ -316,7 +518,7 @@ pub fn spawn_karts(
             Visibility::Hidden,
         ));
 
-        let Some(model) = models.pop() else {
+        let Some(model) = model else {
             // Brick-built stand-in.
             kart.insert((
                 Mesh3d(meshes.add(kart_mesh(driver.body, driver.accent))),
@@ -357,7 +559,7 @@ pub fn spawn_karts(
                     body.spawn(bundle(surface));
                 }
             });
-            parent.spawn(part(model.mount, model.driver_scale)).with_children(|figure| {
+            parent.spawn(part(model.chassis.mount, model.driver_scale)).with_children(|figure| {
                 for surface in model.driver {
                     figure.spawn(bundle(surface));
                 }
@@ -428,7 +630,7 @@ pub fn ai_drive(
         ai.drive(&k, &mut c, &track, &mut rng, dt);
 
         // Rubber-banding keeps the pack close to the player.
-        let gap = k.progress - player_progress;
+        let gap = (k.progress - player_progress) * track.length;
         k.top_factor = ai.skill
             * if gap > 60.0 {
                 0.93
@@ -460,48 +662,58 @@ impl Kart {
     /// Runs the physics for `dt` seconds, then works out where on the lap that leaves us.
     pub fn advance(&mut self, c: &Controls, track: &Track, dt: f32) {
         let k = self;
-        for timer in [&mut k.spin, &mut k.boost, &mut k.shield, &mut k.slow] {
+        let from = k.pos;
+        let warping = k.warp > 0.0;
+        for timer in [
+            &mut k.spin,
+            &mut k.spin_out,
+            &mut k.boost,
+            &mut k.shield,
+            &mut k.cursed,
+            &mut k.magnet,
+            &mut k.warp,
+        ] {
             *timer = (*timer - dt).max(0.0);
         }
-        let steer = if k.spin > 0.0 { 0.0 } else { c.steer };
+        let steer = if k.spin > 0.0 || k.spin_out > 0.0 { 0.0 } else { c.steer };
         k.steer += (steer - k.steer) * (1.0 - (-10.0 * dt).exp());
 
-        let steps = (dt / MAX_STEP).ceil().max(1.0);
-        for _ in 0..steps as usize {
-            physics::step(k, c, &track.collision, dt / steps);
+        if warping {
+            // Carried along the racing line, drifting to its middle.
+            let (s, lat) = (k.s + WARP_SPEED * dt, k.lat * (1.0 - 2.0 * dt).max(0.0));
+            let dir = track.sample(s).1;
+            k.pos = track.surface_point(s, lat);
+            k.facing = dir.with_y(0.0).normalize_or(k.facing);
+            k.rot = Transform::IDENTITY.looking_to(k.facing, Vec3::Y).rotation;
+            // Dropped back onto the road at speed when it ends.
+            k.vel = k.facing * WARP_EXIT_SPEED;
+            k.contacts = 4;
+        } else if k.magnet > 0.0 {
+            k.vel = Vec3::ZERO;
+        } else {
+            let steps = (dt / MAX_STEP).ceil().max(1.0);
+            for _ in 0..steps as usize {
+                physics::step(k, c, &track.collision, dt / steps);
+            }
         }
+        k.external_force = Vec3::ZERO;
         let forward = k.rot * Vec3::NEG_Z;
         k.yaw = (-forward.x).atan2(-forward.z);
         k.wheel_angle = (k.wheel_angle - k.vel.dot(forward) * dt / WHEEL_RADIUS) % TAU;
 
-        // Track space: lap counting and race order.
-        let n = track.n() as i32;
-        let old = k.idx as i32;
+        // Where we are along the racing line, for the AI and anything that follows it.
         let (mut idx, mut s, mut lat) = track.project(k.pos, k.idx);
         if lat.abs() > 40.0 {
-            // A long way from where we last were on the racing line; look everywhere.
+            // A long way from where we last were; look everywhere.
             (idx, s, lat) = track.project(k.pos, track.nearest(k.pos));
         }
-        let d = idx as i32 - old;
-        if d < -n / 2 {
-            k.lap += 1;
-        } else if d > n / 2 {
-            k.lap -= 1;
-        }
-        k.idx = idx;
-        k.s = s;
-        k.lat = lat;
-        k.progress = k.lap as f32 * track.length + s;
+        (k.idx, k.s, k.lat) = (idx, s, lat);
 
         // Fallen out of the world, or flying for far too long: back onto the road.
         if k.air_time > 4.0 || k.pos.y < track.pts[idx].y - 60.0 {
-            let dir = track.flat[idx];
-            k.pos = track.surface_point(s, 0.0) + Vec3::Y * 0.5;
-            k.vel = Vec3::ZERO;
-            k.yaw = (-dir.x).atan2(-dir.z);
-            k.rot = Quat::from_rotation_y(k.yaw);
-            k.facing = dir;
-            k.air_time = 0.0;
+            k.place(track, s, 0.0);
+        } else {
+            k.follow_course(track, from);
         }
     }
 }
@@ -546,12 +758,10 @@ pub fn update_places(race: Res<Race>, mut q: Query<&mut Kart>) {
 
 pub fn sync_karts(mut q: Query<(&Kart, &mut Transform)>) {
     for (k, mut t) in &mut q {
-        // Lean into corners, and whirl round when spun out.
+        // Lean into corners.
         let lean = -k.steer * 0.07 * (k.vel.length() / MAX_SPEED).min(1.0);
         t.translation = k.pos;
-        t.rotation = Quat::from_axis_angle(k.ground_normal, k.spin * 12.0)
-            * k.rot
-            * Quat::from_rotation_z(lean);
+        t.rotation = k.rot * Quat::from_rotation_z(lean);
     }
 }
 

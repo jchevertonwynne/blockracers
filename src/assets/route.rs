@@ -80,6 +80,155 @@ pub fn parse_powerups(data: &[u8]) -> Vec<(Brick, [f32; 3])> {
     out
 }
 
+/// One gate of the `.CPB` checkpoint graph, in game coordinates.
+pub struct Checkpoint {
+    /// Plane through the gate: `normal · p + distance = 0`. Racers going the right way
+    /// cross it against the normal.
+    pub normal: [f32; 3],
+    pub distance: f32,
+    pub position: [f32; 3],
+    /// Gates that can follow this one; the first is the main route.
+    pub next: Vec<usize>,
+}
+
+pub fn parse_checkpoints(data: &[u8]) -> Option<Vec<Checkpoint>> {
+    let mut r = Reader::new(data);
+    r.next()?;
+    let mut out = Vec::new();
+    for _ in 0..r.list_header()? {
+        r.next()?;
+        r.expect(Token::LCurly)?;
+        let mut c = Checkpoint { normal: [0.0; 3], distance: 0.0, position: [0.0; 3], next: Vec::new() };
+        loop {
+            match r.next()? {
+                Token::RCurly => break,
+                Token::Key(0x28) => {
+                    c.normal = r.floats()?;
+                    c.distance = r.float()?;
+                }
+                Token::Key(0x29) => {
+                    for _ in 0..4 {
+                        let next = r.int()?;
+                        if next != 255 {
+                            c.next.push(next as usize);
+                        }
+                    }
+                }
+                Token::Key(0x2a) => c.position = r.floats()?,
+                _ => return None,
+            }
+        }
+        out.push(c);
+    }
+    Some(out)
+}
+
+/// `.SPB` starting grid: (slot number, position, forward direction).
+pub fn parse_start_positions(data: &[u8]) -> Option<Vec<(usize, [f32; 3], [f32; 3])>> {
+    let mut r = Reader::new(data);
+    r.next()?;
+    let mut out = Vec::new();
+    for _ in 0..r.list_header()? {
+        r.next()?;
+        let slot = r.int()? as usize;
+        r.expect(Token::LCurly)?;
+        let (mut position, mut forward) = ([0.0; 3], [1.0, 0.0, 0.0]);
+        loop {
+            match r.next()? {
+                Token::RCurly => break,
+                Token::Key(0x28) => position = r.floats()?,
+                Token::Key(0x29) => {
+                    forward = r.floats()?;
+                    r.floats::<3>()?; // Up.
+                }
+                _ => return None,
+            }
+        }
+        out.push((slot, position, forward));
+    }
+    Some(out)
+}
+
+/// Where a collision `.WDB` places each of its volumes: (name, position, forward, up).
+pub fn parse_placements(data: &[u8]) -> Vec<(String, [f32; 3], [f32; 3], [f32; 3])> {
+    let tokens = super::tokens::tokenize(data);
+    let mut out = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        // Each entry is `0x41 "name" { 0x40 index 0x31 position 0x32 forward up }`.
+        let (Token::Key(0x41), Some(Token::Str(name)), Some(Token::LCurly)) =
+            (token, tokens.get(i + 1), tokens.get(i + 2))
+        else {
+            continue;
+        };
+        let floats = |key: u16, count: usize| -> Option<Vec<f32>> {
+            let end = i + tokens[i..].iter().position(|t| *t == Token::RCurly)?;
+            let at = i + tokens[i..end].iter().position(|t| *t == Token::Key(key))?;
+            tokens.get(at + 1..at + 1 + count)?.iter().map(|t| match t {
+                Token::Float(v) => Some(*v),
+                Token::Int(v) => Some(*v as f32),
+                _ => None,
+            }).collect()
+        };
+        let position = floats(0x31, 3).unwrap_or(vec![0.0; 3]);
+        let axes = floats(0x32, 6).unwrap_or(vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        out.push((
+            name.to_lowercase(),
+            [position[0], position[1], position[2]],
+            [axes[0], axes[1], axes[2]],
+            [axes[3], axes[4], axes[5]],
+        ));
+    }
+    out
+}
+
+/// `.TRB` trigger spheres: (centre, radius, event id).
+pub fn parse_triggers(data: &[u8]) -> Vec<([f32; 3], f32, i32)> {
+    let mut r = Reader::new(data);
+    let mut out = Vec::new();
+    let mut current: Option<([f32; 3], f32, i32)> = None;
+    r.next();
+    while let Some(token) = r.next() {
+        match token {
+            Token::LCurly => current = Some(([0.0; 3], 0.0, -1)),
+            Token::RCurly => out.extend(current.take()),
+            Token::Key(key) => {
+                let Some(trigger) = &mut current else { continue };
+                match key {
+                    0x29 => trigger.0 = r.floats().unwrap_or_default(),
+                    0x2a => trigger.1 = r.float().unwrap_or_default(),
+                    0x2b => trigger.2 = r.int().unwrap_or(-1),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The lap zones of an `.EVB` event table: (event id, zone). Zone 1 is the finish
+/// line, 2 the stretch after it and 0 the rest of the lap; see `Kart::enter_zone`.
+pub fn parse_lap_zones(data: &[u8]) -> Vec<(i32, u8)> {
+    let tokens = super::tokens::tokenize(data);
+    let Some(start) = tokens.iter().position(|t| *t == Token::Key(0x51)) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut at = start + 5; // Past `[count] {`.
+    while let (Some(Token::Key(0x27)), Some(Token::Int(event))) = (tokens.get(at), tokens.get(at + 1)) {
+        let end = at + tokens[at..].iter().position(|t| *t == Token::RCurly).unwrap_or(0);
+        let body = &tokens[at + 2..end];
+        let zone = if body.contains(&Token::Key(0x36)) {
+            0
+        } else if body.contains(&Token::Key(0x37)) {
+            2
+        } else {
+            1
+        };
+        out.push((*event, zone));
+        at = end + 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{Jam, gdb::Model, image::decode_bmp, materials::*};

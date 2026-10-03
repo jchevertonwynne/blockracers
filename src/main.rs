@@ -13,7 +13,7 @@ use bevy::{
     prelude::*,
     render::view::screenshot::{Screenshot, save_to_disk},
 };
-use items::{Hazard, Projectile};
+use items::Action;
 use kart::{Kart, Player};
 use meshgen::Rng;
 use track::Track;
@@ -81,12 +81,11 @@ fn main() {
                 kart::player_input,
                 kart::ai_drive,
                 items::use_items,
+                items::actions,
                 kart::kart_physics,
                 kart::kart_collisions,
                 kart::update_places,
                 items::pickups,
-                items::projectiles,
-                items::hazards,
                 kart::sync_karts,
                 kart::sync_wheels,
                 chase_camera,
@@ -165,7 +164,7 @@ fn race_flow(
     track: Res<Track>,
     mut race: ResMut<Race>,
     mut karts: Query<(&mut Kart, Has<Player>)>,
-    debris: Query<Entity, Or<(With<Projectile>, With<Hazard>)>>,
+    debris: Query<Entity, With<Action>>,
 ) {
     let start = keys.just_pressed(KeyCode::Enter);
     match race.phase {

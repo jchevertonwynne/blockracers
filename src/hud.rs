@@ -92,8 +92,13 @@ pub fn update_hud(
 
     let (label, colour) = match player.held {
         Some(p) => (
-            format!("{}  {}", p.name(player.level), "+".repeat(player.level as usize)),
+            p.name(player.whites).to_string(),
             p.color().with_alpha(0.85),
+        ),
+        // White bricks waiting for a colour to go with.
+        None if player.whites > 0 => (
+            format!("{} white", player.whites),
+            Color::srgba(0.5, 0.5, 0.5, 0.85),
         ),
         None => (String::new(), Color::NONE),
     };
@@ -106,6 +111,7 @@ pub fn update_hud(
             .to_string(),
         Phase::Countdown => format!("{}", race.countdown.ceil() as u32),
         Phase::Racing if race.time < 1.0 => "GO!".to_string(),
+        Phase::Racing if player.wrong_way() => "WRONG WAY".to_string(),
         Phase::Racing => String::new(),
         Phase::Finished => {
             let mut rows: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
