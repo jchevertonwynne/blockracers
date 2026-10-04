@@ -516,7 +516,7 @@ pub fn draw(
             let position = if over { championship.standing(kart.slot) } else { kart.place };
             let place = format!("{}{}", position, string(text::PLACES + (position - 1).min(3)));
             frame.write("font_ths", &place, Vec2::new(width / 2.0 - 230.0, y), 1.0, colour);
-            frame.write("font_ths", kart.name, Vec2::new(width / 2.0 - 160.0, y), 1.0, colour);
+            frame.write("font_ths", &kart.name, Vec2::new(width / 2.0 - 160.0, y), 1.0, colour);
             match run {
                 Some(run) => {
                     if !over {

@@ -14,6 +14,7 @@ mod kart;
 mod kart_effects;
 mod menu;
 mod meshgen;
+mod net;
 mod mixer;
 mod opponent;
 mod particles;
@@ -249,7 +250,12 @@ fn main() {
         }
     }
 
+    // `BRICK_NET` hosts or joins a session without the menus' help.
+    let auto = net::Auto::from_env();
     let mut app = App::new();
+    if let Some(auto) = net::Auto::from_env() {
+        app.insert_resource(auto);
+    }
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window { title: "Brick Racers".into(), ..default() }),
         ..default()
@@ -258,7 +264,8 @@ fn main() {
         Some((shot, on_menu)) => {
             app.insert_resource(shot).add_systems(Update, demo_shot.after(kart::ai_drive).before(items::use_items));
             app.add_systems(PreUpdate, demo_keys.after(bevy::input::InputSystems));
-            app.insert_state(if on_menu { Screen::Menu } else { Screen::Race });
+            // A demo online waits at the menu for its session's race to begin.
+            app.insert_state(if on_menu || auto.is_some() { Screen::Menu } else { Screen::Race });
         }
         None => {
             app.init_state::<Screen>();
@@ -273,16 +280,18 @@ fn main() {
         .init_resource::<variant::Variant>()
         .init_resource::<replay::Replay>()
         .init_resource::<replay::Photo>()
-        .add_systems(Update, (video::apply, menu::keep.run_if(move || keeping)))
+        // Online the settings are the session's, and not the player's to be kept.
+        .add_systems(Update, (video::apply, menu::keep.run_if(move || keeping).run_if(not(net::online))))
         .init_resource::<time_race::TimeRace>()
         .insert_resource(championship)
         .add_systems(OnEnter(Screen::Loading), |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race))
-        .add_plugins((menu::plugin, frontend::plugin, audio::plugin))
+        .add_plugins((menu::plugin, frontend::plugin, audio::plugin, net::plugin))
         .add_systems(Startup, setup_scene)
         .add_systems(
             OnEnter(Screen::Race),
             (
                 load_race,
+                net::enter_race,
                 world::spawn_world.run_if(resource_exists::<LoadedWorld>),
                 scenery::spawn_scenery.run_if(resource_exists::<LoadedWorld>),
                 sky::spawn.run_if(resource_exists::<LoadedWorld>),
@@ -292,13 +301,16 @@ fn main() {
                 items::setup_items,
                 hud::original::load,
                 hud::setup_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
+                net::client::loaded.run_if(net::joined),
             )
                 .chain(),
         )
         .add_systems(
             Update,
             (
-                race_flow,
+                // Online the host's `net::host::flow` runs the race, and the race is
+                // stepped by `net::plugin` at its own rate.
+                race_flow.run_if(not(net::online)),
                 // A replay shows the race again rather than running it on.
                 (
                     kart::player_input,
@@ -312,7 +324,8 @@ fn main() {
                     replay::record,
                 )
                     .chain()
-                    .run_if(replay::live),
+                    .run_if(replay::live)
+                    .run_if(not(net::online)),
                 replay::play,
                 racer_sounds::racer_sounds,
                 events::track_events,
@@ -334,7 +347,7 @@ fn main() {
                     .chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
-                (chase_camera.run_if(not(replay::shooting)), replay::photo, sky::follow, particles::particles).chain(),
+                (chase_camera.run_if(not(replay::shooting)), replay::photo.run_if(not(net::online)), sky::follow, particles::particles).chain(),
                 hud::update_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
                 hud::original::draw.run_if(resource_exists::<hud::original::Art>).run_if(not(replay::shooting)),
                 tag_race_entities,
@@ -369,6 +382,7 @@ fn load_race(
     demo: Option<Res<DemoShot>>,
     championship: Res<championship::Championship>,
     mut rig: ResMut<camera::Rig>,
+    role: Res<net::Role>,
 ) {
     let circuit = &circuits.0[settings.circuit];
     let variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
@@ -428,7 +442,8 @@ fn load_race(
         intro: INTRO,
         countdown: COUNTDOWN,
         time: 0.0,
-        demo: demo.is_some(),
+        // Online the cars are driven by whoever is at them, a demo's too.
+        demo: demo.is_some() && *role == net::Role::Offline,
         quick: demo.is_some() && std::env::var("BRICK_START").is_err(),
     });
 }
@@ -444,6 +459,7 @@ fn tag_race_entities(
                 Added<Node>,
                 Added<Kart>,
                 Added<scenery::Prop>,
+                Added<scenery::Placed>,
                 Added<particles::Emitter>,
                 Added<item_models::Dressing>,
                 Added<items::Action>,
@@ -786,5 +802,25 @@ fn chase_camera(
             };
             p.fov += (fov.to_radians() - p.fov) * (1.0 - (-5.0 * time.delta_secs()).exp());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::state::app::StatesPlugin;
+
+    /// A model placed in a race, as a brick's is, is gone once the race is left.
+    #[test]
+    fn placed_models_leave_with_the_race() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin))
+            .insert_state(Screen::Race)
+            .add_systems(Update, tag_race_entities.run_if(in_state(Screen::Race)));
+        let brick = app.world_mut().spawn((scenery::Placed, Transform::default())).id();
+        app.update();
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Loading);
+        app.update();
+        assert!(app.world().get_entity(brick).is_err());
     }
 }

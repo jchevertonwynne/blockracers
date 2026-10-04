@@ -26,12 +26,12 @@ const TAIL: f32 = 3.0;
 /// The most cars in a race.
 const SLOTS: usize = 6;
 
-/// One car at one moment.
-#[derive(Clone, Copy)]
-struct Pose {
-    pos: Vec3,
-    rot: Quat,
-    vel: Vec3,
+/// One car at one moment. A race online shows the cars it doesn't drive by these too.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Pose {
+    pub pos: Vec3,
+    pub rot: Quat,
+    pub vel: Vec3,
     steer: f32,
     boost: f32,
     shield: f32,
@@ -47,7 +47,7 @@ struct Pose {
 }
 
 impl Pose {
-    fn of(kart: &Kart) -> Self {
+    pub fn of(kart: &Kart) -> Self {
         Pose {
             pos: kart.pos,
             rot: kart.rot,
@@ -66,8 +66,23 @@ impl Pose {
         }
     }
 
+    /// Puts the car as it was, `dt` after it was last put somewhere; `at` is when it
+    /// went out of the race, if this is the first that is seen of that.
+    pub fn put(self, kart: &mut Kart, at: f32, dt: f32) {
+        let pose = self;
+        (kart.pos, kart.rot, kart.vel, kart.steer) = (pose.pos, pose.rot, pose.vel, pose.steer);
+        (kart.boost, kart.shield, kart.sliding) = (pose.boost, pose.shield, pose.sliding);
+        (kart.spin, kart.spin_out, kart.cursed, kart.magnet) = (pose.spin, pose.spin_out, pose.cursed, pose.magnet);
+        (kart.held, kart.whites) = (pose.held, pose.whites);
+        kart.out = if pose.out { kart.out.or(Some(at)) } else { None };
+        let forward = pose.rot * Vec3::NEG_Z;
+        kart.yaw = (-forward.x).atan2(-forward.z);
+        kart.facing = forward.with_y(0.0).normalize_or(kart.facing);
+        kart.wheel_angle = (kart.wheel_angle - pose.vel.dot(forward) * dt / WHEEL_RADIUS) % TAU;
+    }
+
     /// This pose `along` the way to the `next`.
-    fn towards(self, next: Pose, along: f32) -> Pose {
+    pub fn towards(self, next: Pose, along: f32) -> Pose {
         let mix = |a: f32, b: f32| a + (b - a) * along;
         Pose {
             pos: self.pos.lerp(next.pos, along),
@@ -230,15 +245,7 @@ pub fn play(
     let at = (shown + dt).min(replay.length());
     for mut kart in &mut karts {
         let Some(pose) = replay.pose(kart.slot, at) else { continue };
-        (kart.pos, kart.rot, kart.vel, kart.steer) = (pose.pos, pose.rot, pose.vel, pose.steer);
-        (kart.boost, kart.shield, kart.sliding) = (pose.boost, pose.shield, pose.sliding);
-        (kart.spin, kart.spin_out, kart.cursed, kart.magnet) = (pose.spin, pose.spin_out, pose.cursed, pose.magnet);
-        (kart.held, kart.whites) = (pose.held, pose.whites);
-        kart.out = if pose.out { kart.out.or(Some(at)) } else { None };
-        let forward = pose.rot * Vec3::NEG_Z;
-        kart.yaw = (-forward.x).atan2(-forward.z);
-        kart.facing = forward.with_y(0.0).normalize_or(kart.facing);
-        kart.wheel_angle = (kart.wheel_angle - pose.vel.dot(forward) * dt / WHEEL_RADIUS) % TAU;
+        pose.put(&mut kart, at, dt);
     }
     // Power-ups' doings are as they were at the last note taken.
     let frame = replay.frames.partition_point(|frame| frame.time <= at).saturating_sub(1);

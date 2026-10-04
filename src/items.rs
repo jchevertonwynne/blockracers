@@ -24,7 +24,7 @@ use crate::track::Track;
 use crate::world::LoadedWorld;
 use bevy::prelude::*;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Power {
     Red,
     Yellow,

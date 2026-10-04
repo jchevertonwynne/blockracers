@@ -1,0 +1,17 @@
+name: CI
+
+# The lobby server's tests. The game's own need a display's worth of system
+# libraries and, for most of what they check, the original game's data, which is
+# not here; they are run where the game is worked on.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  lobby:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo test --locked -p lobby -p lobby-api
+      - run: cargo clippy --locked -p lobby -p lobby-api --all-targets -- -D warnings

@@ -4,7 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.19.1", features = ["wav"] }
+bevy = { version = "0.19.1", features = ["wav", "serialize"] }
+# What goes over the network when racing online, and the lobby's list.
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+lobby-api = { path = "crates/lobby-api" }
+anyhow = "1"
+thiserror = "2"
+iroh = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+bytes = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # Bevy systems take a parameter per thing they touch, and their queries are long types.
 [lints.clippy]
@@ -17,3 +28,7 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The lobby server and what it shares with the game. The game is the root package.
+[workspace]
+members = ["crates/lobby-api", "crates/lobby"]

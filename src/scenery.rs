@@ -515,6 +515,10 @@ pub enum Motion {
 #[derive(Resource, Default)]
 pub struct Models(HashMap<String, Template>);
 
+/// What `Models::spawn` returns: the entity a model is placed by.
+#[derive(Component)]
+pub struct Placed;
+
 impl Models {
     pub fn has(&self, name: &str) -> bool {
         self.0.contains_key(name)
@@ -546,7 +550,7 @@ impl Models {
             commands.entity(model).insert(animated);
         }
         commands.entity(model).insert(inner);
-        Some(commands.spawn((at, Visibility::default())).add_child(model).id())
+        Some(commands.spawn((Placed, at, Visibility::default())).add_child(model).id())
     }
 
     /// Where a model's file places it, in the frame `spawn` puts models in.

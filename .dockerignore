@@ -1,0 +1,7 @@
+# The image is built from the manifests and the sources; everything else stays out,
+# the game's data above all.
+*
+!Cargo.toml
+!Cargo.lock
+!src
+!crates

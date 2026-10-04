@@ -13,6 +13,12 @@ behave, sound and look like the original; the decompilation is the reference for
   so **`cargo clean` deletes it** — don't run it without re-cloning afterwards.
 - **Code:** `src/assets/` holds the file-format readers; everything else in `src/` is
   the game. Each module's header comment says which part of the original it follows.
+- **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
+  games drive their own car ahead of the host's word and are shown the rest. Online
+  the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
+  pause, photo mode and replays are off.
+- **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
+  only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 
 ## Porting rules
 
@@ -21,7 +27,7 @@ behave, sound and look like the original; the decompilation is the reference for
 - If the original does something the port has no feature for yet, build the feature.
   Don't leave a stand-in without saying so.
 - What the port adds to the original (replays, photo mode, reversed circuits, the brick
-  rules, elimination, quick steering, the video options) is off until asked for, and says in its
+  rules, elimination, quick steering, the video options, online play) is off until asked for, and says in its
   module comment that it is the port's own.
 - Units: the game's are Z-up; ours are Y-up, with one game unit `physics::UNIT` of
   ours. Use `scenery::to_world` for positions.
@@ -34,8 +40,10 @@ behave, sound and look like the original; the decompilation is the reference for
 
 ```sh
 cargo build
-cargo test
+cargo test           # the game's tests; add -p lobby for the lobby server's
 cargo run            # the game, from the main menu
+cargo run -p lobby -- -addr 127.0.0.1:18096    # a lobby to test against
+cargo test real_endpoints -- --ignored         # two real endpoints; needs the internet
 ```
 
 ### Demo runs
@@ -65,7 +73,16 @@ menu instead. These combine with it:
 | `BRICK_PHOTOS=<folder>` | where photo mode saves (default `screenshots/`) |
 | `BRICK_GHOSTS=<folder>` | where best time-race runs are kept (default `~/.brick_racers_ghosts`) |
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
+| `BRICK_NET=host:2` | host a session and start its race once that many players are in it (the host is one) |
+| `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
+| `BRICK_SESSION`, `BRICK_NAME`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, the password set or given |
+| `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
 | `RUST_LOG=legoracers::hazards=debug` | per-module logging |
+
+An online demo is two runs at once, a host and a joiner, each with its own
+`BRICK_DEMO`; both wait at the menu until the session's race begins, so allow ten
+seconds or so before anything is on the road. Online the demo's cars are driven by
+`BRICK_KEYS` (`W@10+12`), not by the computer.
 
 ## Being a good guest on the user's machine
 

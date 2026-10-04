@@ -1,0 +1,26 @@
+name: Image
+
+# The lobby server's image, for the homelab cluster to run. Built only when
+# something that goes into it changes; the game itself is not part of it.
+on:
+  push:
+    branches: [master]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    uses: jchevertonwynne/workflows/.github/workflows/build-image.yml@main
+    permissions:
+      contents: read
+      packages: write
