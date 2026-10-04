@@ -8,6 +8,7 @@
 //! | `DELETE /sessions/{id}` | the host taking it down |
 //! | `GET /sessions?protocol=N` | the list |
 //! | `GET /healthz`, `GET /metrics` | for the cluster's probes and scraping |
+//! | `GET /` | a line saying what this is, for whoever comes looking and for the check that it is up |
 //!
 //! Nothing is kept across a restart: a host whose session has gone is told so by its
 //! next beat (404) and lists it again.
@@ -64,6 +65,7 @@ pub fn app() -> Router {
     Router::new()
         .route("/sessions", post(register).get(list))
         .route("/sessions/{id}", put(beat).delete(close))
+        .route("/", get(|| async { "The Brick Racers lobby: the list of sessions being hosted. The game reads it at /sessions.\n" }))
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(MAX_BODY))
@@ -299,5 +301,6 @@ mod tests {
         assert!(metrics.contains(&format!("lobby_sessions {MAX_SESSIONS}\n")));
         assert!(metrics.contains("lobby_sessions_refused_total 2\n"));
         assert_eq!(send(&app, "GET", "/healthz", None, None, None).await, (StatusCode::OK, "ok".to_string()));
+        assert_eq!(send(&app, "GET", "/", None, None, None).await.0, StatusCode::OK);
     }
 }
