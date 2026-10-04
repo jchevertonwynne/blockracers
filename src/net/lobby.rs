@@ -46,6 +46,8 @@ pub struct Lobby {
     pub sessions: Vec<Listed>,
     /// What went wrong the last time the lobby was asked something, if anything did.
     pub trouble: Option<String>,
+    /// Counts up whenever either changes, for whatever draws them.
+    pub revision: u32,
     /// This game's own session on the list, and whether it is being put there now.
     listed: Option<Registered>,
     listing: bool,
@@ -65,6 +67,7 @@ impl Default for Lobby {
             heard: Mutex::new(heard),
             sessions: Vec::new(),
             trouble: None,
+            revision: 0,
             listed: None,
             listing: false,
             beat: 0.0,
@@ -136,12 +139,12 @@ pub fn keep(
         match heard {
             // A beat's answer is an empty list, and is not the list.
             Heard::List(sessions) if *role == Role::Host => drop(sessions),
-            Heard::List(sessions) => (lobby.sessions, lobby.trouble) = (sessions, None),
+            Heard::List(sessions) => (lobby.sessions, lobby.trouble, lobby.revision) = (sessions, None, lobby.revision + 1),
             Heard::Registered(listed) => (lobby.listed, lobby.listing, lobby.beat, lobby.trouble) = (Some(listed), false, BEAT_EVERY as f32, None),
             Heard::Forgotten => lobby.listed = None,
             Heard::Failed(why) => {
                 warn!("{why}");
-                (lobby.trouble, lobby.listing) = (Some(why), false);
+                (lobby.trouble, lobby.listing, lobby.revision) = (Some(why), false, lobby.revision + 1);
             }
         }
     }

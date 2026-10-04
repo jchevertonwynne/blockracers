@@ -65,7 +65,7 @@ menu instead. These combine with it:
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |
 | `BRICK_TIME=1` | time race |
-| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras` | menu page to open on |
+| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|online\|host\|join` | menu page to open on |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |
 | `BRICK_BRICKS=red\|yellow\|blue\|green\|none\|random` | what the circuit's bricks are made |
@@ -73,7 +73,7 @@ menu instead. These combine with it:
 | `BRICK_PHOTOS=<folder>` | where photo mode saves (default `screenshots/`) |
 | `BRICK_GHOSTS=<folder>` | where best time-race runs are kept (default `~/.brick_racers_ghosts`) |
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
-| `BRICK_NET=host:2` | host a session and start its race once that many players are in it (the host is one) |
+| `BRICK_NET=host:2` | host a session and start its race, without a vote, once that many players are in it (the host is one); `host:9` never fills, and leaves the session in its room |
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
 | `BRICK_SESSION`, `BRICK_NAME`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, the password set or given |
 | `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
@@ -82,7 +82,9 @@ menu instead. These combine with it:
 An online demo is two runs at once, a host and a joiner, each with its own
 `BRICK_DEMO`; both wait at the menu until the session's race begins, so allow ten
 seconds or so before anything is on the road. Online the demo's cars are driven by
-`BRICK_KEYS` (`W@10+12`), not by the computer.
+`BRICK_KEYS` (`W@10+12`), not by the computer. A demo can't type, so the pages
+with something to type into are reached by `BRICK_MENU` and `BRICK_NET` and not
+through the menus; in the room, `Enter` is on "ready" to begin with.
 
 ## Being a good guest on the user's machine
 

@@ -7,7 +7,7 @@ use bevy::time::TimeUpdateStrategy;
 
 use super::client::Prediction;
 use super::link::Hub;
-use super::protocol::{HOST, Peer, TICKS};
+use super::protocol::{HOST, Peer, Rules, TICKS};
 use super::*;
 use crate::items::Power;
 use crate::track::Track;
@@ -48,6 +48,7 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
         .insert_resource(role)
         .insert_resource(Wire(Box::new(link)))
         .insert_resource(Session { name: "Me".into(), you, members, ..default() })
+        .insert_resource(Room { voters: vec![Voter { peer: HOST, name: "Me".into(), ready: false, ballot: None }], ..default() })
         .insert_resource(Lineup { seats: Lineup::seat(&players, opponents), you })
         .add_systems(Startup, (kart::spawn_karts, items::setup_items).chain());
     app
@@ -263,4 +264,87 @@ fn a_car_moves_evenly_on_a_screen_faster_than_the_race() {
     let (_, drawn_once, steps_once) = run(1);
     assert!(steps.abs_diff(steps_once) <= 1, "{steps} steps against {steps_once}");
     assert!(drawn_twice.distance(drawn_once) < 0.5, "the race went {} differently", drawn_twice.distance(drawn_once));
+}
+
+/// A player joins a session, giving its password in capitals where the host set it
+/// in small letters, is let into its room, says what they want and that they
+/// are ready; the host is ready too, and the race the vote settles on begins for both.
+#[test]
+fn a_room_votes_and_its_race_begins_for_everyone() {
+    let hub = Hub::new(DELAY, 0.0);
+    let (host_link, guest_link) = (hub.host(), hub.join());
+    let mut pair = Pair { host: game(Role::Host, host_link, HOST, 0), guest: game(Role::Client, guest_link, 0, 0), hub };
+    let state = |app: &App| *app.world().resource::<State<Screen>>().get();
+    for (app, name, password) in [(&mut pair.host, "HOSTY", "bricks"), (&mut pair.guest, "GUESTY", "BRICKS")] {
+        // Both are at the menu, in no race, and the host alone in its room.
+        app.insert_state(Screen::Menu);
+        app.world_mut().remove_resource::<Lineup>();
+        let hosting = name == "HOSTY";
+        *app.world_mut().resource_mut::<Session>() = Session { title: "Friday".into(), name: name.into(), password: password.into(), ..default() };
+        let voters = if hosting { vec![Voter { peer: HOST, name: name.into(), ready: false, ballot: None }] } else { Vec::new() };
+        *app.world_mut().resource_mut::<Room>() = Room { voters, ..default() };
+    }
+    let circuits = Circuits::find();
+    let wish = |circuit: usize, laps: u8, opponents: u8| {
+        let settings = Settings { circuit, ..Settings::new(&circuits) };
+        Rules { lap_choice: laps, opponents, ..Rules::of(&settings, &circuits) }
+    };
+    let (hosts, guests) = (wish(0, 0, 1), wish(circuits.0.len() - 1, 2, 3));
+    pair.host.world_mut().resource_mut::<Room>().ballot = Some(hosts.clone());
+    for _ in 0..40 {
+        pair.step();
+    }
+    // The player has been let in and told who is in the room.
+    assert_eq!(pair.guest.world().resource::<Session>().you, 1);
+    let names = |app: &App| app.world().resource::<Room>().voters.iter().map(|voter| voter.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&pair.guest), ["HOSTY", "GUESTY"]);
+    assert_eq!(names(&pair.host), names(&pair.guest));
+
+    // The player votes and is ready: the host hears, and the clock starts for both.
+    (pair.guest.world_mut().resource_mut::<Room>().ballot, pair.guest.world_mut().resource_mut::<Room>().ready) = (Some(guests.clone()), true);
+    for _ in 0..40 {
+        pair.step();
+    }
+    let heard = pair.host.world().resource::<Room>().voters[1].clone();
+    assert_eq!((heard.ballot.as_ref(), heard.ready), (Some(&guests), true));
+    assert!(pair.guest.world().resource::<Room>().closing.is_some(), "the player should see the vote closing");
+    assert_eq!((state(&pair.host), state(&pair.guest)), (Screen::Menu, Screen::Menu));
+
+    // The host is ready too: the vote closes and the race begins for both.
+    pair.host.world_mut().resource_mut::<Room>().ready = true;
+    for _ in 0..40 {
+        pair.step();
+    }
+    assert_eq!((state(&pair.host), state(&pair.guest)), (Screen::Loading, Screen::Loading));
+    let raced = pair.host.world().resource::<Room>().last.clone().expect("a race decided on");
+    // One of the two circuits asked for, and on a tie the host's wishes for the rest.
+    assert!(raced.circuit == hosts.circuit || raced.circuit == guests.circuit);
+    assert_eq!((raced.lap_choice, raced.opponents), (0, 1));
+    for app in [&pair.host, &pair.guest] {
+        let lineup = app.world().resource::<Lineup>();
+        assert_eq!(lineup.seats.iter().filter(|seat| seat.peer.is_some()).count(), 2);
+        assert_eq!(lineup.seats.len(), 3);
+        let settings = app.world().resource::<Settings>();
+        assert_eq!((settings.opponents, settings.lap_choice), (1, 0));
+    }
+    assert_eq!(pair.guest.world().resource::<Settings>().circuit, pair.host.world().resource::<Settings>().circuit);
+}
+
+/// The wrong password is turned away, and the game is its own again.
+#[test]
+fn the_wrong_password_is_turned_away() {
+    let hub = Hub::new(1, 0.0);
+    let (host_link, guest_link) = (hub.host(), hub.join());
+    let mut pair = Pair { host: game(Role::Host, host_link, HOST, 0), guest: game(Role::Client, guest_link, 0, 0), hub };
+    for (app, password) in [(&mut pair.host, "bricks"), (&mut pair.guest, "studs")] {
+        app.insert_state(Screen::Menu);
+        *app.world_mut().resource_mut::<Session>() = Session { name: "X".into(), password: password.into(), ..default() };
+    }
+    for _ in 0..20 {
+        pair.step();
+    }
+    assert_eq!(*pair.guest.world().resource::<Role>(), Role::Offline);
+    assert_eq!(pair.guest.world().resource::<Session>().notice.as_deref(), Some("Wrong password"));
+    assert!(pair.guest.world().get_resource::<Wire>().is_none());
+    assert!(pair.host.world().resource::<Session>().members.is_empty());
 }

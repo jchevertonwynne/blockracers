@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use super::room::Voter;
 use super::state::{Standing, State};
 use crate::kart::Controls;
 use crate::menu::{Circuits, LAP_CHOICES, Settings};
@@ -173,6 +174,9 @@ pub enum ToHost {
     Hello { protocol: u32, name: String, password: String },
     /// The race asked for is loaded and its cars are on the grid.
     Loaded,
+    /// How the player would have the next race run, and whether they are ready for it.
+    Vote(Rules),
+    Ready(bool),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -180,8 +184,12 @@ pub enum ToPlayer {
     Welcome { you: Peer },
     Refused(Refusal),
     Start { rules: Rules, seats: Vec<Seat> },
-    /// The race is run: the cars' grid slots in the order they came in.
-    Over { order: Vec<u8> },
+    /// How the room stands: who is in it and what they want, the seconds until the
+    /// vote closes if a clock is running, how the last race was run and who came
+    /// where in it.
+    Room { voters: Vec<Voter>, closing: Option<f32>, last: Option<Rules>, results: Vec<String> },
+    /// The race is run, and everyone is back in the room.
+    Over,
 }
 
 #[cfg(test)]

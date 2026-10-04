@@ -107,6 +107,7 @@ pub fn flow(
     mut race: ResMut<Race>,
     mut flow: ResMut<Flow>,
     mut session: ResMut<Session>,
+    mut room: ResMut<super::room::Room>,
     mut wire: ResMut<Wire>,
     mut next: ResMut<NextState<Screen>>,
     mut karts: Query<(&mut Kart, Has<Player>, Has<Remote>)>,
@@ -159,9 +160,10 @@ pub fn flow(
     }
     flow.shown += dt;
     if flow.shown >= RESULT_WAIT {
-        let mut order: Vec<(usize, u8)> = karts.iter().map(|(k, ..)| (k.place, k.slot as u8)).collect();
+        let mut order: Vec<(usize, String)> = karts.iter().map(|(k, ..)| (k.place, k.name.to_string())).collect();
         order.sort();
-        let over = encode(&ToPlayer::Over { order: order.into_iter().map(|(_, slot)| slot).collect() });
+        room.results = order.into_iter().map(|(_, name)| name).collect();
+        let over = encode(&ToPlayer::Over);
         for member in &mut session.members {
             wire.0.send(member.peer, over.clone());
             member.loaded = false;

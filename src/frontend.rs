@@ -1,8 +1,14 @@
 //! The original game's front end, drawn from its own menu data: the screen layouts
 //! (`.MIB`), pictures, bitmap fonts and string tables in `MENUDATA`. Main menu, single
 //! race and options are here; the screens for things the port doesn't have (building,
-//! versus, controls) are shown but can't be chosen. The video options are the port's
+//! controls) are shown but can't be chosen. The video options are the port's
 //! own, and so is the extras page: the ways of racing the original doesn't have.
+//!
+//! Racing online is the port's own too, and is reached where the original has its
+//! two-player race: a page to host or join from, the list of sessions the lobby
+//! has, and the room a session waits in, where everyone says how they would have the
+//! next race run (`net::room`). Their widgets are placed by hand; the original has
+//! no screens to take the places from.
 //!
 //! Colours and the make-up of each widget follow the styles in `GSTYLES.MSB`. The
 //! spinning models the original shows on these screens are not drawn.
@@ -15,9 +21,11 @@ use crate::assets::{
     tokens::{Token, tokenize},
 };
 use crate::audio::{Sfx, id};
-use crate::menu::{Circuits, DIFFICULTIES, Extra, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, Screen, Settings};
+use crate::menu::{Circuits, DIFFICULTIES, Extra, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, NAME_LENGTH, Screen, Settings};
+use crate::net::{self, Role, Session, lobby::Lobby, protocol::Rules, room::Room};
 use bevy::{
     asset::RenderAssetUsages,
+    input::keyboard::{Key, KeyboardInput},
     image::ImageSampler,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -50,7 +58,6 @@ mod text {
     pub const CONTROLS: [usize; 2] = [23, 24];
     pub const CIRCUIT_RACE: usize = 33;
     pub const SINGLE_RACE: usize = 34;
-    pub const VERSUS_RACE: usize = 35;
     pub const TIME_RACE: usize = 36;
     pub const BUILD: usize = 37;
     pub const OPTIONS: usize = 38;
@@ -82,6 +89,71 @@ enum Page {
     VideoOptions,
     AudioOptions,
     Extras,
+    /// The port's own, for racing online: where to host or join from, what to host
+    /// as, the sessions there are to join, the password one of them wants, the wait
+    /// for its host to answer, and the room a session waits in between races.
+    Online,
+    Host,
+    Join,
+    Password,
+    Connecting,
+    Room,
+}
+
+/// What can be typed into.
+#[derive(Clone, Copy, PartialEq)]
+enum Typed {
+    Name,
+    Title,
+    Password,
+    /// The password of the session being joined.
+    Key,
+}
+
+/// The things a room votes on, but for the circuit: the port's own ways of racing
+/// that are everyone's affair. How a player steers is their own.
+const VOTED: [Extra; 4] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination];
+/// The most sessions the join page lists.
+const LISTED: usize = 7;
+/// The longest a session's title and its password may be.
+const TITLE_LENGTH: usize = 20;
+const PASSWORD_LENGTH: usize = 16;
+
+/// What is being typed and picked on the online pages.
+#[derive(Resource, Default)]
+struct Online {
+    title: String,
+    password: String,
+    key: String,
+    /// The session picked to join.
+    picked: Option<lobby_api::Session>,
+    /// Seconds until the list of sessions is read again.
+    refresh: f32,
+    /// What of the room and of the list has been drawn.
+    seen: (u32, u32),
+    /// A session has just been left.
+    left: bool,
+}
+
+/// What the online pages show: who this game is to the session, the session, its
+/// room, the lobby's list, and what has been typed.
+struct Wired<'a> {
+    role: Role,
+    session: &'a Session,
+    room: &'a Room,
+    lobby: &'a Lobby,
+    online: &'a Online,
+}
+
+impl Wired<'_> {
+    /// The race the player here has asked for, as settings to show it by.
+    fn wish(&self, settings: &Settings, circuits: &Circuits) -> Settings {
+        let mut wish = settings.clone();
+        if let Some(ballot) = &self.room.ballot {
+            ballot.apply(&mut wish, circuits);
+        }
+        wish
+    }
 }
 
 impl Page {
@@ -139,6 +211,17 @@ enum Action {
     Sound,
     /// One of the port's own settings.
     Extra(Extra),
+    /// Online: somewhere to type, hosting a session, picking one off the list and
+    /// dialling it, reading the list again, and in the room being ready, starting
+    /// the race, and leaving.
+    Type(Typed),
+    BeginHosting,
+    Pick(usize),
+    Dial,
+    Refresh,
+    Ready,
+    Begin,
+    Leave,
 }
 
 enum Widget {
@@ -148,6 +231,8 @@ enum Widget {
     Selector { area: Rect, picture: Option<String>, words: String },
     /// A rail with a thumb on it, `value` steps of `MAX_VOLUME` along.
     Slider { area: Rect, value: usize },
+    /// A box with what has been typed into it.
+    Field { area: Rect, words: String },
 }
 
 struct Item {
@@ -187,6 +272,7 @@ pub fn plugin(app: &mut App) {
         app.insert_resource(art);
     }
     app.init_resource::<Menu>()
+        .init_resource::<Online>()
         .add_systems(OnEnter(Screen::Menu), enter)
         .add_systems(OnExit(Screen::Menu), leave)
         .add_systems(Update, (input, draw).chain().run_if(in_state(Screen::Menu)).run_if(resource_exists::<Art>));
@@ -292,7 +378,7 @@ fn group(circuits: &Circuits, index: usize) -> usize {
 }
 
 /// The widgets of a page that can be chosen or changed, top to bottom.
-fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, championship: &Championship) -> Vec<Item> {
+fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, championship: &Championship, wired: &Wired) -> Vec<Item> {
     let button = |screen: &str, name: &str, label: usize, action: Action, icon: Option<&'static str>| Item {
         widget: Widget::Button { at: art.place(screen, name).min, label: art.string(label), icon },
         action,
@@ -309,7 +395,8 @@ fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, champi
             button("main", "garage", text::BUILD, Action::Nothing, None),
             button("main", "circuit", text::CIRCUIT_RACE, Action::Go(Page::CircuitRace), None),
             button("main", "single", text::SINGLE_RACE, Action::Go(Page::SingleRace), None),
-            button("main", "vs", text::VERSUS_RACE, Action::Nothing, None),
+            // Where the original races two on one screen, the port races online.
+            Item { widget: Widget::Button { at: art.place("main", "vs").min, label: "ONLINE RACE".into(), icon: None }, action: Action::Go(Page::Online), enabled: true },
             button("main", "time", text::TIME_RACE, Action::Go(Page::TimeRace), None),
             button("main", "options", text::OPTIONS, Action::Go(Page::Options), None),
             button("main", "quit", text::QUIT, Action::Quit, None),
@@ -390,6 +477,137 @@ fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, champi
             Item { widget: Widget::Slider { area: art.place("options", "soundvol"), value: settings.sound }, action: Action::Sound, enabled: true },
             back("options", Page::Options),
         ],
+        Page::Online => vec![
+            field(FIELD[0], settings.name.clone(), Typed::Name),
+            plain(Vec2::new(3.0, 178.0), "HOST A RACE", Action::Go(Page::Host)),
+            plain(Vec2::new(3.0, 218.0), "JOIN A RACE", Action::Go(Page::Join)),
+            back("options", Page::Main),
+        ],
+        Page::Host => vec![
+            field(FIELD[0], wired.online.title.clone(), Typed::Title),
+            field(FIELD[1], wired.online.password.clone(), Typed::Password),
+            Item { widget: Widget::Button { at: art.place("race", "gonext").min, label: art.string(text::OK), icon: Some("chck") }, action: Action::BeginHosting, enabled: !wired.online.title.trim().is_empty() },
+            way_back(art, Page::Online),
+        ],
+        Page::Join => {
+            let mut items: Vec<Item> = wired.lobby.sessions.iter().take(LISTED).enumerate().map(|(n, listed)| {
+                let mut label = format!("{} - {} {}/{}", listed.name, listed.host, listed.status.players, listed.max);
+                for (so, word) in [(listed.locked, " LOCKED"), (listed.status.racing, " RACING")] {
+                    if so {
+                        label += word;
+                    }
+                }
+                Item { widget: Widget::Button { at: Vec2::new(3.0, 80.0 + 36.0 * n as f32), label, icon: None }, action: Action::Pick(n), enabled: listed.status.players < listed.max }
+            }).collect();
+            items.push(plain(art.place("race", "gonext").min, "REFRESH", Action::Refresh));
+            items.push(way_back(art, Page::Online));
+            items
+        }
+        Page::Password => vec![
+            field(FIELD[0], wired.online.key.clone(), Typed::Key),
+            Item { widget: Widget::Button { at: art.place("race", "gonext").min, label: art.string(text::OK), icon: Some("chck") }, action: Action::Dial, enabled: true },
+            way_back(art, Page::Join),
+        ],
+        Page::Connecting => vec![Item { widget: Widget::Button { at: art.place("race", "goback").min, label: "CANCEL".into(), icon: Some("txtarol") }, action: Action::Leave, enabled: true }],
+        Page::Room => {
+            let wish = wired.wish(settings, circuits);
+            let row = |n: usize| Rect::new(164.0, ROOM_TOP + ROOM_STEP * n as f32, 440.0, ROOM_TOP + ROOM_STEP * n as f32 + ICON);
+            let mut items = vec![
+                selector(Rect::new(8.0, ROOM_TOP, 440.0, ROOM_TOP + ICON), None, circuits.0[wish.circuit].name.clone(), Action::RaceChoice),
+                selector(row(1), None, wish.laps().to_string(), Action::Laps),
+                selector(row(2), None, wish.opponents.to_string(), Action::Opponents),
+            ];
+            items.extend(VOTED.iter().enumerate().map(|(n, &extra)| selector(row(3 + n), None, wish.shown(extra), Action::Extra(extra))));
+            items.push(plain(Vec2::new(3.0, 338.0), if wired.room.ready { "READY: YES" } else { "READY: NO" }, Action::Ready));
+            if wired.role == Role::Host {
+                items.push(plain(Vec2::new(3.0, 378.0), "START NOW", Action::Begin));
+            }
+            items.push(Item { widget: Widget::Button { at: art.place("race", "goback").min, label: "LEAVE".into(), icon: Some("txtarol") }, action: Action::Leave, enabled: true });
+            items
+        }
+    }
+}
+
+/// Where the online pages put what is typed, and beside it what it is.
+const FIELD: [Rect; 2] = [Rect { min: Vec2::new(190.0, 96.0), max: Vec2::new(480.0, 128.0) }, Rect { min: Vec2::new(190.0, 136.0), max: Vec2::new(480.0, 168.0) }];
+/// Where the room's rows begin and how far apart they are.
+const ROOM_TOP: f32 = 76.0;
+const ROOM_STEP: f32 = 36.0;
+
+fn field(area: Rect, words: String, typed: Typed) -> Item {
+    Item { widget: Widget::Field { area, words }, action: Action::Type(typed), enabled: true }
+}
+
+/// The way back from one of the online pages to the one before it.
+fn way_back(art: &Art, to: Page) -> Item {
+    Item { widget: Widget::Button { at: art.place("race", "goback").min, label: "BACK".into(), icon: Some("txtarol") }, action: Action::Go(to), enabled: true }
+}
+
+/// A button of the port's own, with words the original hasn't a string for.
+fn plain(at: Vec2, label: &str, action: Action) -> Item {
+    Item { widget: Widget::Button { at, label: label.into(), icon: None }, action, enabled: true }
+}
+
+/// What the online pages say beside and around their widgets: where, what, in which
+/// font and colour, and whether centred there.
+fn notes(page: Page, wired: &Wired, settings: &Settings, circuits: &Circuits) -> Vec<(Rect, String, &'static str, Color, bool)> {
+    let banner = |words: &str| (Rect::new(375.0, 20.0, 375.0, 68.0), words.to_string(), "fontmenu", LABEL, true);
+    let beside = |area: Rect, words: &str| (Rect::new(8.0, area.min.y, area.min.x - 8.0, area.max.y), words.to_string(), "font_ths", LABEL, false);
+    let middle = |words: &str| (Rect::new(320.0, 300.0, 320.0, 332.0), words.to_string(), "font_ths", LABEL, true);
+    match page {
+        Page::Online => {
+            let mut notes = vec![banner("ONLINE RACE"), beside(FIELD[0], "YOUR NAME")];
+            // Why the last session ended, if it was not left by choice.
+            notes.extend(wired.session.notice.as_deref().map(middle));
+            notes
+        }
+        Page::Host => vec![banner("HOST A RACE"), beside(FIELD[0], "CALLED"), beside(FIELD[1], "PASSWORD"), middle("LEAVE THE PASSWORD EMPTY TO LET ANYONE IN")],
+        Page::Join => {
+            let mut notes = vec![banner("JOIN A RACE")];
+            if let Some(trouble) = wired.lobby.trouble.as_ref().filter(|_| wired.lobby.sessions.is_empty()) {
+                bevy::log::debug!("{trouble}");
+                notes.push(middle("THE LOBBY CAN'T BE REACHED"));
+            } else if wired.lobby.sessions.is_empty() {
+                notes.push(middle("NOBODY IS HOSTING A RACE"));
+            }
+            notes
+        }
+        Page::Password => vec![banner("JOIN A RACE"), beside(FIELD[0], "PASSWORD")],
+        Page::Connecting => vec![banner("JOIN A RACE"), middle("CALLING THE HOST")],
+        Page::Room => {
+            let room = wired.room;
+            let mut notes = vec![banner(&wired.session.title)];
+            let label = |n: usize, words: &str| (Rect::new(8.0, ROOM_TOP + ROOM_STEP * n as f32, 150.0, ROOM_TOP + ROOM_STEP * n as f32 + ICON), words.to_string(), "font_ths", LABEL, false);
+            notes.push(label(1, "LAPS"));
+            notes.push(label(2, "OPPONENTS"));
+            notes.extend(VOTED.iter().enumerate().map(|(n, extra)| label(3 + n, extra.label())));
+            // Beside each, how many in the room want the same.
+            let agreeing: [(usize, usize); 7] = [
+                room.agreeing(|rules| rules.circuit.clone()),
+                room.agreeing(|rules| rules.lap_choice),
+                room.agreeing(|rules| rules.opponents),
+                room.agreeing(|rules| rules.mirror),
+                room.agreeing(|rules| rules.reverse),
+                room.agreeing(|rules| rules.bricks),
+                room.agreeing(|rules| rules.elimination),
+            ];
+            for (n, (agree, of)) in agreeing.into_iter().enumerate() {
+                let at = Rect::new(444.0, ROOM_TOP + ROOM_STEP * n as f32, 484.0, ROOM_TOP + ROOM_STEP * n as f32 + ICON);
+                notes.push((at, format!("{agree}/{of}"), "font_ths", NORMAL, false));
+            }
+            // Who is here, lit when ready, and before each where they came last race.
+            let _ = (settings, circuits);
+            for (n, voter) in room.voters.iter().enumerate() {
+                let place = room.results.iter().position(|name| *name == voter.name).map_or(String::new(), |place| format!("{} ", place + 1));
+                let at = Rect::new(500.0, ROOM_TOP + 32.0 * n as f32, 636.0, ROOM_TOP + 32.0 * (n + 1) as f32);
+                notes.push((at, format!("{place}{}", voter.name), "font_ths", if voter.ready { SELECTED } else { NORMAL }, false));
+            }
+            if let Some(left) = room.closing {
+                notes.push((Rect::new(300.0, 338.0, 636.0, 370.0), format!("RACE STARTS IN {}", left.max(0.0).ceil() as i32), "font_ths", LABEL, true));
+            }
+            notes
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -426,12 +644,19 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
             beside("mvoltext", art.string(text::MUSIC_VOLUME)),
             beside("svoltext", art.string(text::SOUND_VOLUME)),
         ],
+        // The port's online pages say what they have to in `notes`.
+        Page::Online | Page::Host | Page::Join | Page::Password | Page::Connecting | Page::Room => Vec::new(),
     }
 }
 
-fn enter(mut menu: ResMut<Menu>) {
+fn enter(mut menu: ResMut<Menu>, mut online: ResMut<Online>, session: Res<Session>) {
     *menu = Menu::default();
     menu.focus = 2;
+    // Out of a session, the way back in is where the menu opens.
+    if std::mem::take(&mut online.left) || session.notice.is_some() {
+        (menu.page, menu.focus) = (Page::Online, 1);
+        return;
+    }
     // `BRICK_MENU=race` (or options, game, audio) opens on that page, for screenshots.
     let page = match std::env::var("BRICK_MENU").as_deref() {
         Ok("race") => Page::SingleRace,
@@ -442,6 +667,9 @@ fn enter(mut menu: ResMut<Menu>) {
         Ok("audio") => Page::AudioOptions,
         Ok("video") => Page::VideoOptions,
         Ok("extras") => Page::Extras,
+        Ok("online") => Page::Online,
+        Ok("host") => Page::Host,
+        Ok("join") => Page::Join,
         _ => return,
     };
     (menu.page, menu.focus) = (page, page.first());
@@ -469,6 +697,7 @@ fn hit(item: &Item, art: &Art, at: Vec2) -> Option<i32> {
             let width = art.fonts.get("font_ths").map_or(0.0, |f| f.render(label, false).width as f32);
             Rect::from_corners(*corner, *corner + Vec2::new(ICON + width, ICON)).contains(at).then_some(0)
         }
+        Widget::Field { area, .. } => area.contains(at).then_some(0),
         Widget::Selector { area, .. } | Widget::Slider { area, .. } => {
             let end = if matches!(item.widget, Widget::Slider { .. }) { 64.0 } else { ICON };
             area.contains(at).then_some({
@@ -497,10 +726,66 @@ fn input(
     mut exit: MessageWriter<AppExit>,
     mut pointed: Local<Option<Vec2>>,
     mut championship: ResMut<Championship>,
+    mut commands: Commands,
+    mut typed: MessageReader<KeyboardInput>,
+    time: Res<Time<Real>>,
+    (role, mut session, mut room, lobby, mut online): (Res<Role>, ResMut<Session>, ResMut<Room>, Res<Lobby>, ResMut<Online>),
 ) {
-    let items = items(menu.page, &art, &circuits, &settings, &championship);
-    let pressed = |codes: &[KeyCode]| keys.any_just_pressed(codes.iter().copied());
+    // In a session the menu is its room, or the wait to be let into it.
+    let home = match *role {
+        Role::Offline => None,
+        Role::Client if session.you == 0 => Some(Page::Connecting),
+        _ => Some(Page::Room),
+    };
+    match home {
+        // The room opens on being ready.
+        Some(page) if menu.page != page => (menu.page, menu.focus, menu.drawn) = (page, if page == Page::Room { 3 + VOTED.len() } else { 0 }, false),
+        None if matches!(menu.page, Page::Room | Page::Connecting) => (menu.page, menu.focus, menu.drawn) = (Page::Online, 1, false),
+        _ => {}
+    }
+    if online.seen != (room.revision, lobby.revision) {
+        (online.seen, menu.drawn) = ((room.revision, lobby.revision), false);
+    }
+    // The list of sessions is kept fresh while it is being looked at.
+    if menu.page == Page::Join {
+        online.refresh -= time.delta_secs();
+        if online.refresh <= 0.0 {
+            online.refresh = 3.0;
+            lobby.list();
+        }
+    }
+    let items = items(menu.page, &art, &circuits, &settings, &championship, &Wired { role: *role, session: &session, room: &room, lobby: &lobby, online: &online });
     let focus = menu.focus.min(items.len() - 1);
+    // Typing takes the letters and the space bar, which otherwise work the menu.
+    let typing = match items[focus].action {
+        Action::Type(what) => Some(what),
+        _ => None,
+    };
+    let pressed = |codes: &[KeyCode]| keys.any_just_pressed(codes.iter().copied().filter(|code| typing.is_none() || matches!(code, KeyCode::ArrowDown | KeyCode::ArrowUp | KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::Enter | KeyCode::Escape)));
+    match typing {
+        Some(what) => {
+            let (words, most): (&mut String, usize) = match what {
+                Typed::Name => (&mut settings.name, NAME_LENGTH),
+                Typed::Title => (&mut online.title, TITLE_LENGTH),
+                Typed::Password => (&mut online.password, PASSWORD_LENGTH),
+                Typed::Key => (&mut online.key, PASSWORD_LENGTH),
+            };
+            for key in typed.read().filter(|key| key.state.is_pressed()) {
+                match &key.logical_key {
+                    Key::Backspace => drop(words.pop()),
+                    Key::Space if words.chars().count() < most => words.push(' '),
+                    Key::Character(letters) => {
+                        // The game's lettering is capitals, and so is what is typed.
+                        let fit = letters.chars().map(|c| c.to_ascii_uppercase()).filter(|c| c.is_ascii_alphanumeric() || "-_'!?.".contains(*c));
+                        words.extend(fit.take(most.saturating_sub(words.chars().count())));
+                    }
+                    _ => continue,
+                }
+                menu.drawn = false;
+            }
+        }
+        None => typed.clear(),
+    }
     let step = |by: usize| {
         // On to the next thing that can be chosen.
         let mut to = focus;
@@ -556,8 +841,16 @@ fn input(
     if pressed(&[KeyCode::Escape]) {
         let back = match menu.page {
             Page::Main => None,
-            Page::SingleRace | Page::CircuitRace | Page::TimeRace | Page::Options => Some(Page::Main),
+            Page::SingleRace | Page::CircuitRace | Page::TimeRace | Page::Options | Page::Online => Some(Page::Main),
             Page::GameOptions | Page::VideoOptions | Page::AudioOptions | Page::Extras => Some(Page::Options),
+            Page::Host | Page::Join => Some(Page::Online),
+            Page::Password => Some(Page::Join),
+            // Backing out of a session is leaving it.
+            Page::Room | Page::Connecting => {
+                online.left = true;
+                net::leave(&mut commands, &mut session, &mut settings, None, &mut next);
+                Some(Page::Online)
+            }
         };
         if let Some(back) = back {
             sfx.play(id::MENU_BACK);
@@ -570,9 +863,19 @@ fn input(
     // Steps a choice round its `count` options.
     let turn = |value: usize, count: usize| (value as i32 + change).rem_euclid(count as i32) as usize;
     if change != 0 {
+        // In the room it is the player's wish for the next race that is changed, and
+        // not their own settings.
+        let mut wish = (menu.page == Page::Room).then(|| Wired { role: *role, session: &session, room: &room, lobby: &lobby, online: &online }.wish(&settings, &circuits));
+        let voting = wish.is_some();
+        let settings: &mut Settings = match &mut wish {
+            Some(wish) => wish,
+            None => &mut settings,
+        };
         let races: Vec<usize> = (0..circuits.0.len()).collect();
         let here = group(&circuits, settings.circuit);
         match action {
+            // The room has one selector for the circuit, which goes round them all.
+            Action::RaceChoice if voting => settings.circuit = turn(settings.circuit, circuits.0.len()),
             Action::Circuit => {
                 // On to the first race of the next circuit that has any.
                 let groups = CIRCUIT_ICONS.len();
@@ -599,7 +902,10 @@ fn input(
             Action::Extra(extra) => settings.turn(extra, change),
             _ => {}
         }
-        if !matches!(action, Action::Go(_) | Action::Race | Action::TimeRace | Action::StartSeries | Action::Quit | Action::Nothing) {
+        if let Some(wish) = wish {
+            (room.ballot, room.revision) = (Some(Rules::of(&wish, &circuits)), room.revision + 1);
+        }
+        if matches!(items[focus].widget, Widget::Selector { .. } | Widget::Slider { .. }) {
             sfx.play(if matches!(action, Action::Music | Action::Sound) { id::MENU_SLIDER } else { id::MENU_SELECT });
             menu.drawn = false;
         }
@@ -607,9 +913,65 @@ fn input(
     if chosen {
         match action {
             Action::Go(page) => {
-                let forward = !matches!(page, Page::Main) && !(page == Page::Options && menu.page != Page::Main);
+                let forward = !matches!(page, Page::Main) && !(page == Page::Options && menu.page != Page::Main) && !(page == Page::Online && menu.page != Page::Main);
                 sfx.play(if forward { id::MENU_CONFIRM } else { id::MENU_BACK });
-                go(&mut menu, page, page.first());
+                match page {
+                    // A session is called after its host until it is called something else.
+                    Page::Host if online.title.is_empty() => online.title = format!("{}'S RACE", settings.name).chars().take(TITLE_LENGTH).collect(),
+                    Page::Join => online.refresh = 0.0,
+                    _ => {}
+                }
+                go(&mut menu, page, if page == Page::Online { 1 } else { page.first() });
+            }
+            // Typed, a field is done with: on to the next thing.
+            Action::Type(_) => {
+                (menu.focus, menu.drawn) = (step(1), false);
+                sfx.play(id::MENU_HIGHLIGHT);
+            }
+            Action::BeginHosting | Action::Pick(_) | Action::Dial => {
+                if settings.name.trim().is_empty() {
+                    settings.name = "PLAYER".into();
+                }
+                let picked = match action {
+                    Action::Pick(n) => lobby.sessions.get(n).cloned(),
+                    _ => online.picked.clone(),
+                };
+                match (action, picked) {
+                    (Action::BeginHosting, _) => {
+                        sfx.play(id::MENU_CONFIRM);
+                        net::host_session(&mut commands, &mut session, &settings, &circuits, online.title.trim(), &online.password);
+                    }
+                    // A locked session wants its password first.
+                    (Action::Pick(_), Some(listed)) if listed.locked => {
+                        sfx.play(id::MENU_CONFIRM);
+                        (online.picked, online.key) = (Some(listed), String::new());
+                        go(&mut menu, Page::Password, 0);
+                    }
+                    (_, Some(listed)) => {
+                        sfx.play(id::MENU_CONFIRM);
+                        net::join_session(&mut commands, &mut session, &settings, &circuits, &listed, &online.key);
+                        online.key.clear();
+                    }
+                    (_, None) => sfx.play(id::MENU_REFUSE),
+                }
+            }
+            Action::Refresh => {
+                sfx.play(id::MENU_SELECT);
+                online.refresh = 3.0;
+                lobby.list();
+            }
+            Action::Ready => {
+                sfx.play(id::MENU_SELECT);
+                (room.ready, room.revision) = (!room.ready, room.revision + 1);
+            }
+            Action::Begin => {
+                sfx.play(id::MENU_CONFIRM);
+                room.begin = true;
+            }
+            Action::Leave => {
+                sfx.play(id::MENU_BACK);
+                online.left = true;
+                net::leave(&mut commands, &mut session, &mut settings, None, &mut next);
             }
             Action::Race | Action::TimeRace => {
                 sfx.play(id::MENU_CONFIRM);
@@ -646,6 +1008,7 @@ fn draw(
     championship: Res<Championship>,
     window: Single<&Window, With<PrimaryWindow>>,
     roots: Query<Entity, With<Root>>,
+    (role, session, room, lobby, online): (Res<Role>, Res<Session>, Res<Room>, Res<Lobby>, Res<Online>),
 ) {
     // The whole screen is scaled to fit the window.
     let fit = (Vec2::new(window.width(), window.height()) / SCREEN).min_element();
@@ -660,8 +1023,10 @@ fn draw(
         commands.entity(root).despawn();
     }
     let art = &mut *art;
-    let items = items(menu.page, art, &circuits, &settings, &championship);
+    let wired = Wired { role: *role, session: &session, room: &room, lobby: &lobby, online: &online };
+    let items = items(menu.page, art, &circuits, &settings, &championship, &wired);
     let labels = labels(menu.page, art);
+    let notes = notes(menu.page, &wired, &settings, &circuits);
     let focus = menu.focus.min(items.len() - 1);
 
     // Everything is a picture put somewhere on the 640 by 480 screen.
@@ -745,6 +1110,9 @@ fn draw(
     for (area, text, font) in &labels {
         words!(font, text, *area, LABEL, true);
     }
+    for (area, text, font, colour, centred) in &notes {
+        words!(font, text, *area, *colour, *centred);
+    }
     for (index, item) in items.iter().enumerate() {
         let colour = match (item.enabled, index == focus) {
             (false, _) => DISABLED,
@@ -771,6 +1139,16 @@ fn draw(
                 }
                 if !words.is_empty() {
                     words!("font_ths", words, *area, colour, true);
+                }
+            }
+            Widget::Field { area, words } => {
+                fills.push((*area, BOX_FILL));
+                // Where the next letter goes is marked while it is being typed into.
+                words!("font_ths", words, Rect::from_corners(area.min + Vec2::X * 6.0, area.max), colour, false);
+                if index == focus {
+                    let width = if words.is_empty() { 0.0 } else { art.write("font_ths", words, true, &mut images).map_or(0.0, |written| written.1.x) };
+                    let at = Vec2::new(area.min.x + 8.0 + width, area.min.y + 5.0);
+                    fills.push((Rect::from_corners(at, at + Vec2::new(3.0, 22.0)), SELECTED));
                 }
             }
             Widget::Slider { area, value } => {

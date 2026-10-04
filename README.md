@@ -61,14 +61,15 @@ One player hosts from inside the game and the others join; nobody needs to forwa
 port. Games find each other's sessions on a small lobby server and then connect to the
 host directly. Everyone needs their own copy of the game data.
 
-Online play is being built. Today it is reached only by environment variables, cars
-and their collisions are shared but a joining player doesn't yet see bricks being taken
-or power-ups in flight, and there are no menus for it:
+Choose **Online race** on the main menu. Give yourself a name, then either host a
+race (a title, and a password if you want one) or pick one from the list to join. A
+session waits in its room between races, where everyone says how they would have the
+next one run: the circuit, laps, computer cars, and the port's own ways of racing. When
+everyone is ready, or half a minute after the first is, the circuit is drawn from those
+asked for and the rest goes to the majority, the host settling a tie.
 
-```sh
-BRICK_NET=host:2 BRICK_SESSION="Friday night" BRICK_NAME=Me cargo run --release    # host, starting once two are in
-BRICK_NET=join:"Friday night" BRICK_NAME=You cargo run --release                   # join
-```
+Online play is still being built: cars and their collisions are shared, but a joining
+player doesn't yet see bricks being taken or power-ups in flight.
 
 ## For people working on it
 

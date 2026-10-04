@@ -53,10 +53,12 @@ impl Circuits {
 /// The last three are longer than any race of the original's.
 pub const LAP_CHOICES: [i32; 7] = [1, 3, 5, 7, 10, 15, 20];
 pub const MAX_OPPONENTS: usize = 5;
+/// The longest name a player may go by online.
+pub const NAME_LENGTH: usize = 10;
 const CIRCUIT_LAPS: i32 = 3;
 pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("Hard", 1.06)];
 
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct Settings {
     pub circuit: usize,
     pub lap_choice: usize,
@@ -84,6 +86,8 @@ pub struct Settings {
     pub fullscreen: bool,
     /// Edges smoothed by multisampling.
     pub smoothing: bool,
+    /// What the player goes by when racing online.
+    pub name: String,
 }
 
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
@@ -150,6 +154,7 @@ impl Settings {
             vsync: true,
             fullscreen: false,
             smoothing: true,
+            name: "PLAYER".into(),
         }
     }
 
@@ -172,13 +177,18 @@ impl Settings {
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
         ];
-        kept.iter().map(|(name, value)| format!("{name}={value}\n")).collect()
+        let numbers: String = kept.iter().map(|(name, value)| format!("{name}={value}\n")).collect();
+        format!("{numbers}name={}\n", self.name)
     }
 
     /// Takes what a file of `write`'s has to say, leaving alone anything it doesn't
     /// mention or that is out of range.
     fn read(&mut self, text: &str) {
         for line in text.lines() {
+            if let Some(name) = line.strip_prefix("name=").map(str::trim).filter(|name| !name.is_empty()) {
+                self.name = name.chars().take(NAME_LENGTH).collect();
+                continue;
+            }
             let Some((name, Ok(value))) = line.split_once('=').map(|(name, value)| (name, value.trim().parse::<usize>())) else {
                 continue;
             };
