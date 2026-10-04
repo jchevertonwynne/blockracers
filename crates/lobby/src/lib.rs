@@ -9,6 +9,7 @@
 //! | `GET /sessions?protocol=N` | the list |
 //! | `GET /healthz`, `GET /metrics` | for the cluster's probes and scraping |
 //! | `GET /` | a page saying what this is, where its source is, and how busy it is |
+//! | `GET /favicon.ico` | the picture a browser puts beside that page: a brick |
 //!
 //! Nothing is kept across a restart: a host whose session has gone is told so by its
 //! next beat (404) and lists it again.
@@ -45,6 +46,9 @@ struct Entry {
     heard: Instant,
 }
 
+/// The picture a browser shows beside the page: a brick from above, drawn for this.
+const FAVICON: &[u8] = include_bytes!("favicon.png");
+
 /// Where the game and this server come from.
 const SOURCE: &str = "https://github.com/jchevertonwynne/blockracers";
 
@@ -78,6 +82,7 @@ pub fn app() -> Router {
         .route("/sessions", post(register).get(list))
         .route("/sessions/{id}", put(beat).delete(close))
         .route("/", get(home))
+        .route("/favicon.ico", get(|| async { ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=86400")], FAVICON) }))
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(MAX_BODY))
@@ -229,6 +234,7 @@ async fn home(State(lobby): State<Shared>) -> Html<String> {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Brick Racers lobby</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
 <style>
 body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; }}
 dl {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 1rem; }}
@@ -385,6 +391,20 @@ mod tests {
         assert!(page.contains("<td>&lt;b&gt;Friday&lt;/b&gt; &amp; co</td>") && !page.contains("<b>Friday"));
         assert!(page.contains("<td>3/6</td><td>racing Royal Knights Raceway</td><td>password</td>"));
         assert!(page.contains("<dt>Players</dt><dd>4</dd>") && page.contains("<dt>Racing</dt><dd>1</dd>"));
+    }
+
+    #[tokio::test]
+    async fn a_browser_is_given_a_picture_for_the_page() {
+        let app = app();
+        let request = Request::builder().uri("/favicon.ico").body(Body::empty()).unwrap();
+        let answer = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(answer.status(), StatusCode::OK);
+        assert_eq!(answer.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = answer.into_body().collect().await.unwrap().to_bytes();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() == FAVICON.len());
+        // And the page says where it is.
+        let (_, page) = send(&app, "GET", "/", None, None, None).await;
+        assert!(page.contains(r#"<link rel="icon" type="image/png" href="/favicon.ico">"#));
     }
 
     #[test]

@@ -1,8 +1,12 @@
 # Brick Racers
 
-A port of LEGO Racers (1999) to Rust and [Bevy](https://bevyengine.org). It plays the
-original game's circuits, cars, sounds and menus from the original game's own data
-files, and adds a few things of its own, racing other people online among them.
+A racing game in Rust and [Bevy](https://bevyengine.org), based on LEGO Racers (1999).
+It plays the original game's circuits, cars, sounds and menus from the original game's
+own data files, which you supply, and adds a few things of its own, racing other
+people online among them.
+
+Brick Racers is a fan project. It is not made, endorsed or supported by the LEGO
+Group, and LEGO is the LEGO Group's trademark.
 
 Nothing of the original game is in this repository. You need your own copy.
 

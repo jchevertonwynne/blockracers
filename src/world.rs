@@ -28,9 +28,9 @@ const DEFAULT_JAM: &str = "Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM";
 /// Half-width of the band around the recorded racing line that the AI may use.
 const LANE: f32 = 4.0;
 
-/// The game is Z-up; this is a pure rotation onto Bevy's Y-up axes.
+/// The game is Z-up; this turns it onto Bevy's Y-up axes, mirrored if the race is.
 fn to_world(p: [f32; 3]) -> Vec3 {
-    Vec3::new(p[0], p[2], -p[1]) * UNIT
+    scenery::to_world(Vec3::from(p))
 }
 
 pub struct Surface {
@@ -465,6 +465,9 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
         track.collision.set_passable(index + 1, passable);
         track.surfaces.insert(name.clone(), (index + 1, passable));
     }
+    // Mirrored on their way in, the triangles face the other way, and the collision
+    // world needs telling which side of each is its front.
+    track.collision.set_mirrored(scenery::mirror());
     for tri in &volume.triangles {
         let name = volume.materials.get(tri[3] as usize);
         let mut surface = name.and_then(|n| surface_table.get(n)).copied().unwrap_or_default();

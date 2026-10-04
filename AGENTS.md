@@ -1,7 +1,9 @@
 # Working on Brick Racers
 
-A Rust/Bevy port of LEGO Racers that loads the original game's data. The aim is to
-behave, sound and look like the original; the decompilation is the reference for how.
+A racing game in Rust and Bevy, based on LEGO Racers (1999): it loads the original
+game's data and aims to behave, sound and look like it; the decompilation is the
+reference for how. It is its own project, and not the LEGO Group's: it is called Brick
+Racers, its package is `blockracers`, and nothing it says of itself claims otherwise.
 
 ## Where things are
 
@@ -81,7 +83,7 @@ menu instead. These combine with it:
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
 | `BRICK_SESSION`, `BRICK_NAME`, `BRICK_CAR`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, who they race as (a code from `roster::NAMES`, such as `PH`), the password set or given |
 | `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
-| `RUST_LOG=legoracers::hazards=debug` | per-module logging |
+| `RUST_LOG=blockracers::hazards=debug` | per-module logging |
 
 An online demo is two runs at once, a host and a joiner, each with its own
 `BRICK_DEMO`; both wait at the menu until the session's race begins, so allow ten
