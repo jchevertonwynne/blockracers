@@ -304,7 +304,7 @@ fn load_race(
     mut rig: ResMut<camera::Rig>,
 ) {
     let circuit = &circuits.0[settings.circuit];
-    match circuit.race.as_deref().and_then(|race| world::load_in(race, settings.championship.as_deref())) {
+    match circuit.race.as_deref().and_then(|race| world::load_in(race, settings.championship.as_deref(), settings.time_race)) {
         Some((track, loaded)) => {
             commands.insert_resource(track);
             commands.insert_resource(loaded);
@@ -313,7 +313,7 @@ fn load_race(
             if circuit.race.is_some() {
                 warn!("could not load {}; using the brick circuit", circuit.name);
             }
-            commands.insert_resource(Track::new());
+            commands.insert_resource(Track::built(circuit.layout));
             commands.remove_resource::<LoadedWorld>();
         }
     }
@@ -361,10 +361,12 @@ fn tag_race_entities(
     }
 }
 
-/// The built-in circuit, used when the original game's data isn't available.
+/// A built-in circuit: one of our own, or the stand-in for one that didn't load.
 fn setup_brick_world(
     mut commands: Commands,
     track: Res<Track>,
+    circuits: Res<Circuits>,
+    settings: Res<Settings>,
     mut rng: ResMut<Rng>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -372,7 +374,7 @@ fn setup_brick_world(
     // Everything static is vertex-coloured and shares one plastic material.
     let plastic = materials.add(StandardMaterial { perceptual_roughness: 0.5, ..default() });
     commands.spawn((Mesh3d(meshes.add(track.build_mesh())), MeshMaterial3d(plastic.clone())));
-    commands.spawn((Mesh3d(meshes.add(track.build_scenery(&mut rng))), MeshMaterial3d(plastic)));
+    commands.spawn((Mesh3d(meshes.add(track.build_scenery(circuits.0[settings.circuit].layout, &mut rng))), MeshMaterial3d(plastic)));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(3000.0, 3000.0))),
         MeshMaterial3d(materials.add(StandardMaterial {

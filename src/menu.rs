@@ -2,6 +2,7 @@
 
 use crate::audio::{Sfx, id};
 use crate::meshgen::YELLOW;
+use crate::track::Layout;
 use crate::world;
 use bevy::prelude::*;
 
@@ -16,8 +17,10 @@ pub enum Screen {
 
 pub struct Circuit {
     pub name: String,
-    /// Folder in the original game's archive; `None` is the built-in brick circuit.
+    /// Folder in the original game's archive; `None` is one of the built-in circuits.
     pub race: Option<String>,
+    /// Which built-in circuit, when it is one.
+    pub layout: Layout,
 }
 
 #[derive(Resource)]
@@ -28,9 +31,9 @@ impl Circuits {
     pub fn find() -> Self {
         let mut circuits: Vec<Circuit> = world::circuits()
             .into_iter()
-            .map(|(race, name)| Circuit { name, race: Some(race) })
+            .map(|(race, name)| Circuit { name, race: Some(race), layout: Layout::default() })
             .collect();
-        circuits.push(Circuit { name: "Brick Circuit".into(), race: None });
+        circuits.extend(Layout::ALL.map(|layout| Circuit { name: layout.name().into(), race: None, layout }));
         Circuits(circuits)
     }
 }
@@ -55,10 +58,14 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Starts on the circuit named by `$LEGO_RACE`, if there is one.
+    /// Starts on the circuit named by `$LEGO_RACE`, if there is one: a folder of the
+    /// original's, or a built-in circuit's key.
     pub fn new(circuits: &Circuits) -> Self {
         let wanted = std::env::var("LEGO_RACE").ok();
-        let circuit = circuits.0.iter().position(|c| c.race.is_some() && c.race == wanted);
+        let circuit = circuits.0.iter().position(|c| match &c.race {
+            Some(_) => c.race == wanted,
+            None => wanted.as_deref() == Some(c.layout.key()),
+        });
         Settings { circuit: circuit.unwrap_or(0), lap_choice: 1, championship: None, time_race: false, opponents: MAX_OPPONENTS, difficulty: 1, music: 14, sound: MAX_VOLUME }
     }
 

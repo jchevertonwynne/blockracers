@@ -985,9 +985,11 @@ mod tests {
     }
 
     #[test]
-    fn ai_laps_the_brick_circuit() {
-        let laps = solo_run(&Track::new(), 150.0);
-        assert!(laps.len() >= 3, "{laps:?}");
+    fn ai_laps_the_built_in_circuits() {
+        for layout in crate::track::Layout::ALL {
+            let laps = solo_run(&Track::built(layout), 150.0);
+            assert!(laps.len() >= 3, "{layout:?} {laps:?}");
+        }
     }
 
     /// Needs the original game data; silently passes without it.

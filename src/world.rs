@@ -384,11 +384,12 @@ pub fn circuits() -> Vec<(String, String)> {
 /// `None` if the game data isn't there or doesn't hold what we need.
 #[cfg(test)]
 pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
-    load_in(race, None)
+    load_in(race, None, false)
 }
 
-/// As `load`, with the field of a given circuit rather than the race's own.
-pub fn load_in(race: &str, circuit: Option<&str>) -> Option<(Track, LoadedWorld)> {
+/// As `load`, with the field of a given circuit rather than the race's own, and the
+/// bricks of a time race or an ordinary one.
+pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Track, LoadedWorld)> {
     let jam = open_jam()?;
     let dir = format!("/GAMEDATA/{race}");
     let mut files: Vec<&str> = jam.list(&dir).collect();
@@ -509,7 +510,10 @@ pub fn load_in(race: &str, circuit: Option<&str>) -> Option<(Track, LoadedWorld)
             .collect();
     }
 
+    // `RaceSession` loads one power-up file: the one the race names, or for a time race
+    // the one with a 2 on the end of that name.
     let bricks = with_ext(".PWB")
+        .filter(|f| f.ends_with("2.PWB") == time_race)
         .filter_map(|f| jam.get(f))
         .flat_map(route::parse_powerups)
         .map(|(brick, pos)| {
@@ -649,5 +653,28 @@ pub fn spawn_world(
 ) {
     for surface in std::mem::take(&mut world.surfaces) {
         commands.spawn(surface_bundle(surface, &mut meshes, &mut materials, &mut images));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Needs the original game data; silently passes without it.
+    #[test]
+    fn a_race_has_its_own_bricks_and_a_time_race_has_others() {
+        for (race, name) in circuits() {
+            let bricks = |time_race| load_in(&race, None, time_race).map(|(_, world)| world.bricks).unwrap_or_default();
+            let (race_bricks, time_bricks) = (bricks(false), bricks(true));
+            assert!(race_bricks.len() > 20, "{name}: {} bricks", race_bricks.len());
+            // Fewer in a time race, and none at all where the original has no such file.
+            assert!(time_bricks.len() < race_bricks.len(), "{name}: {} in a time race", time_bricks.len());
+            // No brick sits inside another: the nearest pair is a kart's width apart.
+            for (i, a) in race_bricks.iter().enumerate() {
+                for b in &race_bricks[i + 1..] {
+                    assert!(a.1.distance(b.1) > 3.0, "{name}: bricks at {} and {}", a.1, b.1);
+                }
+            }
+        }
     }
 }

@@ -35,6 +35,76 @@ const CONTROL: &[[f32; 3]] = &[
 ];
 const SCALE: f32 = 1.4;
 
+/// Height of the figure of eight's bridge: more than a launched kart rises, so nothing
+/// on the road below reaches the deck.
+const DECK: f32 = 11.0;
+/// The figure of eight's control points as (x, height, z). The line runs under the
+/// bridge just after the start, round the wide east loop and up its far side, back
+/// over the bridge, and home through the kinked west loop.
+const FIGURE_EIGHT: &[[f32; 3]] = &[
+    [-30.0, 0.0, -30.0],
+    [0.0, 0.0, 0.0],
+    [60.0, 0.0, 60.0],
+    [120.0, 0.0, 85.0],
+    [180.0, 0.0, 60.0],
+    [205.0, 0.0, 0.0],
+    [180.0, 2.0, -60.0],
+    [120.0, 6.0, -85.0],
+    [60.0, DECK, -60.0],
+    [0.0, DECK, 0.0],
+    [-60.0, DECK, 60.0],
+    [-115.0, 6.0, 88.0],
+    [-175.0, 2.0, 75.0],
+    [-210.0, 0.0, 35.0],
+    [-195.0, 0.0, -10.0],
+    [-150.0, 0.0, -25.0],
+    [-140.0, 0.0, -70.0],
+    [-95.0, 0.0, -88.0],
+];
+
+/// The circuits built here rather than loaded from the original game's data.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Layout {
+    #[default]
+    Brick,
+    FigureEight,
+}
+
+impl Layout {
+    pub const ALL: [Layout; 2] = [Layout::Brick, Layout::FigureEight];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::Brick => "Brick Circuit",
+            Layout::FigureEight => "Figure Eight",
+        }
+    }
+
+    /// What `$LEGO_RACE` calls it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Layout::Brick => "BRICK",
+            Layout::FigureEight => "FIGURE8",
+        }
+    }
+
+    fn control(self) -> Vec<Vec3> {
+        let (points, scale) = match self {
+            Layout::Brick => (CONTROL, SCALE),
+            Layout::FigureEight => (FIGURE_EIGHT, 1.0),
+        };
+        points.iter().map(|c| Vec3::new(c[0] * scale, c[1], c[2] * scale)).collect()
+    }
+
+    /// The ground the scenery is scattered over: (least x and z, greatest x and z).
+    fn grounds(self) -> (Vec2, Vec2) {
+        match self {
+            Layout::Brick => (Vec2::new(-300.0, -340.0), Vec2::new(350.0, 150.0)),
+            Layout::FigureEight => (Vec2::new(-340.0, -220.0), Vec2::new(330.0, 220.0)),
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct Track {
     pub pts: Vec<Vec3>,
@@ -136,12 +206,18 @@ fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
 
 impl Track {
     /// The built-in brick circuit.
+    #[cfg(test)]
     pub fn new() -> Self {
-        let ctrl: Vec<Vec3> = CONTROL
-            .iter()
-            .map(|c| Vec3::new(c[0] * SCALE, c[1], c[2] * SCALE))
-            .collect();
-        let mut track = Track::from_loop(&ctrl, ROAD_HW);
+        Track::built(Layout::Brick)
+    }
+
+    /// One of the built-in circuits.
+    pub fn built(layout: Layout) -> Self {
+        let mut track = Track::from_loop(&layout.control(), ROAD_HW);
+        // The spline dips a little before each climb; the road stays on the ground.
+        for p in &mut track.pts {
+            p.y = p.y.max(0.0);
+        }
         // Tarmac, verges and the inner faces of the barriers.
         let n = track.n();
         let grass = Surface { rolling_resistance: 20.0, ..default() };
@@ -277,12 +353,29 @@ impl Track {
         self.collision.ground(p + Vec3::Y * 4.0, 12.0).map_or(p, |hit| hit.point)
     }
 
+    /// The sample closest to `pos`, height included: where the road passes over
+    /// itself, the level `pos` is on.
     pub fn nearest(&self, pos: Vec3) -> usize {
         (0..self.n())
             .min_by(|&a, &b| {
-                xz_dist2(self.pts[a], pos).total_cmp(&xz_dist2(self.pts[b], pos))
+                self.pts[a].distance_squared(pos).total_cmp(&self.pts[b].distance_squared(pos))
             })
             .unwrap()
+    }
+
+    /// Whether each sample's road is carried over another stretch of the circuit, so
+    /// that what holds it up has to leave the way underneath clear.
+    fn bridged(&self) -> Vec<bool> {
+        let reach = (WALL + 4.0).powi(2);
+        let edges = [-WALL - 0.8, 0.0, WALL + 0.8];
+        (0..self.n())
+            .map(|i| {
+                self.pts.iter().any(|&below| {
+                    self.pts[i].y - below.y > 6.0
+                        && edges.iter().any(|&lat| xz_dist2(self.pts[i] + self.right[i] * lat, below) < reach)
+                })
+            })
+            .collect()
     }
 
     /// Projects a world position near sample `hint` into track space: (sample index,
@@ -307,6 +400,8 @@ impl Track {
         let n = self.n();
         let up = Vec3::Y;
         let road = [Color::srgb(0.25, 0.26, 0.28), Color::srgb(0.28, 0.29, 0.31)];
+        let bridged = self.bridged();
+        let span = |i: usize| bridged[i] || bridged[(i + 1) % n];
         for i in 0..n {
             let j = (i + 1) % n;
             let (p0, p1) = (self.pts[i], self.pts[j]);
@@ -338,11 +433,31 @@ impl Track {
                 b.cyl(mid + up * 0.9, 0.25, 0.15, rot, barrier);
 
                 // Embankment under raised sections, visible from both sides.
-                if p0.y > 0.05 || p1.y > 0.05 {
+                if (p0.y > 0.05 || p1.y > 0.05) && !span(i) {
                     let (o0, o1) = at(side * (WALL + 0.8));
                     let (g0, g1) = (o0.with_y(-0.1), o1.with_y(-0.1));
                     b.quad(o0, o1, g1, g0, TAN);
                     b.quad(o1, o0, g0, g1, TAN);
+                }
+            }
+
+            if span(i) {
+                // A bridge: a deck under the road, and nothing under that.
+                let rot = Transform::IDENTITY.looking_to(p1 - p0, up).rotation;
+                let half = Vec3::new(WALL + 0.8, 0.4, p0.distance(p1) / 2.0 + 0.05);
+                b.cuboid((p0 + p1) / 2.0 - up * 0.45, half, rot, GREY);
+            }
+            if span(i) != span((i + n - 1) % n) {
+                // Where the embankment stops for the bridge: its end, and a pier at
+                // each corner.
+                let (a, c) = (p0 - r0 * (WALL + 0.8), p0 + r0 * (WALL + 0.8));
+                let (a0, c0) = (a.with_y(-0.1), c.with_y(-0.1));
+                b.quad(a, c, c0, a0, TAN);
+                b.quad(c, a, a0, c0, TAN);
+                let rot = Transform::IDENTITY.looking_to(self.flat[i], up).rotation;
+                for corner in [a, c] {
+                    let half = Vec3::new(1.2, corner.y / 2.0 + 1.0, 1.2);
+                    b.brick(corner.with_y(half.y), half, rot, YELLOW, (2, 2));
                 }
             }
         }
@@ -368,11 +483,12 @@ impl Track {
     }
 
     /// Brick trees and oversized bricks scattered around the outside of the circuit.
-    pub fn build_scenery(&self, rng: &mut Rng) -> Mesh {
+    pub fn build_scenery(&self, layout: Layout, rng: &mut Rng) -> Mesh {
         let mut b = BrickMesh::default();
+        let (least, most) = layout.grounds();
         for _ in 0..420 {
-            let pos = Vec3::new(rng.range(-300.0, 350.0), 0.0, rng.range(-340.0, 150.0));
-            let clear = xz_dist2(self.pts[self.nearest(pos)], pos).sqrt();
+            let pos = Vec3::new(rng.range(least.x, most.x), 0.0, rng.range(least.y, most.y));
+            let clear = self.pts.iter().map(|&p| xz_dist2(p, pos)).fold(f32::MAX, f32::min).sqrt();
             if clear < WALL + 7.0 {
                 continue;
             }
@@ -410,23 +526,57 @@ mod tests {
 
     #[test]
     fn barriers_never_fold_and_track_never_touches_itself() {
-        let t = Track::new();
-        let n = t.n();
-        assert!(t.length > 900.0 && t.length < 1400.0, "length {}", t.length);
-        for i in 0..n {
-            let j = (i + 1) % n;
-            for side in [-1.0, 1.0] {
-                let a = t.pts[i] + t.right[i] * side * (WALL + 0.8);
-                let b = t.pts[j] + t.right[j] * side * (WALL + 0.8);
-                assert!((b - a).dot(t.fwd[i]) > 0.2, "barrier folds at {i}");
-            }
-            // Any other part of the track must be far away unless it's nearby along the lap.
-            for k in 0..n {
-                let along = (i as i32 - k as i32).rem_euclid(n as i32).min((k as i32 - i as i32).rem_euclid(n as i32));
-                if along > 30 {
-                    assert!(xz_dist2(t.pts[i], t.pts[k]).sqrt() > 2.0 * WALL + 4.0, "{i} near {k}");
+        for layout in Layout::ALL {
+            let t = Track::built(layout);
+            let n = t.n();
+            assert!(t.length > 900.0 && t.length < 1400.0, "{layout:?} length {}", t.length);
+            for i in 0..n {
+                let j = (i + 1) % n;
+                for side in [-1.0, 1.0] {
+                    let a = t.pts[i] + t.right[i] * side * (WALL + 0.8);
+                    let b = t.pts[j] + t.right[j] * side * (WALL + 0.8);
+                    assert!((b - a).dot(t.fwd[i]) > 0.2, "{layout:?} barrier folds at {i}");
+                }
+                // Any other part of the track must be far away unless it's nearby along
+                // the lap, or passes well overhead.
+                for k in 0..n {
+                    let along = (i as i32 - k as i32).rem_euclid(n as i32).min((k as i32 - i as i32).rem_euclid(n as i32));
+                    let apart = xz_dist2(t.pts[i], t.pts[k]).sqrt() > 2.0 * WALL + 4.0;
+                    let level = (t.pts[i].y - t.pts[k].y).abs() < DECK - 1.0;
+                    assert!(along <= 30 || apart || !level, "{layout:?} {i} near {k}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_figure_eight_crosses_itself_once_by_a_bridge() {
+        let t = Track::built(Layout::FigureEight);
+        let bridged = t.bridged();
+        let n = t.n();
+        let starts = (0..n).filter(|&i| bridged[i] && !bridged[(i + n - 1) % n]).count();
+        assert_eq!(starts, 1);
+        assert!(Track::new().bridged().iter().all(|b| !b));
+        // On the bridge and under it, the road found is the one the racing line is on,
+        // and so is the sample.
+        for i in (0..n).filter(|&i| bridged[i]) {
+            let s = i as f32 * t.spacing;
+            assert!((t.surface_point(s, 0.0).y - t.pts[i].y).abs() < 0.2, "deck at {i}");
+            assert_eq!(t.nearest(t.pts[i]), i);
+            let under = (0..n).find(|&k| t.pts[i].y - t.pts[k].y > 6.0 && xz_dist2(t.pts[i], t.pts[k]) < 4.0);
+            if let Some(k) = under {
+                assert!(t.surface_point(k as f32 * t.spacing, 0.0).y < 0.5, "road under {i}");
+                assert_eq!(t.nearest(t.pts[k]), k);
+            }
+        }
+        // Neither level's gates or lap zones reach the other.
+        for gate in &t.course.checkpoints {
+            let i = t.nearest(gate.position);
+            assert!(!bridged[i], "gate on the bridge at {i}");
+        }
+        for &(centre, radius, _) in &t.course.zones {
+            let crossing = t.pts[(0..n).find(|&i| bridged[i]).unwrap()];
+            assert!(xz_dist2(centre, crossing).sqrt() > 2.0 * radius);
         }
     }
 

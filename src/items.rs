@@ -282,17 +282,17 @@ pub fn setup_items(
     }
 
     // Otherwise: rows of bricks at regular stations around the lap, alternating
-    // coloured and white.
+    // coloured and white, each row spread over the width of the road.
     const STATIONS: usize = 10;
     for station in 1..STATIONS {
         let s = track.length * station as f32 / STATIONS as f32;
         if station % 2 == 1 {
-            for (i, lat) in [-4.5, -1.5, 1.5, 4.5].into_iter().enumerate() {
-                spawn(track.point(s, lat), Some(powers[(i + station / 2) % 4]));
+            for (i, lat) in [-0.75, -0.25, 0.25, 0.75].into_iter().enumerate() {
+                spawn(track.point(s, lat * track.road), Some(powers[(i + station / 2) % 4]));
             }
         } else {
-            for lat in [-3.0, 0.0, 3.0] {
-                spawn(track.point(s, lat), None);
+            for lat in [-0.65, 0.0, 0.65] {
+                spawn(track.point(s, lat * track.road), None);
             }
         }
     }
