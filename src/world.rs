@@ -370,7 +370,7 @@ pub fn recast(loaded: &mut LoadedWorld, slot: usize, code: &str) -> bool {
 }
 
 fn open_jam() -> Option<Jam> {
-    Jam::open(std::env::var("LEGO_JAM").unwrap_or(DEFAULT_JAM.into()))
+    Jam::open(std::env::var("BRICK_JAM").unwrap_or(DEFAULT_JAM.into()))
 }
 
 /// Display names for the race folders. The archive's own race definitions mostly carry
@@ -419,7 +419,7 @@ pub fn circuit_order() -> Vec<(String, usize)> {
     order
 }
 
-/// Loads a race (a folder name such as `RACEC0R0`) from the archive at `$LEGO_JAM`.
+/// Loads a race (a folder name such as `RACEC0R0`) from the archive at `$BRICK_JAM`.
 /// `None` if the game data isn't there or doesn't hold what we need.
 #[cfg(test)]
 pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {

@@ -550,7 +550,7 @@ fn parse_timers(tokens: &[Token]) -> Vec<Timer> {
 
 /// Loads the events of a race (a folder name such as `RACEC0R0`).
 pub fn load(race: &str) -> Option<TrackEvents> {
-    let jam = Jam::open(std::env::var("LEGO_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()))?;
+    let jam = Jam::open(std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()))?;
     let dir = format!("/GAMEDATA/{race}");
     let mut files: Vec<&str> = jam.list(&dir).collect();
     files.sort();

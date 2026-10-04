@@ -166,7 +166,7 @@ impl Layout {
         }
     }
 
-    /// What `$LEGO_RACE` calls it.
+    /// What `$BRICK_RACE` calls it.
     pub fn key(self) -> &'static str {
         match self {
             Layout::Brick => "BRICK",

@@ -134,7 +134,7 @@ pub fn load(
 ) {
     commands.insert_resource(State::default());
     commands.remove_resource::<Art>();
-    let path = std::env::var("LEGO_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
+    let path = std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
     let Some(jam) = Jam::open(path) else { return };
     let language = format!("{COMMON}/ENGLISH");
     let strings = jam.get(&format!("{language}/GAME.SRF")).map(load_strings).unwrap_or_default();

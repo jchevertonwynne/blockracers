@@ -297,7 +297,7 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
 
 /// Loads the hazards of a race (a folder name such as `RACEC0R0`).
 pub fn load(race: &str) -> Option<Hazards> {
-    let jam = Jam::open(std::env::var("LEGO_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()))?;
+    let jam = Jam::open(std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()))?;
     Some(Hazards { all: parse(&tokenize(jam.get(&format!("/GAMEDATA/{race}/HAZARDS.HZB"))?)), ..default() })
 }
 

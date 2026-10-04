@@ -33,7 +33,7 @@ Lego_Racers_Win_Files_EN/
 or keep them anywhere and say where the archive is; the music is looked for beside it:
 
 ```sh
-LEGO_JAM=/path/to/LEGO.JAM cargo run
+BRICK_JAM=/path/to/LEGO.JAM cargo run
 ```
 
 That folder is git-ignored. Nothing else from the original is used: not `LEGORacers.exe`,

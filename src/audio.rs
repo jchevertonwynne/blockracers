@@ -306,7 +306,7 @@ pub fn plugin(app: &mut App) {
 }
 
 fn jam_path() -> PathBuf {
-    std::env::var("LEGO_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()).into()
+    std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()).into()
 }
 
 fn clip(data: &[u8], default_rate: u32) -> Arc<Clip> {

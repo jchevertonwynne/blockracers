@@ -132,10 +132,10 @@ impl Extra {
 }
 
 impl Settings {
-    /// Starts on the circuit named by `$LEGO_RACE`, if there is one: a folder of the
+    /// Starts on the circuit named by `$BRICK_RACE`, if there is one: a folder of the
     /// original's, or a built-in circuit's key.
     pub fn new(circuits: &Circuits) -> Self {
-        let wanted = std::env::var("LEGO_RACE").ok();
+        let wanted = std::env::var("BRICK_RACE").ok();
         let circuit = circuits.0.iter().position(|c| match &c.race {
             Some(_) => c.race == wanted,
             None => wanted.as_deref() == Some(c.layout.key()),

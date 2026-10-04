@@ -54,7 +54,7 @@ fn save_file() -> Option<PathBuf> {
 impl Championship {
     pub fn load() -> Self {
         let Some(jam) = Jam::open(
-            std::env::var("LEGO_JAM")
+            std::env::var("BRICK_JAM")
                 .unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()),
         ) else {
             return Championship::default();

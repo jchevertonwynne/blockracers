@@ -301,7 +301,7 @@ fn layout(data: &[u8]) -> HashMap<String, [f32; 4]> {
 }
 
 fn load_art() -> Option<Art> {
-    let path = std::env::var("LEGO_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
+    let path = std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
     let jam = Jam::open(path)?;
     let fonts = load_fonts(&jam, &format!("{DIR}/ENGLISH"), "GFONTS.FDB");
     let strings = jam.get(&format!("{DIR}/ENGLISH/MENUTEXT.SRF")).map(load_strings).unwrap_or_default();

@@ -8,7 +8,7 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
 ## Where things are
 
 - **Game data:** `Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM` (git-ignored; override
-  with `LEGO_JAM`). Without it the game falls back to a built-in brick circuit, and the
+  with `BRICK_JAM`). Without it the game falls back to a built-in brick circuit, and the
   tests that need it pass silently.
 - **Reference source:** the isledecomp/racers decompilation, checked out at
   `target/ref/racers` (`LEGORacers/src`, `common/`, `GolDP/`). It lives under `target/`,
@@ -60,7 +60,7 @@ menu instead. These combine with it:
 
 | Variable | Does |
 |---|---|
-| `LEGO_RACE=RACEC0R0` | which race folder to load (`BRICK`, `FIGURE8` and `GAUNTLET` are the built-in circuits; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
+| `BRICK_RACE=RACEC0R0` | which race folder to load (`BRICK`, `FIGURE8` and `GAUNTLET` are the built-in circuits; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
 | `BRICK_CAM=x,y,z,tx,ty,tz` | fixed camera, in the game's coordinates |
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
