@@ -205,6 +205,34 @@ pub fn kart_effects(
     (fx.sliding, fx.boosting) = (k.sliding, boosting);
 }
 
+/// The colours a car's materials were last multiplied by.
+#[derive(Component)]
+pub struct Tinted(Vec3);
+
+/// Shows each car in the colours the circuit's events have given it.
+pub fn tints(
+    mut commands: Commands,
+    karts: Query<(Entity, &Kart, Option<&Tinted>)>,
+    children: Query<&Children>,
+    parts: Query<&MeshMaterial3d<StandardMaterial>, (Without<Shadow>, Without<crate::kart::Shield>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (entity, kart, tinted) in &karts {
+        if tinted.map_or(Vec3::ONE, |t| t.0) == kart.tint {
+            continue;
+        }
+        commands.entity(entity).insert(Tinted(kart.tint));
+        for part in children.iter_descendants(entity) {
+            let Ok(handle) = parts.get(part) else { continue };
+            // The original's cars, which are drawn unlit; the brick-built ones share
+            // their materials and are left alone.
+            if let Some(mut material) = materials.get_mut(&handle.0).filter(|m| m.unlit) {
+                material.base_color = Color::srgb(kart.tint.x, kart.tint.y, kart.tint.z);
+            }
+        }
+    }
+}
+
 /// The dark patch under a car.
 #[derive(Component)]
 pub struct Shadow;

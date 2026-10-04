@@ -118,10 +118,231 @@ pub struct TrackEvents {
     /// What events do to the sky, and the changes asked for since the sky last looked.
     skies: Vec<crate::sky::Change>,
     pub sky: Vec<crate::sky::Change>,
+    particles: Vec<EventParticles>,
+    tints: Vec<EventTint>,
+    models: Vec<EventModel>,
+}
+
+/// When one of the things an event does is done: as it starts or as it ends, and
+/// whether its ending undoes it (`RaceEventResource`).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+struct When {
+    event: i32,
+    on_end: bool,
+    no_end: bool,
+}
+
+impl When {
+    fn of(header: &[Token], fields: &[Token]) -> Self {
+        When {
+            event: number(header.first()) as i32,
+            on_end: header.contains(&Token::Key(0x3c)),
+            no_end: fields.contains(&Token::Key(0x3a)),
+        }
+    }
+
+    /// Whether an event's starting (or ending) sets the thing going, and whether it stops it.
+    fn begins(&self, event: i32, start: bool) -> bool {
+        event == self.event && start != self.on_end
+    }
+
+    fn ends(&self, event: i32, start: bool) -> bool {
+        event == self.event && !start && !self.no_end && !self.on_end
+    }
+}
+
+/// Particles an event sets going (`ParticleResource`): which emitter, where and which
+/// way up, or the bone of a model they follow.
+struct EventParticles {
+    when: When,
+    emitter: String,
+    position: Vec3,
+    rotation: Quat,
+    /// Put where the event happened rather than where the record says.
+    at_event: bool,
+    follows: Option<(String, usize)>,
+    going: Option<Entity>,
+}
+
+/// A change to the colours of the car that sets an event off (`ColorTransformResource`):
+/// what they are multiplied by, or `None` to put them back.
+struct EventTint {
+    when: When,
+    tint: Option<Vec3>,
+}
+
+/// A model that is only there while an event is on, or only while it isn't
+/// (`ModelDistanceResource`).
+struct EventModel {
+    when: When,
+    prop: String,
+    hide_when_active: bool,
+}
+
+fn parse_particles(tokens: &[Token]) -> Vec<EventParticles> {
+    let world = |v: Vec3| crate::scenery::to_world(v).normalize_or_zero();
+    records(tokens, 0x3d)
+        .into_iter()
+        .filter_map(|(header, fields)| {
+            let after = |key: u16| fields.iter().position(|t| *t == Token::Key(key)).map(|at| &fields[at + 1..]);
+            let vec3 = |from: &[Token]| Vec3::new(number(from.first()), number(from.get(1)), number(from.get(2)));
+            let Some(Token::Str(emitter)) = after(0x3d)?.first() else { return None };
+            // The way it faces and its up, which an emitter's own directions are turned by.
+            let (forward, up) = match after(0x3e) {
+                Some(axes) => (vec3(axes), vec3(&axes[3.min(axes.len())..])),
+                None => (Vec3::X, Vec3::Z),
+            };
+            let plain = Mat3::from_cols(world(Vec3::X), world(Vec3::Y), world(Vec3::Z));
+            let turned = Mat3::from_cols(world(forward), world(up.cross(forward)), world(up));
+            let follows = match after(0x33).and_then(|name| name.first()) {
+                Some(Token::Str(name)) => Some((name.to_lowercase(), after(0x54).map_or(0, |node| number(node.first()) as usize))),
+                _ => None,
+            };
+            Some(EventParticles {
+                when: When::of(header, fields),
+                emitter: emitter.to_lowercase(),
+                position: after(0x3b).map_or(Vec3::ZERO, |p| crate::scenery::to_world(vec3(p))),
+                rotation: Quat::from_mat3(&(turned * plain.inverse())).normalize(),
+                at_event: fields.contains(&Token::Key(0x3f)),
+                follows,
+                going: None,
+            })
+        })
+        .collect()
+}
+
+/// A colour's channels are shifted down and then added to. Our cars' materials can
+/// only be multiplied, so what is added counts as so much more of the colour: a
+/// stand-in, right for the dark of a tunnel and near enough for the glow of lava.
+fn tint(shifts: [f32; 3], offsets: [f32; 3]) -> Vec3 {
+    Vec3::from([0, 1, 2].map(|c| 0.5f32.powf(shifts[c]) + 2.0 * offsets[c] / 255.0))
+}
+
+fn parse_tints(tokens: &[Token]) -> Vec<EventTint> {
+    records(tokens, 0x4d)
+        .into_iter()
+        // Those naming a model tint the model, which the port doesn't do.
+        .filter(|(_, fields)| !fields.contains(&Token::Key(0x33)))
+        .map(|(header, fields)| {
+            let three = |key: u16| {
+                let at = fields.iter().position(|t| *t == Token::Key(key));
+                [0, 1, 2].map(|n| at.map_or(0.0, |at| number(fields.get(at + 1 + n))))
+            };
+            let clear = fields.contains(&Token::Key(0x50));
+            // Done as the event ends, a change stays (`ParseColorTransforms`).
+            let mut when = When::of(header, fields);
+            when.no_end |= when.on_end;
+            EventTint { when, tint: (!clear).then(|| tint(three(0x4e), three(0x4f))) }
+        })
+        .collect()
+}
+
+fn parse_models(tokens: &[Token]) -> Vec<EventModel> {
+    records(tokens, 0x53)
+        .into_iter()
+        .filter_map(|(header, fields)| {
+            let at = fields.iter().position(|t| *t == Token::Key(0x33))?;
+            let Some(Token::Str(prop)) = fields.get(at + 1) else { return None };
+            Some(EventModel { when: When::of(header, fields), prop: prop.to_lowercase(), hide_when_active: fields.contains(&Token::Key(0x46)) })
+        })
+        .collect()
+}
+
+/// What events do besides sounds and animations: particles, the colours of the cars
+/// that set them off, and models that come and go.
+pub fn effects(
+    mut commands: Commands,
+    race: Res<Race>,
+    events: Option<ResMut<TrackEvents>>,
+    emitters: Option<Res<crate::particles::Emitters>>,
+    scenery: Option<Res<Scenery>>,
+    mut props: Query<(&crate::scenery::Prop, Option<&Animated>, &mut Visibility)>,
+    mut karts: Query<&mut Kart>,
+    mut placed: Query<&mut Transform, With<crate::particles::Emitter>>,
+) {
+    let (Some(mut events), Some(scenery)) = (events, scenery) else { return };
+    let events = &mut *events;
+    let shown = |on: bool| if on { Visibility::Inherited } else { Visibility::Hidden };
+    if race.phase == Phase::Intro {
+        // A fresh start: nothing going, every car its own colours, and each model
+        // there or not as it is with its event off.
+        for particles in &mut events.particles {
+            if let Some(entity) = particles.going.take() {
+                commands.entity(entity).try_despawn();
+            }
+        }
+        for mut kart in &mut karts {
+            kart.tint = Vec3::ONE;
+        }
+        for model in &events.models {
+            if let Some((_, _, mut visibility)) = scenery.0.get(&model.prop).and_then(|&e| props.get_mut(e).ok()) {
+                visibility.set_if_neq(shown(model.hide_when_active));
+            }
+        }
+        return;
+    }
+    for fired in &events.fired {
+        match fired.racer {
+            // A car's colours change as that car sets the event off, and no other's.
+            Some(racer) => {
+                let Ok(mut kart) = karts.get_mut(racer) else { continue };
+                for change in &events.tints {
+                    if change.when.begins(fired.event, fired.start) {
+                        kart.tint = change.tint.unwrap_or(Vec3::ONE);
+                    } else if change.when.ends(fired.event, fired.start) && change.tint.is_some() {
+                        kart.tint = Vec3::ONE;
+                    }
+                }
+            }
+            None => {
+                for particles in &mut events.particles {
+                    if particles.when.begins(fired.event, fired.start) && particles.going.is_none() {
+                        let at = fired.at.filter(|_| particles.at_event).unwrap_or(particles.position);
+                        let place = Transform::from_translation(at).with_rotation(particles.rotation);
+                        particles.going = emitters.as_ref().and_then(|e| e.spawn(&mut commands, &particles.emitter, place));
+                    } else if particles.when.ends(fired.event, fired.start) {
+                        if let Some(entity) = particles.going.take() {
+                            commands.entity(entity).try_despawn();
+                        }
+                    }
+                }
+                for model in &events.models {
+                    let on = if model.when.begins(fired.event, fired.start) {
+                        true
+                    } else if model.when.ends(fired.event, fired.start) {
+                        false
+                    } else {
+                        continue;
+                    };
+                    if let Some((_, _, mut visibility)) = scenery.0.get(&model.prop).and_then(|&e| props.get_mut(e).ok()) {
+                        visibility.set_if_neq(shown(on != model.hide_when_active));
+                    }
+                }
+            }
+        }
+    }
+    // Particles that ride on a model's bone go where it goes.
+    for particles in &mut events.particles {
+        let (Some(entity), Some((prop, bone))) = (particles.going, &particles.follows) else { continue };
+        // One that ran out by itself may be set going again.
+        let Ok(mut transform) = placed.get_mut(entity) else {
+            particles.going = None;
+            continue;
+        };
+        if let Some((prop, Some(animated), _)) = scenery.0.get(prop).and_then(|&e| props.get(e).ok()) {
+            transform.translation = animated.bone_position(prop, *bone, 0.0);
+        }
+    }
+    // The same for ones that stay put, so that they can be set going again.
+    for particles in &mut events.particles {
+        if particles.going.is_some_and(|entity| placed.get(entity).is_err()) && particles.follows.is_none() {
+            particles.going = None;
+        }
+    }
 }
 
 fn to_world(p: [f32; 3]) -> Vec3 {
-    Vec3::new(p[0], p[2], -p[1]) * UNIT
+    crate::scenery::to_world(Vec3::from(p))
 }
 
 fn number(token: Option<&Token>) -> f32 {
@@ -325,6 +546,9 @@ pub fn load(race: &str) -> Option<TrackEvents> {
         events.delays.extend(parse_delays(&tokens));
         events.doors.extend(parse_doors(&tokens));
         events.skies.extend(parse_skies(&tokens));
+        events.particles.extend(parse_particles(&tokens));
+        events.tints.extend(parse_tints(&tokens));
+        events.models.extend(parse_models(&tokens));
     }
     for data in with_ext(".TRB") {
         events.triggers.extend(route::parse_triggers(data).into_iter().map(|t| Trigger {
@@ -688,4 +912,34 @@ fn the_moon_s_events_change_its_sky() {
     assert_eq!(events.skies, [change(false, "flash", 0.25), change(true, "openair", 0.5)]);
     // The castle has a second sky, and nothing that asks for it.
     assert!(load("RACEC0R0").unwrap().skies.is_empty());
+}
+
+#[cfg(test)]
+#[test]
+fn events_set_off_particles_tints_and_models() {
+    let Some(knight) = load("RACEC2R0") else { return };
+    // The cauldron bubbles where the circuit puts it, for as long as its event is on.
+    assert_eq!(knight.particles.len(), 16);
+    let bubbles = &knight.particles[0];
+    assert_eq!((bubbles.emitter.as_str(), bubbles.when, bubbles.at_event), ("bubbles", When { event: 0, on_end: false, no_end: false }, false));
+    assert!(bubbles.position.distance(to_world([283.2072, -692.7856, -71.01189])) < 1e-3);
+    assert!(bubbles.rotation.angle_between(Quat::IDENTITY) < 1e-3);
+    // Going into the dark a car is half as bright, and stays so until the event on
+    // the way out puts its colours back.
+    assert_eq!(knight.tints.len(), 4);
+    assert_eq!((knight.tints[0].when, knight.tints[0].tint), (When { event: 2, on_end: false, no_end: true }, Some(Vec3::splat(0.5))));
+    assert_eq!((knight.tints[1].when, knight.tints[1].tint), (When { event: 3, on_end: false, no_end: false }, None));
+    // The moon's lava follows its model, its glow reddens a car, and its lasers are
+    // only there while their events are on.
+    let moon = load("RACEC0R3").unwrap();
+    assert_eq!(moon.particles[0].follows, Some(("mmlavbl".to_string(), 0)));
+    assert!(moon.tints.iter().any(|t| t.tint.is_some_and(|c| c.x > 1.4 && c.y == 1.0 && c.z == 1.0)));
+    let lasers: Vec<_> = moon.models.iter().map(|m| (m.when.event, m.prop.as_str(), m.hide_when_active)).collect();
+    assert_eq!(lasers.len(), 6);
+    assert_eq!(lasers[0], (60, "mmlaser1", false));
+    // An event's start begins what it does, and its end ends it unless told not to.
+    let when = When { event: 7, on_end: false, no_end: false };
+    assert!(when.begins(7, true) && !when.begins(7, false) && when.ends(7, false) && !when.ends(8, false));
+    assert!(When { no_end: true, ..when }.begins(7, true) && !When { no_end: true, ..when }.ends(7, false));
+    assert!(When { on_end: true, ..when }.begins(7, false) && !When { on_end: true, ..when }.begins(7, true));
 }

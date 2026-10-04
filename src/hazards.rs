@@ -2,8 +2,8 @@
 //! doors that open when shot, and the rest. Each follows its class in the original's
 //! `race/hazards`; what they look like comes from the circuit's own animated models.
 //!
-//! Not here: the hints of the code puzzle and the sphinx's explosion, which are
-//! material animations.
+//! Not here: the crane's shadow on the road, the ghost's three after-images, and the
+//! solid box a rolling rock is in the original (here it is a ball).
 
 use crate::assets::{
     Jam,
@@ -12,10 +12,11 @@ use crate::assets::{
 use crate::audio::{Emitter, Sfx, id};
 use crate::events::TrackEvents;
 use crate::items::{Action, Beam, ItemAssets};
-use crate::kart::Kart;
+use crate::items::WARP_TIME;
+use crate::kart::{Kart, PLAYER_SLOT};
 use crate::particles::{Emitter as Particles, Emitters};
 use crate::physics::{self, UNIT};
-use crate::scenery::{Animated, Prop, Retrack, Scenery, Scrolling, Swatches, to_world};
+use crate::scenery::{Animated, Fade, Prop, Retrack, Scenery, Scrolling, Swatches, to_world};
 use crate::track::Track;
 use crate::{Phase, Race};
 use bevy::prelude::*;
@@ -56,26 +57,47 @@ const CURSE_DROPS: [Vec3; 3] = [
     Vec3::new(-362.25818, 397.30392, -94.95952),
 ];
 
+/// Where a warp pad delivers a car, and the way it leaves it facing.
+const WARP_PAD_TO: Vec3 = Vec3::new(132.673, 86.304, 14.722);
+const WARP_PAD_FACING: Vec3 = Vec3::new(1.0, -0.5, 0.0);
+/// How far below their bone the rain of cannon balls starts, along the bone's own axis.
+const RAIN_DROP: f32 = 35.0;
+/// Smoke rises from a pool of lava this often while the lava is in the air, and the
+/// lava's leaving and landing are noticed for this many frames.
+const LAVA_SMOKE: f32 = 0.8;
+const LAVA_WINDOW: f32 = 10.0;
+
 enum Kind {
     /// Sounds its blow as it comes down.
     Hammer { raised: bool },
     /// A solid lump riding on a bone of an animated model.
-    RollingRock { prop: String, radius: f32, last: Option<Vec3> },
+    /// `start` is how far into its animation it begins, in frames.
+    RollingRock { prop: String, radius: f32, start: f32, last: Option<Vec3> },
     /// Models that play once and vanish, opening a surface as they go.
     TriggeredAnimation { surface: String, props: Vec<String> },
     Crane { pending: bool },
     /// Fires a cannon ball from one of its sources at one of its targets when its
     /// event starts near enough.
-    Launcher { sources: Vec<(Vec3, i32)>, targets: Vec<(Vec3, i32)>, near: Option<(Vec3, f32)>, event: i32, ball: Option<Entity> },
+    /// One with several of each (`multi`) also sets off the target's own event once
+    /// its shot is spent: `landing`, until then.
+    Launcher {
+        sources: Vec<(Vec3, i32)>,
+        targets: Vec<(Vec3, i32)>,
+        near: Option<(Vec3, f32)>,
+        event: i32,
+        ball: Option<Entity>,
+        multi: bool,
+        landing: Option<(i32, Vec3)>,
+    },
     /// `landed` until its collision can be put in: see `hazards`.
     FallingPillar { fallen: bool, landed: bool },
     Sphinx { blowing: f32 },
-    LavaGeyser { cooldown: f32, flying: bool },
+    LavaGeyser { cooldown: f32, flying: bool, smoke: f32 },
     /// Three two-way choices to get right in order; the right ones change each time.
     CodePuzzle { code: [bool; 3], progress: u8, opened: f32 },
     /// A force field that only the shielded can pass.
     Rocket { open: bool },
-    Ghost { search: f32, waver: f32, depth: f32 },
+    Ghost { search: f32, waver: f32, depth: f32, trail: Option<Entity> },
     CannonballRain { prop: String, interval: f32, timer: f32 },
     CurseDrop,
     SweepCannon { prop: Option<String>, source: Vec3, period: f32, sweep: [f32; 3], time: f32, cooldown: f32, beam: Option<Entity> },
@@ -149,10 +171,10 @@ fn places(tokens: &[Token]) -> Vec<(Vec3, i32)> {
     (0..count).map(|i| (to_world(vec3(&tokens[(4 + i * 4).min(tokens.len())..])), number(tokens.get(7 + i * 4)) as i32)).collect()
 }
 
-fn launcher(fields: &[Token], sources: Vec<(Vec3, i32)>, targets: Vec<(Vec3, i32)>) -> Hazard {
+fn launcher(fields: &[Token], sources: Vec<(Vec3, i32)>, targets: Vec<(Vec3, i32)>, multi: bool) -> Hazard {
     let near = Some((to_world(vec3(after(fields, 0x39))), number(after(fields, 0x3a).first()) * UNIT));
     let event = number(after(fields, 0x3b).first()) as i32;
-    Hazard { trigger: -1, active: false, kind: Kind::Launcher { sources, targets, near, event, ball: None } }
+    Hazard { trigger: -1, active: false, kind: Kind::Launcher { sources, targets, near, event, ball: None, multi, landing: None } }
 }
 
 fn parse(tokens: &[Token]) -> Vec<Hazard> {
@@ -180,8 +202,8 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
             0x28 => (10, Kind::FallingPillar { fallen: false, landed: false }),
             0x29 => (12, Kind::Sphinx { blowing: 0.0 }),
             0x2a => (50, Kind::Hammer { raised: true }),
-            0x2b => (10, Kind::Ghost { search: 0.0, waver: 0.0, depth: 0.0 }),
-            0x2c => (0, Kind::LavaGeyser { cooldown: 0.0, flying: false }),
+            0x2b => (10, Kind::Ghost { search: 0.0, waver: 0.0, depth: 0.0, trail: None }),
+            0x2c => (0, Kind::LavaGeyser { cooldown: 0.0, flying: false, smoke: 0.0 }),
             0x2d => (-1, Kind::CodePuzzle { code: [false; 3], progress: 0, opened: 0.0 }),
             0x2e => (1, Kind::Rocket { open: false }),
             0x2f => (-1, Kind::Snowfall { emitter: None }),
@@ -197,13 +219,13 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
             0x32 => (1, Kind::Crane { pending: true }),
             0x33 => {
                 let (source, target) = (to_world(vec3(after(fields, 0x37))), to_world(vec3(after(fields, 0x38))));
-                hazards.push(launcher(fields, vec![(source, 6)], vec![(target, 7)]));
+                hazards.push(launcher(fields, vec![(source, 6)], vec![(target, 7)], false));
                 continue;
             }
             0x34 => (trigger, Kind::TriggeredAnimation { surface: name(0x41), props: strings(fields, 0x42) }),
             0x3d => {
                 let inner = after(fields, 0x33);
-                hazards.push(launcher(inner, places(after(fields, 0x37)), places(after(fields, 0x38))));
+                hazards.push(launcher(inner, places(after(fields, 0x37)), places(after(fields, 0x38)), true));
                 continue;
             }
             0x3e => {
@@ -213,7 +235,7 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
                 };
                 let size = vec3(&fields[4.min(fields.len())..]);
                 let radius = (size.x + size.y + size.z) / 6.0 * UNIT;
-                (number(fields.get(2)) as i32, Kind::RollingRock { prop, radius, last: None })
+                (number(fields.get(2)) as i32, Kind::RollingRock { prop, radius, start: number(fields.get(3)), last: None })
             }
             0x3f => (8, Kind::CurseDrop),
             0x40 => {
@@ -290,7 +312,8 @@ pub fn hazards(
     let dt = time.delta_secs().min(0.05);
     let fired = std::mem::take(&mut events.fired);
     // A new race, or a restart, puts everything back.
-    let reset = race.phase == Phase::Intro || !hazards.ready;
+    let first = !hazards.ready;
+    let reset = race.phase == Phase::Intro || first;
     hazards.ready = true;
     if reset {
         // Every surface back to how the circuit starts out.
@@ -357,6 +380,9 @@ pub fn hazards(
                         if let Some(mut model) = animated!(name) {
                             model.freeze(0);
                         }
+                        if let Some(entity) = prop(name) {
+                            commands.entity(entity).insert(Fade(1.0));
+                        }
                     }
                 }
                 Kind::Sphinx { blowing } => {
@@ -375,24 +401,50 @@ pub fn hazards(
                     *code = [0, 1, 2].map(|_| sfx.roll(2) == 1);
                     (*progress, *opened) = (0, 0.0);
                 }
-                Kind::Launcher { ball, .. } => *ball = None,
+                Kind::Launcher { ball, landing, .. } => (*ball, *landing) = (None, None),
                 Kind::SweepCannon { time, cooldown, .. } => (*time, *cooldown) = (0.0, 0.0),
-                Kind::RollingRock { last, .. } => *last = None,
+                Kind::RollingRock { prop: name, start, last, .. } => {
+                    *last = None;
+                    // Each begins its round where the circuit says, so they don't all
+                    // come by together.
+                    if let Some(mut rock) = animated!(name).filter(|_| first) {
+                        rock.seek(*start);
+                    }
+                }
+                Kind::Ghost { trail, .. } => {
+                    if let Some(entity) = trail.take() {
+                        commands.entity(entity).try_despawn();
+                    }
+                }
+                Kind::LavaGeyser { smoke, .. } => *smoke = 0.0,
                 _ => {}
             }
             continue;
         }
 
-        // Its trigger starting and ending sets it going and stops it.
+        // Its trigger starting and ending sets it going and stops it. Only a warp pad
+        // answers to each racer's own comings and goings (`Hazard::CanRetrigger`); the
+        // rest go by the trigger as a whole: the first racer in, and the last out.
         for event in fired.iter().filter(|f| f.event == hazard.trigger && hazard.trigger >= 0) {
-            match (&mut hazard.kind, event.start) {
-                (Kind::WarpPad, true) => {
-                    if let Some((_, mut k)) = event.racer.and_then(|e| karts.get_mut(e).ok()) {
-                        if k.warp <= 0.0 {
-                            k.warp = 1.5;
-                        }
+            if matches!(hazard.kind, Kind::WarpPad) {
+                let Some((_, mut k)) = event.racer.and_then(|e| karts.get_mut(e).ok()) else { continue };
+                if event.start && !hazard.active && k.warp <= 0.0 {
+                    // One racer at a time, taken to where the pad comes out.
+                    hazard.active = true;
+                    k.warp = WARP_TIME;
+                    // A car on a recording keeps to its recording.
+                    if k.route.is_none() {
+                        k.warp_to = Some((k.pos, to_world(WARP_PAD_TO), to_world(WARP_PAD_FACING)));
                     }
+                } else if !event.start {
+                    hazard.active = false;
                 }
+                continue;
+            }
+            if event.racer.is_some() {
+                continue;
+            }
+            match (&mut hazard.kind, event.start) {
                 (_, true) if !hazard.active => {
                     hazard.active = true;
                     debug!("hazard {index} set going by event {}", event.event);
@@ -434,10 +486,20 @@ pub fn hazards(
                     }
                 }
                 (Kind::FallingPillar { .. } | Kind::Sphinx { .. } | Kind::TriggeredAnimation { .. }, false) => {}
-                (Kind::SmokeVent { emitter }, false) => {
+                (Kind::SmokeVent { emitter }, false) | (Kind::Ghost { trail: emitter, .. }, false) => {
                     hazard.active = false;
                     if let Some(entity) = emitter.take() {
                         commands.entity(entity).try_despawn();
+                    }
+                }
+                (Kind::Rocket { open }, false) => {
+                    // The field comes back as the last racer leaves (`ShowOffModel`).
+                    hazard.active = false;
+                    if std::mem::take(open) {
+                        show!("mmrocon", false);
+                        show!("mmrocof", true);
+                        set_surface("mmrocc", false);
+                        events.end(35, None, &mut sfx);
                     }
                 }
                 (_, false) => {
@@ -452,19 +514,32 @@ pub fn hazards(
 
         // Things that answer to events of their own.
         match &mut hazard.kind {
-            Kind::Launcher { sources, targets, near, event, ball } => {
+            Kind::Launcher { sources, targets, near, event, ball, multi, landing } => {
                 if ball.is_some_and(|b| balls.get(b).is_err()) {
                     *ball = None;
+                    // The target's own event, once the shot is spent (`MultiLauncherHazard::OnDeactivate`).
+                    if let Some((landed, at)) = landing.take() {
+                        events.fire(landed, Some(at), &mut sfx);
+                    }
                 }
                 let wanted = fired.iter().any(|f| {
                     let close = |at: Vec3| near.is_none_or(|(centre, radius)| at.distance(centre) < radius);
-                    f.event == *event && f.start && f.racer.is_none() && f.at.is_none_or(close)
+                    // Near enough going by where the racer who set it off is, or
+                    // failing a racer by where the trigger is.
+                    let at = f.racer.and_then(|e| karts.get(e).ok()).map(|(_, k)| k.pos).or(f.at);
+                    f.event == *event && f.start && at.is_none_or(close)
                 });
                 if wanted && ball.is_none() && !sources.is_empty() && !targets.is_empty() {
                     let (from, fire_event) = sources[sfx.roll(sources.len() as u32) as usize];
                     let (to, hit_event) = targets[sfx.roll(targets.len() as u32) as usize];
                     events.fire(fire_event, Some(from), &mut sfx);
-                    *ball = Some(assets.cannonball(&mut commands, from, to, Some(hit_event)));
+                    // A shot is always heard going off and landing (6 and 7); one of
+                    // several sources and targets has their own events as well.
+                    if *multi {
+                        events.fire(6, Some(from), &mut sfx);
+                        *landing = Some((hit_event, to));
+                    }
+                    *ball = Some(assets.cannonball(&mut commands, from, to, Some(7)));
                 }
             }
             Kind::CodePuzzle { code, progress, opened } => {
@@ -518,7 +593,7 @@ pub fn hazards(
                     *raised = true;
                 }
             }
-            Kind::RollingRock { prop: name, radius, last } => {
+            Kind::RollingRock { prop: name, radius, last, .. } => {
                 let Some((centre, _)) = bone!(name, 1) else { continue };
                 let moving = last.map_or(Vec3::ZERO, |last| (centre - last) / dt.max(1e-3));
                 *last = Some(centre);
@@ -538,6 +613,13 @@ pub fn hazards(
                 }
             }
             Kind::TriggeredAnimation { props: names, .. } => {
+                // Each fades away as it plays (`TriggeredAnimationHazard::Draw`).
+                for name in names.iter() {
+                    let left = animated!(name).map(|model| 1.0 - model.progress());
+                    if let (Some(left), Some(entity)) = (left, prop(name)) {
+                        commands.entity(entity).insert(Fade(left));
+                    }
+                }
                 let done = names.first().and_then(|name| animated!(name)).is_none_or(|model| model.done());
                 if done {
                     for name in names.iter() {
@@ -587,15 +669,27 @@ pub fn hazards(
                     }
                 }
             }
-            Kind::LavaGeyser { cooldown, flying } => {
+            Kind::LavaGeyser { cooldown, flying, smoke } => {
                 let Some((centre, frame)) = bone!("mmlavbl", 0) else { continue };
+                // The pool it has left smokes for as long as it is in the air.
+                *smoke = (*smoke - dt).max(0.0);
+                if *smoke == 0.0 {
+                    for pool in 0..3 {
+                        if frame > LAVA_LEAVES[pool] && frame < LAVA_LANDS[pool] {
+                            if let Some(emitters) = &emitters {
+                                emitters.spawn(&mut commands, "lavasmk", Transform::from_translation(to_world(LAVA_POOLS[pool])));
+                            }
+                            *smoke = LAVA_SMOKE;
+                        }
+                    }
+                }
                 if *flying {
                     sfx.sustain_global(slot, LAVA_SOUND, Emitter::at(centre).range(200.0, 300.0));
                 }
                 *cooldown = (*cooldown - dt).max(0.0);
                 if *cooldown == 0.0 {
                     for pool in 0..3 {
-                        let just = |at: f32| frame > at && frame < at + 3.0;
+                        let just = |at: f32| frame > at && frame < at + LAVA_WINDOW;
                         let (leaves, lands) = (just(LAVA_LEAVES[pool]), just(LAVA_LANDS[pool]));
                         if leaves || lands {
                             events.fire(43, Some(to_world(LAVA_POOLS[pool])), &mut sfx);
@@ -626,8 +720,9 @@ pub fn hazards(
                     }
                 }
             }
-            Kind::Ghost { search, waver, depth } => {
+            Kind::Ghost { search, waver, depth, trail } => {
                 let Some((centre, _)) = bone!("ghostly", 1) else { continue };
+                place!(trail, "ghsttrl", centre - Vec3::Y * 5.0 * UNIT);
                 // Its moan wavers, by a new amount every half second.
                 *waver += dt;
                 if *waver >= 0.5 {
@@ -656,7 +751,10 @@ pub fn hazards(
             }
             Kind::CannonballRain { prop: name, interval, timer } => {
                 *timer += dt;
-                let Some((from, _)) = bone!(name, 1) else { continue };
+                let Some((bone, _)) = bone!(name, 1) else { continue };
+                // They come from below the bone, along its own third axis.
+                let down = prop(name).and_then(|e| props.get(e).ok()).and_then(|(p, a, _)| Some(a?.bone_axis(p, 1, Vec3::Z)));
+                let from = bone - down.unwrap_or(Vec3::ZERO) * RAIN_DROP * UNIT;
                 if *timer >= *interval {
                     *timer = 0.0;
                     let scatter = Vec3::new(sfx.roll(4) as f32 - 2.0, 0.0, sfx.roll(4) as f32 - 2.0) * UNIT;
@@ -687,6 +785,13 @@ pub fn hazards(
                 }
             }
             Kind::Snowfall { emitter } => {
+                // Where the player's car is tinted (under cover) there is no snow.
+                if karts.iter().any(|(_, k)| k.slot == PLAYER_SLOT && k.tint != Vec3::ONE) {
+                    if let Some(entity) = emitter.take() {
+                        commands.entity(entity).try_despawn();
+                    }
+                    continue;
+                }
                 let forward = camera.forward().as_vec3();
                 let side = forward.cross(Vec3::Y).normalize_or_zero();
                 let across = sfx.roll(SNOW_SPREAD) as f32 - SNOW_SPREAD as f32 / 2.0;

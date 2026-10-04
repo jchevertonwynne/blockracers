@@ -296,6 +296,7 @@ fn main() {
                 racer_sounds::racer_sounds,
                 events::track_events,
                 events::part_animations,
+                events::effects,
                 (hazards::hazards, hazards::code_lights, sky::change).chain(),
                 (
                     item_models::dress_actions,
@@ -303,7 +304,9 @@ fn main() {
                     scenery::animate,
                     scenery::cycle,
                     scenery::scroll,
+                    scenery::fade,
                     kart_effects::kart_effects,
+                    kart_effects::tints,
                     kart_effects::shadows,
                     particles::emit,
                 )
@@ -636,7 +639,8 @@ fn race_flow(
                 championship.score(&places);
             }
         }
-        Phase::Finished => {}
+        // The clock runs on for the cars still racing, to time them as they come in.
+        Phase::Finished => race.time += time.delta_secs(),
     }
 }
 

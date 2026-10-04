@@ -21,6 +21,9 @@ pub struct Circuit {
     pub race: Option<String>,
     /// Which built-in circuit, when it is one.
     pub layout: Layout,
+    /// Which of the game's circuits the race is one of, counting from none; the
+    /// built-in circuits are in a set of their own after the last.
+    pub group: usize,
 }
 
 #[derive(Resource)]
@@ -29,11 +32,20 @@ pub struct Circuits(pub Vec<Circuit>);
 impl Circuits {
     /// Every circuit in the original game's data, if it's there, and our own.
     pub fn find() -> Self {
-        let mut circuits: Vec<Circuit> = world::circuits()
+        // In the order the circuits run them, which is not the order of their folders.
+        let order = world::circuit_order();
+        let place = |race: &str| order.iter().position(|o| o.0 == race).unwrap_or(order.len());
+        let mut found = world::circuits();
+        found.sort_by_key(|(race, _)| place(race));
+        let sets = order.iter().map(|o| o.1 + 1).max().unwrap_or(0);
+        let mut circuits: Vec<Circuit> = found
             .into_iter()
-            .map(|(race, name)| Circuit { name, race: Some(race), layout: Layout::default() })
+            .map(|(race, name)| {
+                let group = order.get(place(&race)).map_or(sets, |o| o.1);
+                Circuit { name, race: Some(race), layout: Layout::default(), group }
+            })
             .collect();
-        circuits.extend(Layout::ALL.map(|layout| Circuit { name: layout.name().into(), race: None, layout }));
+        circuits.extend(Layout::ALL.map(|layout| Circuit { name: layout.name().into(), race: None, layout, group: sets }));
         Circuits(circuits)
     }
 }
@@ -41,6 +53,7 @@ impl Circuits {
 /// The last three are longer than any race of the original's.
 pub const LAP_CHOICES: [i32; 7] = [1, 3, 5, 7, 10, 15, 20];
 pub const MAX_OPPONENTS: usize = 5;
+const CIRCUIT_LAPS: i32 = 3;
 pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("Hard", 1.06)];
 
 #[derive(Resource)]
@@ -228,14 +241,25 @@ impl Settings {
         }
     }
 
-    /// How many of the computer's cars race: none against the clock.
+    /// How many of the computer's cars race: none against the clock, and a full field
+    /// in a circuit race, whatever a single race is set to.
     pub fn field(&self) -> usize {
-        if self.time_race { 0 } else { self.opponents }
+        if self.time_race {
+            0
+        } else if self.championship.is_some() {
+            MAX_OPPONENTS
+        } else {
+            self.opponents
+        }
     }
 
     pub fn laps(&self) -> i32 {
         if self.time_race {
             return crate::time_race::LAPS as i32;
+        }
+        // A circuit's races are three laps each.
+        if self.championship.is_some() {
+            return CIRCUIT_LAPS;
         }
         // One car goes at the end of each lap, and the last lap leaves the winner.
         if self.eliminating() {
@@ -418,7 +442,30 @@ fn settings_come_back_as_they_were_kept() {
     assert_eq!(back.write(), settings.write());
     assert_eq!((back.lap_choice, back.opponents, back.music, back.bricks), (4, 2, 7, 3));
     assert!(back.mirror && !back.vsync && back.elimination && !back.reverse && back.smoothing);
+    // A circuit race is three laps against a full field, and leaves the settings be.
+    back.championship = Some("c0".into());
+    assert_eq!((back.laps(), back.field(), back.lap_choice, back.opponents), (3, MAX_OPPONENTS, 4, 2));
+    (back.championship, back.elimination) = (None, false);
+    assert_eq!((back.laps(), back.field()), (LAP_CHOICES[4], 2));
     // Nonsense and things out of range are passed over.
     back.read("laps=99\nbricks=six\nfuel=3\nopponents=1\n\nmusic 4");
     assert_eq!((back.lap_choice, back.bricks, back.opponents, back.music), (4, 3, 1, 7));
+}
+
+#[cfg(test)]
+#[test]
+fn single_races_are_listed_in_their_circuits_order() {
+    let circuits = Circuits::find();
+    // Needs the original game data; without it there are only the built-in circuits.
+    if circuits.0.iter().all(|c| c.race.is_none()) {
+        return;
+    }
+    let listed: Vec<(&str, usize)> = circuits.0.iter().map(|c| (c.name.as_str(), c.group)).collect();
+    assert_eq!(
+        listed[..5],
+        [("Imperial Grand Prix", 0), ("Dark Forest Dash", 0), ("Magma Moon Marathon", 0), ("Desert Adventure Dragway", 0), ("Tribal Island Trail", 1)]
+    );
+    assert_eq!(listed[12], ("Rocket Racer Run", 3));
+    // The built-in circuits come last, in a set of their own.
+    assert_eq!((listed.len(), listed[13].1, listed[14].1), (15, 4, 4));
 }

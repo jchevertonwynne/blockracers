@@ -221,10 +221,6 @@ impl Track {
     /// One of the built-in circuits.
     pub fn built(layout: Layout) -> Self {
         let mut track = Track::from_loop(&layout.control(), ROAD_HW);
-        // The spline dips a little before each climb; the road stays on the ground.
-        for p in &mut track.pts {
-            p.y = p.y.max(0.0);
-        }
         // Tarmac, verges and the inner faces of the barriers.
         let n = track.n();
         let grass = Surface { rolling_resistance: 20.0, ..default() };

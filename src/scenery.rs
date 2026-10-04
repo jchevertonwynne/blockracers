@@ -145,6 +145,31 @@ pub struct Scrolling {
     pub indices: Vec<usize>,
 }
 
+/// How solid a model is drawn, for ones that fade away (`TriggeredAnimationHazard::Draw`).
+#[derive(Component, PartialEq, Clone, Copy)]
+pub struct Fade(pub f32);
+
+/// Draws fading models as solid as they should be.
+pub fn fade(
+    props: Query<(&Fade, &Scrolling), Changed<Fade>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut solid: Local<HashMap<AssetId<StandardMaterial>, AlphaMode>>,
+) {
+    for (fade, prop) in &props {
+        for handle in &prop.materials {
+            let Some(mut material) = materials.get_mut(handle) else { continue };
+            material.base_color.set_alpha(fade.0);
+            // See-through while it fades, and as it was once it is whole again.
+            if fade.0 < 1.0 {
+                solid.entry(handle.id()).or_insert(material.alpha_mode);
+                material.alpha_mode = AlphaMode::Blend;
+            } else if let Some(mode) = solid.remove(&handle.id()) {
+                material.alpha_mode = mode;
+            }
+        }
+    }
+}
+
 /// One of the code puzzle's lights: which of its model's materials change with the
 /// code. The rest of the light stays as it is.
 #[derive(Component)]
@@ -189,6 +214,23 @@ impl Animated {
 
     pub fn length(&self) -> f32 {
         self.rig.animation.parts.get(self.part).map_or(0.0, |p| p.frames * p.ms_per_frame)
+    }
+
+    /// How far through its part it is, from 0 to 1.
+    pub fn progress(&self) -> f32 {
+        (self.time / self.length().max(1e-3)).clamp(0.0, 1.0)
+    }
+
+    /// Puts it `frame` frames into its part.
+    pub fn seek(&mut self, frame: f32) {
+        let per_frame = self.rig.animation.parts.get(self.part).map_or(0.0, |p| p.ms_per_frame);
+        self.time = frame * per_frame;
+    }
+
+    /// Which way one of a bone's own axes points in the world (ours) right now.
+    pub fn bone_axis(&self, prop: &Prop, bone: usize, axis: Vec3) -> Vec3 {
+        let (rotation, _) = self.pose(bone, self.frame());
+        to_world(prop.rotation * (rotation * axis)).normalize_or_zero()
     }
 
     /// Whether a part played once has run to its end.

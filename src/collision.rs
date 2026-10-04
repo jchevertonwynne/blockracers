@@ -36,7 +36,12 @@ pub struct Collision {
     /// Tags whose triangles are, for now, not there at all (an open door, say).
     passable: Vec<bool>,
     /// Tags whose triangles stop cars but not shots: the original's invisible barriers.
+    /// Like every surface of the original's they have one face, and stop only what
+    /// comes at them from the front, so a ledge can be driven off but not back onto.
     shots_pass: Vec<bool>,
+    /// The world was mirrored as it was loaded, which turns every triangle to face
+    /// the other way.
+    mirrored: bool,
 }
 
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
@@ -81,6 +86,11 @@ impl Collision {
                 for &i in self.cells.get(&(x, z)).into_iter().flatten() {
                     let tri = &self.triangles[i as usize];
                     if !accept(tri.normal) || self.passable.get(tri.tag).is_some_and(|&p| p) != passable {
+                        continue;
+                    }
+                    // A barrier is not there for anything coming from behind it.
+                    let barrier = self.shots_pass.get(tri.tag).is_some_and(|&pass| pass);
+                    if barrier && (tri.normal.dot(dir) < 0.0) == self.mirrored {
                         continue;
                     }
                     // Möller–Trumbore, both faces.
@@ -146,9 +156,18 @@ impl Collision {
         None
     }
 
+    /// Says that the triangles were mirrored on their way in.
+    pub fn set_mirrored(&mut self, mirrored: bool) {
+        self.mirrored = mirrored;
+    }
+
     /// A surface that isn't solid but notices being driven through, between two points.
+    /// It has one face, as every surface of the original's has, and is only met from
+    /// the front: a doorway is two of them back to back, one for each way through.
     pub fn touched(&self, from: Vec3, to: Vec3) -> Option<Hit> {
-        self.segment_through(from, to, |_| true, true).filter(|hit| hit.surface.touch_event.is_some())
+        let dir = to - from;
+        let front = |normal: Vec3| (normal.dot(dir) < 0.0) != self.mirrored;
+        self.segment_through(from, to, front, true).filter(|hit| hit.surface.touch_event.is_some())
     }
 
     /// Drivable surface on the way straight down from `from`, at most `depth` below.
@@ -175,9 +194,35 @@ fn a_barrier_stops_cars_and_lets_shots_by() {
     world.add_tagged(wall(2.0), Surface::default(), 1);
     world.add_tagged(wall(4.0), Surface::default(), 2);
     world.set_shots_pass(1);
-    let (from, to) = (Vec3::ZERO, Vec3::X * 6.0);
-    // A car meets the barrier; a shot goes on to the wall behind it.
-    assert_eq!(world.wall(from, to).unwrap().tag, 1);
-    assert_eq!(world.shot(from, to).unwrap().tag, 2);
-    assert!(world.shot(from, Vec3::X * 3.0).is_none());
+    // The barrier faces east. A car coming at its face meets it; a shot goes through.
+    let (east, west) = (Vec3::X * 3.0, Vec3::ZERO);
+    assert_eq!(world.wall(east, west).unwrap().tag, 1);
+    assert!(world.shot(east, west).is_none());
+    // From behind it is not there, for cars or for shots, and the wall beyond is.
+    assert_eq!(world.wall(west, Vec3::X * 6.0).unwrap().tag, 2);
+    assert_eq!(world.shot(west, Vec3::X * 6.0).unwrap().tag, 2);
+    // Mirrored, its face is the other one.
+    world.set_mirrored(true);
+    assert!(world.wall(east, west).is_none());
+    assert_eq!(world.wall(west, east).unwrap().tag, 1);
+}
+
+#[cfg(test)]
+#[test]
+fn a_doorway_tells_going_in_from_coming_out() {
+    let mut world = Collision::default();
+    let surface = |event| Surface { touch_event: Some(event), ..Surface::default() };
+    // Two faces in the same place, one facing each way.
+    let (a, b, c) = (Vec3::new(0.0, -5.0, -5.0), Vec3::new(0.0, 5.0, -5.0), Vec3::new(0.0, 0.0, 5.0));
+    world.add_tagged([a, b, c], surface(1), 7);
+    world.add_tagged([a, c, b], surface(2), 7);
+    world.set_passable(7, true);
+    let (west, east) = (Vec3::X * -3.0, Vec3::X * 3.0);
+    let (through, back) = (world.touched(west, east).unwrap(), world.touched(east, west).unwrap());
+    assert_ne!(through.surface.touch_event, back.surface.touch_event);
+    // Each is met from its front: against the way it faces.
+    assert!(through.normal.dot(east - west) < 0.0 && back.normal.dot(west - east) < 0.0);
+    // Mirrored, the faces have changed places.
+    world.set_mirrored(true);
+    assert_eq!(world.touched(west, east).unwrap().surface.touch_event, back.surface.touch_event);
 }

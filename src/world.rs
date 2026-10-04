@@ -28,9 +28,9 @@ const DEFAULT_JAM: &str = "Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM";
 /// Half-width of the band around the recorded racing line that the AI may use.
 const LANE: f32 = 4.0;
 
-/// The game is Z-up; this turns it onto Bevy's Y-up axes, mirrored if the race is.
+/// The game is Z-up; this is a pure rotation onto Bevy's Y-up axes.
 fn to_world(p: [f32; 3]) -> Vec3 {
-    scenery::to_world(Vec3::from(p))
+    Vec3::new(p[0], p[2], -p[1]) * UNIT
 }
 
 pub struct Surface {
@@ -380,6 +380,24 @@ pub fn circuits() -> Vec<(String, String)> {
         .filter(|(race, _)| jam.get(&format!("/GAMEDATA/{race}/{race}.RAB")).is_some())
         .map(|(race, name)| (race.to_string(), name.to_string()))
         .collect()
+}
+
+/// The folders of the game's races in the order its circuits run them, each with which
+/// circuit it belongs to: the three sets of four in turn, then Rocket Racer's.
+pub fn circuit_order() -> Vec<(String, usize)> {
+    let Some(jam) = open_jam() else { return Vec::new() };
+    let mut order: Vec<(String, usize)> = Vec::new();
+    let mut group = 0;
+    for (_, rounds) in roster::circuits(&jam) {
+        // The mirrored circuits run the same races over again.
+        let fresh: Vec<_> = rounds.iter().filter(|r| !r.mirrored && !order.iter().any(|o| o.0 == r.folder)).collect();
+        if fresh.is_empty() {
+            continue;
+        }
+        order.extend(fresh.into_iter().map(|round| (round.folder.clone(), group)));
+        group += 1;
+    }
+    order
 }
 
 /// Loads a race (a folder name such as `RACEC0R0`) from the archive at `$LEGO_JAM`.

@@ -288,8 +288,7 @@ impl Art {
 
 /// Which of the game's circuits a race belongs to.
 fn group(circuits: &Circuits, index: usize) -> usize {
-    let race = circuits.0[index].race.as_deref();
-    race.and_then(|r| r.chars().nth(5)).and_then(|c| c.to_digit(10)).map_or(CIRCUIT_ICONS.len() - 1, |g| g as usize)
+    circuits.0[index].group.min(CIRCUIT_ICONS.len() - 1)
 }
 
 /// The widgets of a page that can be chosen or changed, top to bottom.
@@ -623,7 +622,7 @@ fn input(
                     sfx.play(id::MENU_CONFIRM);
                     settings.championship = Some(code);
                     settings.circuit = circuits.0.iter().position(|c| c.race.as_deref() == Some(folder.as_str())).unwrap_or(0);
-                    (settings.lap_choice, settings.opponents, settings.time_race) = (1, MAX_OPPONENTS, false);
+                    settings.time_race = false;
                     next.set(Screen::Race);
                 }
                 None => sfx.play(id::MENU_REFUSE),

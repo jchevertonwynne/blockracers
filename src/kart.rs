@@ -35,6 +35,9 @@ struct Driver {
     skill: f32,
 }
 
+/// The grid slot the player's car has: the last of the roster.
+pub const PLAYER_SLOT: usize = DRIVERS.len() - 1;
+
 /// The player is last in the list, and so starts at the back of the grid.
 const DRIVERS: &[Driver] = &[
     Driver { name: "Rocket Racer", body: WHITE, accent: RED, skill: 0.99 },
@@ -106,6 +109,12 @@ pub struct Kart {
     pub warp: f32,
     /// A warp opening: time until it carries the kart off.
     pub warp_start: f32,
+    /// Where a warp that doesn't follow the road is taking the car: from, to, and the
+    /// way it faces when it gets there (a warp pad's, `WarpAction`).
+    pub warp_to: Option<(Vec3, Vec3, Vec3)>,
+    /// What the car's colours are multiplied by: the dark of a tunnel, the glow of lava
+    /// (`ColorTransformResource`).
+    pub tint: Vec3,
     /// Extra acceleration for the coming physics step (a grappling hook's pull).
     pub external_force: Vec3,
 
@@ -216,6 +225,8 @@ impl Kart {
             magnet: 0.0,
             warp: 0.0,
             warp_start: 0.0,
+            warp_to: None,
+            tint: Vec3::ONE,
             external_force: Vec3::ZERO,
             checkpoint: None,
             checkpoint_forward: true,
@@ -780,6 +791,16 @@ impl Kart {
 
         if k.route.is_some() {
             k.play_route(dt);
+        } else if let (true, Some((from, to, facing))) = (warping, k.warp_to) {
+            // Taken straight to where the warp comes out.
+            k.pos = to - (to - from) * (k.warp / crate::items::WARP_TIME).clamp(0.0, 1.0);
+            k.facing = facing.with_y(0.0).normalize_or(k.facing);
+            k.rot = Transform::IDENTITY.looking_to(k.facing, Vec3::Y).rotation;
+            k.vel = k.facing * WARP_EXIT_SPEED;
+            k.contacts = 4;
+            if k.warp <= 0.0 {
+                k.warp_to = None;
+            }
         } else if warping {
             // Carried along the racing line, drifting to its middle.
             let (s, lat) = (k.s + WARP_SPEED * dt, k.lat * (1.0 - 2.0 * dt).max(0.0));
@@ -902,7 +923,9 @@ pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut
     let mut order: Vec<((u8, f32), Mut<Kart>)> = q
         .iter_mut()
         .map(|mut k| {
-            if race.phase == Phase::Racing && k.finished.is_none() && k.lap > settings.laps() {
+            // The rest of the field goes on finishing after the player has.
+            let timed = matches!(race.phase, Phase::Racing | Phase::Finished);
+            if timed && k.finished.is_none() && k.out.is_none() && k.lap > settings.laps() {
                 k.finished = Some(race.time);
             }
             (place_key(&k), k)
@@ -983,6 +1006,27 @@ mod tests {
         });
         let order: Vec<_> = karts.iter().map(|k| (k.out, k.progress)).collect();
         assert_eq!(order, [(None, 0.0), (None, 0.0), (None, 310.0), (Some(30.0), 0.0), (Some(20.0), 325.0)]);
+    }
+
+    #[test]
+    fn cars_still_racing_are_timed_after_the_player_finishes() {
+        use bevy::ecs::system::RunSystemOnce;
+        let track = Track::new();
+        let mut world = World::new();
+        let settings = Settings::new(&crate::menu::Circuits(Vec::new()));
+        let laps = settings.laps();
+        world.insert_resource(settings);
+        // The player is home; one car comes in six seconds later, another is still out.
+        world.insert_resource(Race { phase: Phase::Finished, intro: 0.0, countdown: 0.0, time: 126.5, demo: false, quick: true });
+        let car = |world: &mut World, slot: usize, lap: i32, finished: Option<f32>| {
+            let mut kart = Kart::new(&track, slot);
+            (kart.lap, kart.finished, kart.progress) = (lap, finished, lap as f32);
+            world.spawn(kart).id()
+        };
+        let (player, second, third) = (car(&mut world, 5, laps + 1, Some(120.5)), car(&mut world, 0, laps + 1, None), car(&mut world, 1, laps, None));
+        world.run_system_once(update_places).unwrap();
+        let of = |world: &World, e: Entity| (world.get::<Kart>(e).unwrap().finished, world.get::<Kart>(e).unwrap().place);
+        assert_eq!((of(&world, player), of(&world, second), of(&world, third)), ((Some(120.5), 1), (Some(126.5), 2), (None, 3)));
     }
 
     /// Lets the AI drive one kart alone and returns the times at which it started each lap.
