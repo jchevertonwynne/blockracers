@@ -66,6 +66,18 @@ impl Rig {
         *self = Rig { view: self.view, ..default() };
     }
 
+    /// Where the camera sits fixed behind the car, turning and tilting with it, with
+    /// no lag at all: how a warp's tunnel is seen.
+    pub fn fixed(&mut self, kart: &Kart) -> (Vec3, Quat) {
+        let view = &VIEWS[self.view.min(VIEWS.len() - 1)];
+        let (pitch, lift) = (view.pitch.to_radians(), view.height.to_radians().sin());
+        let distance = view.distance * UNIT;
+        let back = Vec3::new(0.0, pitch.sin() + lift, pitch.cos()) * distance;
+        // The next frame out of the tunnel starts from behind the car again.
+        self.settled = false;
+        (kart.pos + kart.rot * back, kart.rot * Quat::from_rotation_x(-pitch))
+    }
+
     /// A lag as the fraction of the old value kept after `ms` milliseconds.
     fn kept(lag: f32, ms: f32) -> f32 {
         1.0 / ((1.0 - lag) / (lag * 250.0) * ms + 1.0)

@@ -911,7 +911,7 @@ pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut
 pub fn sync_karts(mut q: Query<(&Kart, &mut Transform, Has<Player>)>) {
     for (k, mut t, is_player) in &mut q {
         // Lean into corners.
-        let lean = -k.steer * 0.07 * (k.vel.length() / MAX_SPEED).min(1.0);
+        let lean = if k.warp > 0.0 { 0.0 } else { -k.steer * 0.07 * (k.vel.length() / MAX_SPEED).min(1.0) };
         // The player's warp is seen from a tunnel, which is put well away from the circuit.
         t.translation = k.pos + if is_player && k.warp > 0.0 { TUNNEL } else { Vec3::ZERO };
         t.rotation = k.rot * Quat::from_rotation_z(lean);

@@ -184,8 +184,8 @@ fn main() {
         settings.lap_choice = choice;
     }
 
-    // Demos are for looking at, and run silent.
-    if demo.is_some() {
+    // Demos are for looking at, and run silent unless `BRICK_SOUND` asks to hear them.
+    if demo.is_some() && std::env::var("BRICK_SOUND").is_err() {
         (settings.music, settings.sound) = (0, 0);
     }
     // `BRICK_TIME=1`: a demo's race is against the clock.
@@ -591,7 +591,9 @@ fn chase_camera(
         rig.view = (rig.view + 1) % 4;
     }
     rig.look_back = keys.pressed(KeyCode::KeyV);
-    let (position, rotation) = rig.follow(&player, time.delta_secs());
+    // Down a warp's tunnel the camera is held still behind the car.
+    let (position, rotation) =
+        if player.warp > 0.0 { rig.fixed(&player) } else { rig.follow(&player, time.delta_secs()) };
 
     // During the intro the camera drops in from high behind the grid.
     let sweep = if race.phase == Phase::Intro { (race.intro / INTRO).clamp(0.0, 1.0).powi(2) } else { 0.0 };
