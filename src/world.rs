@@ -497,7 +497,7 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
     }
     let lap_zones: Vec<(i32, u8)> =
         with_ext(".EVB").filter_map(|f| jam.get(f)).flat_map(route::parse_lap_zones).collect();
-    for (centre, radius, event) in
+    for (centre, radius, event, _) in
         with_ext(".TRB").filter_map(|f| jam.get(f)).flat_map(route::parse_triggers)
     {
         if let Some(&(_, zone)) = lap_zones.iter().find(|z| z.0 == event && z.1 != 1) {

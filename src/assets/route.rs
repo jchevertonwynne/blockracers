@@ -245,15 +245,17 @@ pub fn parse_placements(data: &[u8]) -> Vec<(String, [f32; 3], [f32; 3], [f32; 3
     out
 }
 
-/// `.TRB` trigger spheres: (centre, radius, event id).
-pub fn parse_triggers(data: &[u8]) -> Vec<([f32; 3], f32, i32)> {
+/// `.TRB` trigger spheres: (centre, radius, event id, whether only the players' cars
+/// set it off). The last is the flag that `TriggerList::RegisterTrigger` turns into
+/// the one `RaceRoster` skips the computer's cars for.
+pub fn parse_triggers(data: &[u8]) -> Vec<([f32; 3], f32, i32, bool)> {
     let mut r = Reader::new(data);
     let mut out = Vec::new();
-    let mut current: Option<([f32; 3], f32, i32)> = None;
+    let mut current: Option<([f32; 3], f32, i32, bool)> = None;
     r.next();
     while let Some(token) = r.next() {
         match token {
-            Token::LCurly => current = Some(([0.0; 3], 0.0, -1)),
+            Token::LCurly => current = Some(([0.0; 3], 0.0, -1, false)),
             Token::RCurly => out.extend(current.take()),
             Token::Key(key) => {
                 let Some(trigger) = &mut current else { continue };
@@ -261,6 +263,7 @@ pub fn parse_triggers(data: &[u8]) -> Vec<([f32; 3], f32, i32)> {
                     0x29 => trigger.0 = r.floats().unwrap_or_default(),
                     0x2a => trigger.1 = r.float().unwrap_or_default(),
                     0x2b => trigger.2 = r.int().unwrap_or(-1),
+                    0x2f => trigger.3 = true,
                     _ => {}
                 }
             }
@@ -353,4 +356,17 @@ mod tests {
         println!("{} bricks, e.g. {:?}", bricks.len(), &bricks[..3]);
         assert!(bricks.len() > 20);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn the_code_pads_are_for_players_only() {
+    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
+    let triggers = parse_triggers(jam.get("/GAMEDATA/RACEC0R3/MAINTRIG.TRB").unwrap());
+    // The six pads of the moon's code, which the computer's cars drive over too.
+    let pads: Vec<_> = triggers.iter().filter(|t| (200..=205).contains(&t.2)).collect();
+    assert_eq!(pads.len(), 6);
+    assert!(pads.iter().all(|t| t.3));
+    // The triggers that bring in the doors' collision are everyone's.
+    assert!(triggers.iter().filter(|t| t.2 >= 1000).all(|t| !t.3));
 }

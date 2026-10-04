@@ -46,6 +46,8 @@ struct Trigger {
     radius: f32,
     event: i32,
     active: bool,
+    /// The computer's cars pass through without setting it off.
+    players_only: bool,
 }
 
 /// An event starting or ending, for the hazards and animations that hang on it.
@@ -297,11 +299,12 @@ pub fn load(race: &str) -> Option<TrackEvents> {
         events.doors.extend(parse_doors(&tokens));
     }
     for data in with_ext(".TRB") {
-        events.triggers.extend(route::parse_triggers(data).into_iter().map(|(centre, radius, event)| Trigger {
+        events.triggers.extend(route::parse_triggers(data).into_iter().map(|(centre, radius, event, players_only)| Trigger {
             centre: to_world(centre),
             radius: radius * UNIT,
             event,
             active: false,
+            players_only,
         }));
     }
     for data in with_ext(".TIB") {
@@ -385,7 +388,7 @@ pub fn track_events(
     race: Res<Race>,
     events: Option<ResMut<TrackEvents>>,
     mut sfx: ResMut<Sfx>,
-    mut karts: Query<(Entity, &mut Kart)>,
+    mut karts: Query<(Entity, &mut Kart, Has<crate::kart::Player>)>,
 ) {
     let Some(mut events) = events else { return };
     let events = &mut *events;
@@ -412,11 +415,15 @@ pub fn track_events(
     for i in 0..events.triggers.len() {
         let trigger = &events.triggers[i];
         let (centre, radius, event, active) = (trigger.centre, trigger.radius, trigger.event, trigger.active);
+        let players_only = trigger.players_only;
         if event < 0 {
             continue;
         }
-        let inside: Vec<Entity> =
-            karts.iter().filter(|(_, k)| k.pos.distance_squared(centre) < radius * radius).map(|(e, _)| e).collect();
+        let inside: Vec<Entity> = karts
+            .iter()
+            .filter(|(_, k, player)| (*player || !players_only) && k.pos.distance_squared(centre) < radius * radius)
+            .map(|(e, ..)| e)
+            .collect();
         let touched = !inside.is_empty();
         events.triggers[i].active = touched;
         // Each racer's own comings and goings matter to some hazards.
@@ -437,7 +444,7 @@ pub fn track_events(
     }
 
     // Surfaces that set off events as racers drive on and off them.
-    for (entity, mut k) in &mut karts {
+    for (entity, mut k, _) in &mut karts {
         // Driving through a surface that isn't solid, or sounding the horn, are events too.
         let horn = std::mem::take(&mut k.honked).then_some(999);
         for event in [k.touched.take(), horn].into_iter().flatten() {

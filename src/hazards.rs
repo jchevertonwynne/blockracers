@@ -490,6 +490,7 @@ pub fn hazards(
                     } else if *progress == step {
                         *progress += 1;
                     }
+                    debug!("code pad {pad}: step {step}, {}, {} of 3 done", if first == code[step as usize] { "right" } else { "wrong" }, *progress);
                     if *progress == 3 {
                         events.fire(18, None, &mut sfx);
                         events.start(28, None, &mut sfx);
