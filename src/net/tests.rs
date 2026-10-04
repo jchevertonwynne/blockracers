@@ -26,8 +26,8 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
     let mut app = App::new();
     let circuits = Circuits::find();
     let settings = Settings::new(&circuits);
-    let players = [(HOST, "Host".to_string()), (1, "Guest".to_string())];
-    let members = if role == Role::Host { vec![Member { peer: 1, name: "Guest".into(), loaded: true }] } else { Vec::new() };
+    let players = [(HOST, "Host".to_string(), String::new()), (1, "Guest".to_string(), "RR".to_string())];
+    let members = if role == Role::Host { vec![Member { peer: 1, name: "Guest".into(), car: "RR".into(), loaded: true }] } else { Vec::new() };
     app.add_plugins((MinimalPlugins, StatesPlugin, plugin))
         // Each update is one step of the race, exactly.
         .insert_resource(TimeUpdateStrategy::ManualDuration(Time::<Fixed>::from_hz(TICKS).timestep() / frames))
@@ -141,20 +141,28 @@ fn a_poor_connection_costs_a_step_now_and_then() {
     assert!(corrections < 8, "the car was corrected {corrections} times");
 }
 
-/// The cars a player doesn't drive are shown where the host had them a moment ago.
+/// The cars a player doesn't drive are shown where they will be by the moment the
+/// player's own car is at: a little ahead of where the host has them as it says so.
 #[test]
-fn the_other_cars_are_shown_where_the_host_had_them() {
+fn the_other_cars_are_shown_where_they_are_about_to_be() {
     let mut pair = Pair::new(2, LOSS);
     let mut trail: Vec<Vec3> = Vec::new();
-    for _ in 0..360 {
+    let mut shown = Vec3::ZERO;
+    for step in 0..360 {
         press(&mut pair.host, KeyCode::KeyW, true);
         pair.step();
         trail.push(car(&mut pair.host, HOSTS).pos);
+        if step == 330 {
+            shown = car(&mut pair.guest, HOSTS).pos;
+            // Ahead of where the host has it at this moment, the way it is going.
+            let (there, going) = (car(&mut pair.host, HOSTS).pos, car(&mut pair.host, HOSTS).vel);
+            assert!((shown - there).dot(going) > 0.0, "the host's car should be shown ahead of where the host has it");
+        }
     }
-    let shown = car(&mut pair.guest, HOSTS).pos;
     assert!(trail[0].distance(*trail.last().unwrap()) > 30.0, "the host's car should have been driven somewhere");
-    let nearest = trail.iter().rev().take(40).map(|at| at.distance(shown)).reduce(f32::min).unwrap();
-    assert!(nearest < 0.3, "the host's car is shown {nearest} from anywhere it lately was");
+    // And the host's car duly goes through where it was shown.
+    let nearest = trail.iter().skip(330).map(|at| at.distance(shown)).reduce(f32::min).unwrap();
+    assert!(nearest < 0.5, "the host's car was shown {nearest} from anywhere it then went");
     // The computer's cars too, which only the host drives, and the order they are in.
     for slot in 0..2 {
         let (there, here) = (car(&mut pair.host, slot).pos, car(&mut pair.guest, slot).pos);
@@ -240,7 +248,7 @@ fn a_car_whose_player_has_gone_is_the_computers() {
 
 #[test]
 fn players_take_the_grid_from_the_back() {
-    let players: Vec<(Peer, String)> = (0..3).map(|peer| (peer, format!("P{peer}"))).collect();
+    let players: Vec<(Peer, String, String)> = (0..3).map(|peer| (peer, format!("P{peer}"), if peer == 1 { "RR".to_string() } else { String::new() })).collect();
     let seats = Lineup::seat(&players, 5);
     let at = |slot: u8| seats.iter().find(|seat| seat.slot == slot).map(|seat| seat.peer);
     // Three players at the back, and only three of the five computer's cars fit.
@@ -248,6 +256,8 @@ fn players_take_the_grid_from_the_back() {
     assert_eq!([at(0), at(1), at(2)], [Some(None); 3]);
     assert_eq!(seats.len(), 6);
     let lineup = Lineup { seats, you: 1 };
+    // Only the player who chose who to race as is cast as anyone.
+    assert_eq!(lineup.cast().collect::<Vec<_>>(), [(4, "RR")]);
     assert_eq!(lineup.driver(4), Some((Who::Local, Some("P1".into()))));
     assert_eq!(lineup.driver(5), Some((Who::Remote(0), Some("P0".into()))));
     assert_eq!(lineup.driver(0), Some((Who::Computer, None)));
@@ -411,4 +421,64 @@ fn a_brick_taken_on_the_host_goes_from_the_players_screen() {
         car_mut(&mut pair.host, HOSTS).vel = Vec3::ZERO;
     }
     assert_eq!((there(&mut pair.host), there(&mut pair.guest)), (Some(true), Some(true)));
+}
+
+/// A player who drives into another car is stopped by it on their own screen, and
+/// doesn't pass through it while waiting to hear from the host.
+#[test]
+fn a_players_car_does_not_drive_through_another() {
+    let mut pair = Pair::new(0, 0.0);
+    for _ in 0..30 {
+        pair.step();
+    }
+    // The host's car stands in the road, and the player's some way behind it.
+    let track = Track::new();
+    car_mut(&mut pair.host, HOSTS).place(&track, 60.0, 0.0);
+    car_mut(&mut pair.host, GUESTS).place(&track, 20.0, 0.0);
+    for _ in 0..40 {
+        pair.step();
+    }
+    // The cars' middles are 2.4 apart at the nearest they can be without overlapping.
+    let (mut nearest, mut through) = (f32::MAX, 0);
+    for step in 0..300 {
+        press(&mut pair.guest, KeyCode::KeyW, true);
+        pair.step();
+        let apart = car(&mut pair.guest, GUESTS).pos.distance(car(&mut pair.guest, HOSTS).pos);
+        through += (apart < 2.0) as usize;
+        // The first time they meet, before anything has been shunted anywhere.
+        if step < 120 {
+            nearest = nearest.min(apart);
+        }
+    }
+    let moved = car(&mut pair.host, HOSTS).pos.distance(track.surface_point(60.0, 0.0));
+    assert!(moved > 1.0, "the player's car should have run into the host's and shunted it, which moved {moved}");
+    assert!(nearest > 2.4, "the player's car first met the other {nearest} from its middle");
+    // Shunting it on down the road, the two are shown overlapping for a frame now and
+    // then, when the host's word and the guess at it part company.
+    assert!(through <= 3, "the player's car was shown inside the other for {through} frames");
+}
+
+/// The host calling a race off takes everyone back to the session's room, still in
+/// the session, and not out to the menu on their own.
+#[test]
+fn a_race_the_host_calls_off_takes_everyone_back_to_the_room() {
+    let mut pair = Pair::new(0, 0.0);
+    for _ in 0..60 {
+        pair.step();
+    }
+    let state = |app: &App| *app.world().resource::<State<Screen>>().get();
+    assert_eq!((state(&pair.host), state(&pair.guest)), (Screen::Race, Screen::Race));
+    fn off(mut session: ResMut<Session>, mut wire: ResMut<Wire>, mut next: ResMut<NextState<Screen>>) {
+        call_off(&mut session, &mut wire, &mut next);
+    }
+    pair.host.world_mut().run_system_cached(off).unwrap();
+    for _ in 0..20 {
+        pair.step();
+    }
+    assert_eq!((state(&pair.host), state(&pair.guest)), (Screen::Menu, Screen::Menu));
+    // Both are still in the session, the player still on the host's list and nothing
+    // said about the host having gone.
+    assert_eq!((*pair.host.world().resource::<Role>(), *pair.guest.world().resource::<Role>()), (Role::Host, Role::Client));
+    assert_eq!(pair.host.world().resource::<Session>().members.len(), 1);
+    assert!(pair.guest.world().get_resource::<Wire>().is_some() && pair.guest.world().resource::<Session>().notice.is_none());
 }

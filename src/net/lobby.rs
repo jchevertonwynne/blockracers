@@ -122,6 +122,18 @@ impl Lobby {
     }
 }
 
+/// The game is closing: a session it hosts comes off the list first, and is not left
+/// there for the lobby to give up on. Not waited on for long.
+pub fn farewell(mut closing: MessageReader<AppExit>, mut lobby: ResMut<Lobby>) {
+    if closing.read().next().is_none() {
+        return;
+    }
+    if let Some(listed) = lobby.listed.take() {
+        let request = lobby.client.delete(format!("{}/sessions/{}", lobby.url, listed.id)).bearer_auth(&listed.token);
+        let _ = runtime().block_on(async { tokio::time::timeout(std::time::Duration::from_secs(2), request.send()).await });
+    }
+}
+
 /// Picks up the lobby's answers, and keeps a hosted session on its list.
 pub fn keep(
     time: Res<Time<Real>>,

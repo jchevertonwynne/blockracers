@@ -131,8 +131,6 @@ struct Online {
     refresh: f32,
     /// What of the room and of the list has been drawn.
     seen: (u32, u32),
-    /// A session has just been left.
-    left: bool,
 }
 
 /// What the online pages show: who this game is to the session, the session, its
@@ -222,6 +220,8 @@ enum Action {
     Ready,
     Begin,
     Leave,
+    /// Who to race as online.
+    Car,
 }
 
 enum Widget {
@@ -479,6 +479,7 @@ fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, champi
         ],
         Page::Online => vec![
             field(FIELD[0], settings.name.clone(), Typed::Name),
+            selector(Rect::from_corners(FIELD[1].min - Vec2::X * ICON, FIELD[1].max + Vec2::X * ICON), None, racing_as(settings).to_string(), Action::Car),
             plain(Vec2::new(3.0, 178.0), "HOST A RACE", Action::Go(Page::Host)),
             plain(Vec2::new(3.0, 218.0), "JOIN A RACE", Action::Go(Page::Join)),
             back("options", Page::Main),
@@ -543,6 +544,11 @@ fn way_back(art: &Art, to: Page) -> Item {
     Item { widget: Widget::Button { at: art.place("race", "goback").min, label: "BACK".into(), icon: Some("txtarol") }, action: Action::Go(to), enabled: true }
 }
 
+/// Who the player races as online, as the menu says it.
+fn racing_as(settings: &Settings) -> &'static str {
+    settings.car.checked_sub(1).and_then(|n| crate::roster::NAMES.get(n)).map_or("ANYONE", |driver| driver.1)
+}
+
 /// A button of the port's own, with words the original hasn't a string for.
 fn plain(at: Vec2, label: &str, action: Action) -> Item {
     Item { widget: Widget::Button { at, label: label.into(), icon: None }, action, enabled: true }
@@ -556,7 +562,7 @@ fn notes(page: Page, wired: &Wired, settings: &Settings, circuits: &Circuits) ->
     let middle = |words: &str| (Rect::new(320.0, 300.0, 320.0, 332.0), words.to_string(), "font_ths", LABEL, true);
     match page {
         Page::Online => {
-            let mut notes = vec![banner("ONLINE RACE"), beside(FIELD[0], "YOUR NAME")];
+            let mut notes = vec![banner("ONLINE RACE"), beside(FIELD[0], "YOUR NAME"), beside(FIELD[1], "RACING AS")];
             // Why the last session ended, if it was not left by choice.
             notes.extend(wired.session.notice.as_deref().map(middle));
             notes
@@ -649,12 +655,12 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
     }
 }
 
-fn enter(mut menu: ResMut<Menu>, mut online: ResMut<Online>, session: Res<Session>) {
+fn enter(mut menu: ResMut<Menu>, mut session: ResMut<Session>) {
     *menu = Menu::default();
     menu.focus = 2;
     // Out of a session, the way back in is where the menu opens.
-    if std::mem::take(&mut online.left) || session.notice.is_some() {
-        (menu.page, menu.focus) = (Page::Online, 1);
+    if std::mem::take(&mut session.left) || session.notice.is_some() {
+        (menu.page, menu.focus) = (Page::Online, 2);
         return;
     }
     // `BRICK_MENU=race` (or options, game, audio) opens on that page, for screenshots.
@@ -740,7 +746,7 @@ fn input(
     match home {
         // The room opens on being ready.
         Some(page) if menu.page != page => (menu.page, menu.focus, menu.drawn) = (page, if page == Page::Room { 3 + VOTED.len() } else { 0 }, false),
-        None if matches!(menu.page, Page::Room | Page::Connecting) => (menu.page, menu.focus, menu.drawn) = (Page::Online, 1, false),
+        None if matches!(menu.page, Page::Room | Page::Connecting) => (menu.page, menu.focus, menu.drawn) = (Page::Online, 2, false),
         _ => {}
     }
     if online.seen != (room.revision, lobby.revision) {
@@ -847,7 +853,6 @@ fn input(
             Page::Password => Some(Page::Join),
             // Backing out of a session is leaving it.
             Page::Room | Page::Connecting => {
-                online.left = true;
                 net::leave(&mut commands, &mut session, &mut settings, None, &mut next);
                 Some(Page::Online)
             }
@@ -900,6 +905,7 @@ fn input(
             Action::Music => settings.music = (settings.music as i32 + change).clamp(0, MAX_VOLUME as i32) as usize,
             Action::Sound => settings.sound = (settings.sound as i32 + change).clamp(0, MAX_VOLUME as i32) as usize,
             Action::Extra(extra) => settings.turn(extra, change),
+            Action::Car => settings.car = turn(settings.car, crate::roster::NAMES.len() + 1),
             _ => {}
         }
         if let Some(wish) = wish {
@@ -921,7 +927,7 @@ fn input(
                     Page::Join => online.refresh = 0.0,
                     _ => {}
                 }
-                go(&mut menu, page, if page == Page::Online { 1 } else { page.first() });
+                go(&mut menu, page, if page == Page::Online { 2 } else { page.first() });
             }
             // Typed, a field is done with: on to the next thing.
             Action::Type(_) => {
@@ -970,7 +976,6 @@ fn input(
             }
             Action::Leave => {
                 sfx.play(id::MENU_BACK);
-                online.left = true;
                 net::leave(&mut commands, &mut session, &mut settings, None, &mut next);
             }
             Action::Race | Action::TimeRace => {

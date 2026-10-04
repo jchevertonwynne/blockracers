@@ -47,7 +47,7 @@ pub struct RaceEntry {
 }
 
 /// The drivers' names. The game shows faces, not names, so these are not in its data.
-const NAMES: [(&str, &str); 24] = [
+pub const NAMES: [(&str, &str); 24] = [
     ("RR", "Rocket Racer"),
     ("VV", "Veronica Voltage"),
     ("CR", "Captain Redbeard"),

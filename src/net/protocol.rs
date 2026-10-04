@@ -160,6 +160,9 @@ pub struct Seat {
     pub slot: u8,
     pub peer: Option<Peer>,
     pub name: String,
+    /// The driver a player races as, by the game's code for them; empty for
+    /// whoever the circuit puts in the slot.
+    pub car: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -172,7 +175,7 @@ pub enum Refusal {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ToHost {
-    Hello { protocol: u32, name: String, password: String },
+    Hello { protocol: u32, name: String, password: String, car: String },
     /// The race asked for is loaded and its cars are on the grid.
     Loaded,
     /// How the player would have the next race run, and whether they are ready for it.
@@ -205,7 +208,7 @@ mod tests {
     fn messages_come_back_as_they_went() {
         let inputs = Inputs { last: 77, drives: vec![Drive { throttle: 1.0, steer: -0.5, use_item: true, start_boost: Some(1), ..default() }; RESENT] };
         assert_eq!(decode::<Inputs>(&encode(&inputs)).unwrap(), inputs);
-        let hello = ToHost::Hello { protocol: 1, name: "Rocket".into(), password: "bricks".into() };
+        let hello = ToHost::Hello { protocol: 1, name: "Rocket".into(), password: "bricks".into(), car: "RR".into() };
         assert_eq!(decode::<ToHost>(&encode(&hello)).unwrap(), hello);
         assert!(decode::<ToPlayer>(&[0xff, 0xff, 0xff]).is_err());
     }

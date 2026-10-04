@@ -352,6 +352,23 @@ fn chassis(jam: &Jam, name: &str) -> Option<Chassis> {
     })
 }
 
+/// Puts another of the game's drivers, with their car, in a grid slot: `code` is the
+/// driver's in `roster::NAMES`. The port's own, for players online who have chosen
+/// who to race as. False if there is no such driver or their car won't load.
+pub fn recast(loaded: &mut LoadedWorld, slot: usize, code: &str) -> bool {
+    let cast = open_jam().and_then(|jam| {
+        let driver = roster::driver(&jam, code)?;
+        Some((load_kart(&jam, &driver)?, driver))
+    });
+    match (cast, loaded.karts.get_mut(slot), loaded.field.get_mut(slot)) {
+        (Some((kart, driver)), Some(car), Some(seat)) => {
+            (*car, *seat) = (kart, driver);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn open_jam() -> Option<Jam> {
     Jam::open(std::env::var("LEGO_JAM").unwrap_or(DEFAULT_JAM.into()))
 }
@@ -761,4 +778,19 @@ mod tests {
             }
         }
     }
+}
+
+/// Needs the original game data; silently passes without it. Everyone a player may
+/// choose to race as online has a car to race in.
+#[cfg(test)]
+#[test]
+fn every_driver_on_the_roster_can_be_raced_as() {
+    let Some(jam) = open_jam() else { return };
+    let missing: Vec<&str> = roster::NAMES.iter().map(|driver| driver.0).filter(|code| roster::driver(&jam, code).and_then(|driver| load_kart(&jam, &driver)).is_none()).collect();
+    assert!(missing.is_empty(), "no car for {missing:?}");
+    // And one put in another's place on a circuit's grid takes it.
+    let Some((_, mut loaded)) = load_in("RACEC0R0", None, false) else { return };
+    let before = loaded.field[4].code.clone();
+    assert!(recast(&mut loaded, 4, "PH") && loaded.field[4].code != before && loaded.field[4].name == "Pharaoh Hotep");
+    assert!(!recast(&mut loaded, 4, "nobody"));
 }

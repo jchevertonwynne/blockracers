@@ -88,6 +88,9 @@ pub struct Settings {
     pub smoothing: bool,
     /// What the player goes by when racing online.
     pub name: String,
+    /// Who the player races as online: one of `roster::NAMES`, counted from one, or
+    /// nought for whoever has the grid slot they are given.
+    pub car: usize,
 }
 
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
@@ -155,6 +158,7 @@ impl Settings {
             fullscreen: false,
             smoothing: true,
             name: "PLAYER".into(),
+            car: 0,
         }
     }
 
@@ -176,6 +180,7 @@ impl Settings {
             ("vsync", on(self.vsync)),
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
+            ("car", self.car),
         ];
         let numbers: String = kept.iter().map(|(name, value)| format!("{name}={value}\n")).collect();
         format!("{numbers}name={}\n", self.name)
@@ -207,9 +212,16 @@ impl Settings {
                 "vsync" => self.vsync = on,
                 "fullscreen" => self.fullscreen = on,
                 "smoothing" => self.smoothing = on,
+                "car" if value <= crate::roster::NAMES.len() => self.car = value,
                 _ => {}
             }
         }
+    }
+
+    /// The code of the driver the player races as online; empty for whoever has the
+    /// grid slot.
+    pub fn car_code(&self) -> String {
+        self.car.checked_sub(1).and_then(|n| crate::roster::NAMES.get(n)).map_or(String::new(), |driver| driver.0.to_string())
     }
 
     /// Takes up the settings left by the last session, if there was one.

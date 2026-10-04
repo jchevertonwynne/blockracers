@@ -18,7 +18,9 @@ behave, sound and look like the original; the decompilation is the reference for
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
   pause, photo mode and replays are off. Bricks, power-ups and the circuit's events
   are run only on the host, which tells the others what came of them (`net::scene`);
-  a joiner's `TrackEvents` is `following` and starts nothing by itself.
+  a joiner's `TrackEvents` is `following` and starts nothing by itself. A joiner's own car
+  is driven ahead of the host and the others are shown where they will be by then
+  (`net::client`), so that what is seen and what is bumped into agree.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 
@@ -77,7 +79,7 @@ menu instead. These combine with it:
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
 | `BRICK_NET=host:2` | host a session and start its race, without a vote, once that many players are in it (the host is one); `host:9` never fills, and leaves the session in its room |
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
-| `BRICK_SESSION`, `BRICK_NAME`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, the password set or given |
+| `BRICK_SESSION`, `BRICK_NAME`, `BRICK_CAR`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, who they race as (a code from `roster::NAMES`, such as `PH`), the password set or given |
 | `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
 | `RUST_LOG=legoracers::hazards=debug` | per-module logging |
 

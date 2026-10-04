@@ -286,6 +286,7 @@ fn main() {
         .insert_resource(championship)
         .add_systems(OnEnter(Screen::Loading), |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race))
         .add_plugins((menu::plugin, frontend::plugin, audio::plugin, net::plugin))
+        .add_systems(Update, leave_online.run_if(in_state(Screen::Race)).run_if(net::online))
         .add_systems(Startup, setup_scene)
         .add_systems(
             OnEnter(Screen::Race),
@@ -383,6 +384,7 @@ fn load_race(
     championship: Res<championship::Championship>,
     mut rig: ResMut<camera::Rig>,
     role: Res<net::Role>,
+    lineup: Option<Res<net::Lineup>>,
 ) {
     let circuit = &circuits.0[settings.circuit];
     let variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
@@ -394,9 +396,15 @@ fn load_race(
     let mut hazards = circuit.race.as_deref().and_then(hazards::load);
     commands.remove_resource::<gauntlet::Stands>();
     match circuit.race.as_deref().and_then(|race| world::load_in(race, settings.championship.as_deref(), settings.time_race)) {
-        Some((mut track, loaded)) => {
+        Some((mut track, mut loaded)) => {
             if variant.reverse {
                 track.reverse();
+            }
+            // Online, players race as whoever they chose to.
+            for (slot, code) in lineup.iter().filter(|_| *role != net::Role::Offline).flat_map(|lineup| lineup.cast()) {
+                if !world::recast(&mut loaded, slot, code) {
+                    warn!("nobody to race as {code}");
+                }
             }
             commands.insert_resource(track);
             commands.insert_resource(loaded);
@@ -720,6 +728,54 @@ fn race_flow(
             if finished.is_some_and(|at| race.time - at >= FINISH_WAIT) && (waiting || championship.run.as_ref().is_some_and(|run| !run.scored)) {
                 settle(&mut karts, race.time, &mut championship);
             }
+        }
+    }
+}
+
+/// Online, Escape asks whether to leave, as the original asks before giving up a
+/// race; the race goes on behind the question, since others are in it. A player who
+/// leaves is out of the session. The host leaving a race calls it off for everyone,
+/// and they are all back in the session's room.
+fn leave_online(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    art: Option<Res<hud::original::Art>>,
+    mut pause: ResMut<Pause>,
+    mut sfx: ResMut<audio::Sfx>,
+    mut session: ResMut<net::Session>,
+    mut settings: ResMut<Settings>,
+    mut next: ResMut<NextState<Screen>>,
+    role: Res<net::Role>,
+    mut wire: ResMut<net::Wire>,
+) {
+    let mut leave = |commands: &mut Commands, next: &mut NextState<Screen>| match *role {
+        net::Role::Host => net::call_off(&mut session, &mut wire, next),
+        _ => net::leave(commands, &mut session, &mut settings, None, next),
+    };
+    let Some(dialog) = &mut pause.0 else {
+        if keys.just_pressed(KeyCode::Escape) {
+            sfx.play(audio::id::MENU_BACK);
+            // Without the game's own lettering there is no question to show: just leave.
+            match art {
+                Some(_) => pause.0 = Some(Dialog::sure(Pending::Exit)),
+                None => leave(&mut commands, &mut next),
+            }
+        }
+        return;
+    };
+    let count = dialog.options.len();
+    let step = keys.just_pressed(KeyCode::ArrowDown) as usize + keys.just_pressed(KeyCode::ArrowUp) as usize * (count - 1);
+    if step > 0 {
+        dialog.selected = (dialog.selected + step) % count;
+        sfx.play(audio::id::MENU_HIGHLIGHT);
+    }
+    // Backing out is "no".
+    let chosen = if keys.just_pressed(KeyCode::Escape) { Some(1) } else { keys.just_pressed(KeyCode::Enter).then_some(dialog.selected) };
+    if let Some(chosen) = chosen {
+        sfx.play(audio::id::MENU_SELECT);
+        pause.0 = None;
+        if chosen == 0 {
+            leave(&mut commands, &mut next);
         }
     }
 }

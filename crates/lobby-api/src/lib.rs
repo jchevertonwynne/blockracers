@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Games list and see only sessions of their own protocol.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// How often a host says its session is still there, and how long the lobby waits
 /// without hearing before it takes the session off the list, in seconds.

@@ -1350,83 +1350,89 @@ impl Kart {
 pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player>, Has<Remote>)>) {
     let mut pairs = q.iter_combinations_mut();
     while let Some([(mut a, a_here, a_elsewhere), (mut b, b_here, b_elsewhere)]) = pairs.fetch_next() {
-        // Online a player elsewhere hears their own bumps by way of the host.
-        let (a_player, b_player) = (a_here || a_elsewhere, b_here || b_elsewhere);
-        // Karts on different levels (a bridge, say), in warp or blown into the air
-        // pass each other by.
-        if (a.pos.y - b.pos.y).abs() > 2.0 || a.warp > 0.0 || b.warp > 0.0 || a.spin_out > 0.0 || b.spin_out > 0.0 {
-            continue;
-        }
-        let ((ends_a, radius_a), (ends_b, radius_b)) = (a.hull(), b.hull());
-        // The deepest overlap between any of a's circles and any of b's.
-        let mut worst: Option<(f32, Vec3)> = None;
-        for ca in ends_a {
-            for cb in ends_b {
-                let d = (cb - ca).with_y(0.0);
-                let overlap = radius_a + radius_b - d.length();
-                if overlap > 0.0 && worst.is_none_or(|w| overlap > w.0) {
-                    worst = Some((overlap, d.try_normalize().unwrap_or(Vec3::X)));
-                }
-            }
-        }
-        let Some((overlap, normal)) = worst else { continue };
-        a.pos -= normal * overlap * 0.5;
-        b.pos += normal * overlap * 0.5;
-        // Equal weights, and so each car takes half of what the bounce gives back.
-        let closing = (b.vel - a.vel).dot(normal) * (1.0 + COLLISION_RESTITUTION) * 0.5;
-        // Cars on recordings are moved off their line, and on or back along it, by
-        // the blow in the game's own units: its weight of car, its speeds.
-        let blow = -closing / UNIT * CAR_MASS / 1000.0;
-        a.shove(-normal * overlap * 0.5, -normal, blow);
-        b.shove(normal * overlap * 0.5, normal, blow);
-        a.vel += normal * closing;
-        b.vel -= normal * closing;
+        // Only bumps a player is part of are heard. Online a player elsewhere hears
+        // their own by way of the host.
+        let heard = (a_here || a_elsewhere || b_here || b_elsewhere).then_some(&mut *sfx);
+        meet(&mut a, &mut b, heard);
+    }
+}
 
-        // Only bumps the player is part of are heard.
-        if a_player || b_player {
-            let (hitter, hit) = if a.vel.length_squared() > b.vel.length_squared() { (&mut a, &mut b) } else { (&mut b, &mut a) };
-            if hitter.scrape_cooldown <= 0.0 && hit.scrape_cooldown <= 0.0 {
-                let sound = id::CAR_HITS[sfx.roll(2) as usize];
-                let contact = (hitter.pos + hit.pos) * 0.5;
-                sfx.play_at(sound, contact);
-                (hitter.sparks, hit.sparks) = (Some(contact + Vec3::Y * 0.6), Some(contact + Vec3::Y * 0.6));
-                hitter.scrape_cooldown = SCRAPE_COOLDOWN;
-                hit.scrape_cooldown = SCRAPE_COOLDOWN;
-            }
-            // Whoever ran into the other grumbles, unless a shield spared them.
-            if hitter.shielded() {
-                hit.cues.reaction = Some(false);
-            } else {
-                hitter.cues.reaction = Some(false);
+/// Two cars, if they are touching, are parted and bounced. `heard` is where the bump
+/// is sounded, if it is to be.
+pub fn meet(a: &mut Kart, b: &mut Kart, heard: Option<&mut Sfx>) {
+    // Karts on different levels (a bridge, say), in warp or blown into the air
+    // pass each other by.
+    if (a.pos.y - b.pos.y).abs() > 2.0 || a.warp > 0.0 || b.warp > 0.0 || a.spin_out > 0.0 || b.spin_out > 0.0 {
+        return;
+    }
+    let ((ends_a, radius_a), (ends_b, radius_b)) = (a.hull(), b.hull());
+    // The deepest overlap between any of a's circles and any of b's.
+    let mut worst: Option<(f32, Vec3)> = None;
+    for ca in ends_a {
+        for cb in ends_b {
+            let d = (cb - ca).with_y(0.0);
+            let overlap = radius_a + radius_b - d.length();
+            if overlap > 0.0 && worst.is_none_or(|w| overlap > w.0) {
+                worst = Some((overlap, d.try_normalize().unwrap_or(Vec3::X)));
             }
         }
+    }
+    let Some((overlap, normal)) = worst else { return };
+    a.pos -= normal * overlap * 0.5;
+    b.pos += normal * overlap * 0.5;
+    // Equal weights, and so each car takes half of what the bounce gives back.
+    let closing = (b.vel - a.vel).dot(normal) * (1.0 + COLLISION_RESTITUTION) * 0.5;
+    // Cars on recordings are moved off their line, and on or back along it, by
+    // the blow in the game's own units: its weight of car, its speeds.
+    let blow = -closing / UNIT * CAR_MASS / 1000.0;
+    a.shove(-normal * overlap * 0.5, -normal, blow);
+    b.shove(normal * overlap * 0.5, normal, blow);
+    a.vel += normal * closing;
+    b.vel -= normal * closing;
 
-        let touched = |shielded: &Kart, other: &mut Kart, away: Vec3| {
-            if !shielded.shielded() || other.shielded() {
-                return;
-            }
-            match shielded.shield_level {
-                // Struck in the side, the other car is pushed off.
-                1 if (other.rot * Vec3::NEG_Z).dot(away).abs() < SHIELD_SHOVE_CONE => other.shove_with(away * SHIELD_SHOVE),
-                2 => other.spin_at(1.0, SHIELD_SPIN_RATE),
-                3 => other.spin_at(2.0, SHIELD_SPIN_RATE),
-                _ => {}
-            }
-        };
-        touched(&a, &mut b, normal);
-        touched(&b, &mut a, -normal);
-        // A curse goes to the car that touches its bearer.
-        let passed = |cursed: &mut Kart, other: &mut Kart| {
-            let passes = cursed.cursed > 0.0 && other.cursed <= 0.0 && !other.shielded();
-            if passes {
-                other.curse(cursed.cursed);
-                cursed.cursed = 0.0;
-            }
-            passes
-        };
-        if !passed(&mut a, &mut b) {
-            passed(&mut b, &mut a);
+    if let Some(sfx) = heard {
+        let (hitter, hit) = if a.vel.length_squared() > b.vel.length_squared() { (&mut *a, &mut *b) } else { (&mut *b, &mut *a) };
+        if hitter.scrape_cooldown <= 0.0 && hit.scrape_cooldown <= 0.0 {
+            let sound = id::CAR_HITS[sfx.roll(2) as usize];
+            let contact = (hitter.pos + hit.pos) * 0.5;
+            sfx.play_at(sound, contact);
+            (hitter.sparks, hit.sparks) = (Some(contact + Vec3::Y * 0.6), Some(contact + Vec3::Y * 0.6));
+            hitter.scrape_cooldown = SCRAPE_COOLDOWN;
+            hit.scrape_cooldown = SCRAPE_COOLDOWN;
         }
+        // Whoever ran into the other grumbles, unless a shield spared them.
+        if hitter.shielded() {
+            hit.cues.reaction = Some(false);
+        } else {
+            hitter.cues.reaction = Some(false);
+        }
+    }
+
+    let touched = |shielded: &Kart, other: &mut Kart, away: Vec3| {
+        if !shielded.shielded() || other.shielded() {
+            return;
+        }
+        match shielded.shield_level {
+            // Struck in the side, the other car is pushed off.
+            1 if (other.rot * Vec3::NEG_Z).dot(away).abs() < SHIELD_SHOVE_CONE => other.shove_with(away * SHIELD_SHOVE),
+            2 => other.spin_at(1.0, SHIELD_SPIN_RATE),
+            3 => other.spin_at(2.0, SHIELD_SPIN_RATE),
+            _ => {}
+        }
+    };
+    touched(a, b, normal);
+    touched(b, a, -normal);
+    // A curse goes to the car that touches its bearer.
+    let passed = |cursed: &mut Kart, other: &mut Kart| {
+        let passes = cursed.cursed > 0.0 && other.cursed <= 0.0 && !other.shielded();
+        if passes {
+            other.curse(cursed.cursed);
+            cursed.cursed = 0.0;
+        }
+        passes
+    };
+    if !passed(a, b) {
+        passed(b, a);
     }
 }
 

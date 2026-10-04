@@ -61,7 +61,8 @@ One player hosts from inside the game and the others join; nobody needs to forwa
 port. Games find each other's sessions on a small lobby server and then connect to the
 host directly. Everyone needs their own copy of the game data.
 
-Choose **Online race** on the main menu. Give yourself a name, then either host a
+Choose **Online race** on the main menu. Give yourself a name and pick who to race
+as, then either host a
 race (a title, and a password if you want one) or pick one from the list to join. A
 session waits in its room between races, where everyone says how they would have the
 next one run: the circuit, laps, computer cars, and the port's own ways of racing. When
