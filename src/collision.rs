@@ -35,6 +35,8 @@ pub struct Collision {
     cells: HashMap<(i32, i32), Vec<u32>>,
     /// Tags whose triangles are, for now, not there at all (an open door, say).
     passable: Vec<bool>,
+    /// Tags whose triangles stop cars but not shots: the original's invisible barriers.
+    shots_pass: Vec<bool>,
 }
 
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
@@ -116,6 +118,34 @@ impl Collision {
         self.passable[tag] = passable;
     }
 
+    /// The box round every triangle with this tag: its least and greatest corners.
+    pub fn bounds(&self, tag: usize) -> Option<(Vec3, Vec3)> {
+        let corners = self.triangles.iter().filter(|t| t.tag == tag).flat_map(|t| [t.a, t.a + t.ab, t.a + t.ac]);
+        corners.fold(None, |bounds: Option<(Vec3, Vec3)>, p| Some(bounds.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p)))))
+    }
+
+    /// Lets shots through every triangle with this tag, for good.
+    pub fn set_shots_pass(&mut self, tag: usize) {
+        if self.shots_pass.len() <= tag {
+            self.shots_pass.resize(tag + 1, false);
+        }
+        self.shots_pass[tag] = true;
+    }
+
+    /// What a shot going between two points strikes: anything but the barriers that
+    /// are only there for cars.
+    pub fn shot(&self, mut from: Vec3, to: Vec3) -> Option<Hit> {
+        // Past each barrier in the way, on to whatever is behind it.
+        for _ in 0..8 {
+            let hit = self.any(from, to)?;
+            if !self.shots_pass.get(hit.tag).is_some_and(|&pass| pass) {
+                return Some(hit);
+            }
+            from = hit.point + (to - from).normalize_or_zero() * 1e-3;
+        }
+        None
+    }
+
     /// A surface that isn't solid but notices being driven through, between two points.
     pub fn touched(&self, from: Vec3, to: Vec3) -> Option<Hit> {
         self.segment_through(from, to, |_| true, true).filter(|hit| hit.surface.touch_event.is_some())
@@ -135,4 +165,19 @@ impl Collision {
     pub fn wall(&self, from: Vec3, to: Vec3) -> Option<Hit> {
         self.segment(from, to, |n| n.y.abs() < WALKABLE)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_barrier_stops_cars_and_lets_shots_by() {
+    let mut world = Collision::default();
+    let wall = |x: f32| [Vec3::new(x, -5.0, -5.0), Vec3::new(x, 5.0, -5.0), Vec3::new(x, 0.0, 5.0)];
+    world.add_tagged(wall(2.0), Surface::default(), 1);
+    world.add_tagged(wall(4.0), Surface::default(), 2);
+    world.set_shots_pass(1);
+    let (from, to) = (Vec3::ZERO, Vec3::X * 6.0);
+    // A car meets the barrier; a shot goes on to the wall behind it.
+    assert_eq!(world.wall(from, to).unwrap().tag, 1);
+    assert_eq!(world.shot(from, to).unwrap().tag, 2);
+    assert!(world.shot(from, Vec3::X * 3.0).is_none());
 }

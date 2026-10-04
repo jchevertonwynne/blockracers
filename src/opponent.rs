@@ -89,6 +89,8 @@ impl RoutePlay {
         }
         let rotation = start.lerp(end, along);
         let width = [0, 1].map(|i| from.width[i] + (to.width[i] - from.width[i]) * along);
+        // In the mirror, the room on the car's left is on its right.
+        let width = if crate::scenery::mirror() { [width[1], width[0]] } else { width };
         (to_world(position), facing(rotation), width)
     }
 }
@@ -99,7 +101,8 @@ pub(crate) fn facing(rotation: Quat) -> Quat {
     let world = Mat3::from_cols(Vec3::X, Vec3::NEG_Z, Vec3::Y);
     let car = Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y);
     // The game multiplies vectors from the other side, which turns the other way.
-    Quat::from_mat3(&(world * Mat3::from_quat(rotation.conjugate()) * car.transpose()))
+    let plain = Quat::from_mat3(&(world * Mat3::from_quat(rotation.conjugate()) * car.transpose()));
+    if crate::scenery::mirror() { crate::scenery::mirrored_car(plain) } else { plain }
 }
 
 impl Kart {

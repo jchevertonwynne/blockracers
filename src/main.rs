@@ -119,8 +119,9 @@ struct DemoShot {
     camera: Option<(Vec3, Vec3)>,
     /// `BRICK_EVENTS=18@3,12@5.5`: circuit events to set off, and when.
     events: Vec<(i32, f32)>,
-    /// `BRICK_KEYS=Enter@1.5,Down@2`: keys to press, and when.
-    keys: Vec<(KeyCode, f32)>,
+    /// `BRICK_KEYS=Enter@1.5,Down@2,W@3+0.5`: keys to press, when, and for how long
+    /// they are held (a frame, where it isn't said).
+    keys: Vec<(KeyCode, f32, f32)>,
     /// `BRICK_VIEW=back,up,right`: where the camera sits relative to the player's kart,
     /// which it looks at.
     view: Option<Vec3>,
@@ -163,9 +164,11 @@ fn main() {
                 "R" => KeyCode::KeyR,
                 "W" => KeyCode::KeyW,
                 "E" => KeyCode::KeyE,
+                "T" => KeyCode::KeyT,
                 _ => return None,
             };
-            Some((key, at.parse().ok()?))
+            let (at, held) = at.split_once('+').unwrap_or((at, "0"));
+            Some((key, at.parse().ok()?, held.parse().ok()?))
         });
         let keys = keys.collect();
         let powers = std::env::var("BRICK_POWER").unwrap_or_default();
@@ -187,6 +190,11 @@ fn main() {
     });
     let circuits = Circuits::find();
     let mut settings = Settings::new(&circuits);
+    // A demo is set up by its variables alone, and leaves the kept settings as they are.
+    if demo.is_none() {
+        settings.restore();
+    }
+    let keeping = demo.is_none();
     // `BRICK_LAPS=1`: how long a demo's race is.
     let laps = std::env::var("BRICK_LAPS").ok().and_then(|laps| laps.parse::<i32>().ok());
     if let Some(choice) = laps.and_then(|laps| menu::LAP_CHOICES.iter().position(|&l| l == laps)) {
@@ -244,7 +252,7 @@ fn main() {
         .init_resource::<variant::Variant>()
         .init_resource::<replay::Replay>()
         .init_resource::<replay::Photo>()
-        .add_systems(Update, video::apply)
+        .add_systems(Update, (video::apply, menu::keep.run_if(move || keeping)))
         .init_resource::<time_race::TimeRace>()
         .insert_resource(championship)
         .add_systems(OnEnter(Screen::Loading), |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race))
@@ -288,7 +296,7 @@ fn main() {
                 racer_sounds::racer_sounds,
                 events::track_events,
                 events::part_animations,
-                (hazards::hazards, hazards::code_lights).chain(),
+                (hazards::hazards, hazards::code_lights, sky::change).chain(),
                 (
                     item_models::dress_actions,
                     item_models::dress_karts,
@@ -302,11 +310,9 @@ fn main() {
                     .chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
-                variant::set_view,
                 (chase_camera.run_if(not(replay::shooting)), replay::photo, sky::follow, particles::particles).chain(),
                 hud::update_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
                 hud::original::draw.run_if(resource_exists::<hud::original::Art>).run_if(not(replay::shooting)),
-                variant::uncull,
                 tag_race_entities,
             )
                 .chain()
@@ -343,6 +349,8 @@ fn load_race(
     let circuit = &circuits.0[settings.circuit];
     let variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
     commands.insert_resource(variant);
+    // Everything loaded and placed from here on is the mirror's side of the circuit.
+    scenery::set_mirror(variant.mirror);
     commands.insert_resource(replay::Replay::default());
     match circuit.race.as_deref().and_then(|race| world::load_in(race, settings.championship.as_deref(), settings.time_race)) {
         Some((mut track, loaded)) => {
@@ -436,10 +444,12 @@ fn setup_brick_world(
 
 /// Presses the keys a demo asks for, each for one frame.
 fn demo_keys(time: Res<Time<Real>>, demo: Res<DemoShot>, mut keys: ResMut<ButtonInput<KeyCode>>, mut pressed: Local<usize>) {
-    for &(key, _) in demo.keys.iter().take(*pressed) {
-        keys.release(key);
+    for &(key, at, held) in demo.keys.iter().take(*pressed) {
+        if time.elapsed_secs() >= at + held {
+            keys.release(key);
+        }
     }
-    if let Some(&(key, _)) = demo.keys.get(*pressed).filter(|k| time.elapsed_secs() >= k.1) {
+    if let Some(&(key, ..)) = demo.keys.get(*pressed).filter(|k| time.elapsed_secs() >= k.1) {
         keys.press(key);
         *pressed += 1;
     }
@@ -635,11 +645,36 @@ fn chase_camera(
     race: Res<Race>,
     keys: Res<ButtonInput<KeyCode>>,
     demo: Option<Res<DemoShot>>,
-    player: Single<&Kart, With<Player>>,
+    karts: Query<(&Kart, Has<Player>)>,
     camera: Single<(&mut Transform, &mut Projection), With<Camera3d>>,
     mut rig: ResMut<camera::Rig>,
+    track: Res<Track>,
+    mut replay: ResMut<replay::Replay>,
 ) {
     let (mut t, mut projection) = camera.into_inner();
+    let Some((own, _)) = karts.iter().find(|k| k.1) else { return };
+    // A replay may be watched over any car's shoulder, or from beside the road.
+    let mut player = own;
+    if replay.showing.is_some() {
+        let step = keys.just_pressed(KeyCode::ArrowRight) as isize - keys.just_pressed(KeyCode::ArrowLeft) as isize;
+        if step != 0 {
+            replay.watch_next(own.slot, step);
+            rig.reset();
+        }
+        if keys.just_pressed(KeyCode::KeyT) {
+            replay.trackside = !replay.trackside;
+            rig.reset();
+        }
+        player = replay.subject.and_then(|slot| karts.iter().find(|k| k.0.slot == slot)).map_or(own, |k| k.0);
+        if replay.trackside {
+            t.translation = replay::Replay::station(&track, player);
+            t.look_at(player.pos + Vec3::Y * 0.8, Vec3::Y);
+            if let Projection::Perspective(lens) = &mut *projection {
+                lens.fov = replay::STATION_FOV;
+            }
+            return;
+        }
+    }
     if let Some((from, to)) = demo.as_ref().and_then(|d| d.camera) {
         t.translation = scenery::to_world(from);
         t.look_at(scenery::to_world(to), Vec3::Y);
@@ -657,7 +692,7 @@ fn chase_camera(
     rig.look_back = keys.pressed(KeyCode::KeyV);
     // Down a warp's tunnel the camera is held still behind the car.
     let (position, rotation) =
-        if player.warp > 0.0 { rig.fixed(&player) } else { rig.follow(&player, time.delta_secs()) };
+        if player.warp > 0.0 { rig.fixed(player) } else { rig.follow(player, time.delta_secs()) };
 
     // During the intro the camera drops in from high behind the grid.
     let sweep = if race.phase == Phase::Intro { (race.intro / INTRO).clamp(0.0, 1.0).powi(2) } else { 0.0 };
@@ -668,7 +703,7 @@ fn chase_camera(
     }
     t.rotation = rotation;
 
-    if let Some(p) = variant::lens(&mut projection) {
+    if let Projection::Perspective(p) = &mut *projection {
         if player.warp > 0.0 {
             // Down the tunnel the view opens right out and closes again.
             let through = 1.0 - player.warp / items::WARP_TIME;

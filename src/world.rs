@@ -28,9 +28,9 @@ const DEFAULT_JAM: &str = "Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM";
 /// Half-width of the band around the recorded racing line that the AI may use.
 const LANE: f32 = 4.0;
 
-/// The game is Z-up; this is a pure rotation onto Bevy's Y-up axes.
+/// The game is Z-up; this turns it onto Bevy's Y-up axes, mirrored if the race is.
 fn to_world(p: [f32; 3]) -> Vec3 {
-    Vec3::new(p[0], p[2], -p[1]) * UNIT
+    scenery::to_world(Vec3::from(p))
 }
 
 pub struct Surface {
@@ -420,9 +420,11 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
     // Each surface material gets a tag, so that hazards can open and close it.
     for (index, name) in volume.materials.iter().enumerate() {
         let surface = surface_table.get(name).copied().unwrap_or_default();
-        // The original stops cars at its invisible barriers (surfaces that only shots
-        // pass through); here karts may drive through them too.
-        let passable = surface.non_solid || surface.shots_pass;
+        // Surfaces that only shots pass through are the invisible barriers cars stop at.
+        let passable = surface.non_solid;
+        if surface.shots_pass {
+            track.collision.set_shots_pass(index + 1);
+        }
         track.collision.set_passable(index + 1, passable);
         track.surfaces.insert(name.clone(), (index + 1, passable));
     }
@@ -497,11 +499,9 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
     }
     let lap_zones: Vec<(i32, u8)> =
         with_ext(".EVB").filter_map(|f| jam.get(f)).flat_map(route::parse_lap_zones).collect();
-    for (centre, radius, event, _) in
-        with_ext(".TRB").filter_map(|f| jam.get(f)).flat_map(route::parse_triggers)
-    {
-        if let Some(&(_, zone)) = lap_zones.iter().find(|z| z.0 == event && z.1 != 1) {
-            track.course.zones.push((to_world(centre), radius * UNIT, zone));
+    for trigger in with_ext(".TRB").filter_map(|f| jam.get(f)).flat_map(route::parse_triggers) {
+        if let Some(&(_, zone)) = lap_zones.iter().find(|z| z.0 == trigger.event && z.1 != 1) {
+            track.course.zones.push((to_world(trigger.centre), trigger.radius * UNIT, zone));
         }
     }
     if let Some(mut grid) = with_ext(".SPB").find_map(|f| route::parse_start_positions(jam.get(f)?)) {

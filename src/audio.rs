@@ -469,14 +469,12 @@ fn flush(
     settings: Res<Settings>,
     screen: Res<State<Screen>>,
     player: Query<&Kart, With<Player>>,
-    variant: Res<crate::variant::Variant>,
 ) {
     let racing = *screen.get() == Screen::Race;
     let listener = player.single().ok().filter(|_| racing).map(|k| Listener {
         pos: k.pos,
         vel: k.vel,
-        // In the mirror, what is on the car's left is seen on the right.
-        left: k.rot * Vec3::NEG_X * variant.side(),
+        left: k.rot * Vec3::NEG_X,
     });
     let listener = listener.as_ref();
     let scale = settings.sound_volume();

@@ -120,7 +120,7 @@ pub fn update_text_hud(
         Phase::Racing if race.time < 1.0 => "GO!".to_string(),
         Phase::Racing if player.wrong_way() => "WRONG WAY".to_string(),
         Phase::Racing => String::new(),
-        Phase::Finished if replay.showing.is_some() => "REPLAY\n\nESC: back".to_string(),
+        Phase::Finished if replay.showing.is_some() => "REPLAY\n\nLeft / Right: car    T: camera    ESC: back".to_string(),
         Phase::Finished => {
             let mut rows: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
             rows.sort_by_key(|k| k.place);

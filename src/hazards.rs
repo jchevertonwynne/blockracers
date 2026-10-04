@@ -67,7 +67,8 @@ enum Kind {
     /// Fires a cannon ball from one of its sources at one of its targets when its
     /// event starts near enough.
     Launcher { sources: Vec<(Vec3, i32)>, targets: Vec<(Vec3, i32)>, near: Option<(Vec3, f32)>, event: i32, ball: Option<Entity> },
-    FallingPillar { fallen: bool },
+    /// `landed` until its collision can be put in: see `hazards`.
+    FallingPillar { fallen: bool, landed: bool },
     Sphinx { blowing: f32 },
     LavaGeyser { cooldown: f32, flying: bool },
     /// Three two-way choices to get right in order; the right ones change each time.
@@ -176,7 +177,7 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
         let name = |key: u16| strings(fields, key).into_iter().next().unwrap_or_default();
         let trigger = number(after(fields, 0x3b).first()) as i32;
         let (trigger, kind) = match kind {
-            0x28 => (10, Kind::FallingPillar { fallen: false }),
+            0x28 => (10, Kind::FallingPillar { fallen: false, landed: false }),
             0x29 => (12, Kind::Sphinx { blowing: 0.0 }),
             0x2a => (50, Kind::Hammer { raised: true }),
             0x2b => (10, Kind::Ghost { search: 0.0, waver: 0.0, depth: 0.0 }),
@@ -299,6 +300,7 @@ pub fn hazards(
         }
     }
     let prop = |name: &str| scenery.0.get(name).copied();
+    let pillar_box = track.surfaces.get("pilcol").and_then(|&(tag, _)| track.collision.bounds(tag));
     let mut set_surface = |name: &str, passable: bool| {
         if let Some(&(tag, _)) = track.surfaces.get(name) {
             track.collision.set_passable(tag, passable);
@@ -342,8 +344,8 @@ pub fn hazards(
             // The weather and the water are always at work; the rest wait for a trigger.
             hazard.active = matches!(hazard.kind, Kind::Snowfall { .. } | Kind::Oscillator { .. });
             match &mut hazard.kind {
-                Kind::FallingPillar { fallen } => {
-                    *fallen = false;
+                Kind::FallingPillar { fallen, landed } => {
+                    (*fallen, *landed) = (false, false);
                     set_surface("pilcol", true);
                     if let Some(mut pillar) = animated!("piltop") {
                         pillar.freeze(0);
@@ -397,8 +399,8 @@ pub fn hazards(
                     match &mut hazard.kind {
                         Kind::Hammer { raised } => *raised = true,
                         Kind::Crane { pending } => *pending = true,
-                        Kind::FallingPillar { fallen } => {
-                            *fallen = false;
+                        Kind::FallingPillar { fallen, landed } => {
+                            (*fallen, *landed) = (false, false);
                             if let Some(mut pillar) = animated!("piltop") {
                                 pillar.play(0, false);
                             }
@@ -562,11 +564,18 @@ pub fn hazards(
                     }
                 }
             }
-            Kind::FallingPillar { fallen } => {
+            Kind::FallingPillar { fallen, landed } => {
                 if !*fallen && bone!("piltop", 0).is_some_and(|(_, frame)| frame > 50.0) {
-                    set_surface("pilcol", false);
                     events.fire(7, None, &mut sfx);
-                    *fallen = true;
+                    (*fallen, *landed) = (true, true);
+                }
+                // The original makes the pillar solid as it lands. Ours would shut in
+                // any car underneath, the collision here having two sides, so it waits
+                // for them to drive out from under it first.
+                let under = |k: &Kart| pillar_box.is_some_and(|(lo, hi)| k.pos.cmpge(lo - 2.0).all() && k.pos.cmple(hi + 2.0).all());
+                if *landed && !karts.iter().any(|(_, k)| under(k)) {
+                    set_surface("pilcol", false);
+                    *landed = false;
                 }
             }
             Kind::Sphinx { blowing } => {
@@ -727,7 +736,7 @@ pub fn code_lights(
     hazards: Option<Res<Hazards>>,
     scenery: Option<Res<Scenery>>,
     swatches: Option<Res<Swatches>>,
-    props: Query<&Scrolling>,
+    props: Query<(&Scrolling, &crate::scenery::CodeLight)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let (Some(hazards), Some(scenery), Some(swatches)) = (hazards, scenery, swatches) else { return };
@@ -740,8 +749,10 @@ pub fn code_lights(
         // With the doors open the lights flicker; otherwise they give the answer.
         let first = if opened { (time.elapsed_secs() * CODE_FLICKER[step]) as u32 % 2 == 0 } else { code[step] };
         let Some(picture) = swatches.0.get(SWATCHES[if first { 0 } else { 1 }]) else { continue };
-        let Some(light) = scenery.0.get(*name).and_then(|&e| props.get(e).ok()) else { continue };
-        for handle in &light.materials {
+        let Some((light, code)) = scenery.0.get(*name).and_then(|&e| props.get(e).ok()) else { continue };
+        // Only the part of the light its track is bound to changes (`MabMaterialTrack`).
+        let changing = light.materials.iter().zip(&light.indices).filter(|(_, index)| code.0.contains(index));
+        for (handle, _) in changing {
             if materials.get(handle).is_some_and(|m| m.base_color_texture.as_ref() != Some(picture)) {
                 if let Some(mut material) = materials.get_mut(handle) {
                     material.base_color_texture = Some(picture.clone());

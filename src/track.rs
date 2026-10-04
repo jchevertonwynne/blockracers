@@ -93,11 +93,18 @@ impl Layout {
             Layout::Brick => (CONTROL, SCALE),
             Layout::FigureEight => (FIGURE_EIGHT, 1.0),
         };
-        points.iter().map(|c| Vec3::new(c[0] * scale, c[1], c[2] * scale)).collect()
+        // Mirrored, the built-in circuits are turned over the same way the game's are.
+        let side = if crate::scenery::mirror() { -1.0 } else { 1.0 };
+        points.iter().map(|c| Vec3::new(c[0] * scale, c[1], c[2] * scale * side)).collect()
     }
 
     /// The ground the scenery is scattered over: (least x and z, greatest x and z).
     fn grounds(self) -> (Vec2, Vec2) {
+        let (least, most) = self.plain_grounds();
+        if crate::scenery::mirror() { (Vec2::new(least.x, -most.y), Vec2::new(most.x, -least.y)) } else { (least, most) }
+    }
+
+    fn plain_grounds(self) -> (Vec2, Vec2) {
         match self {
             Layout::Brick => (Vec2::new(-300.0, -340.0), Vec2::new(350.0, 150.0)),
             Layout::FigureEight => (Vec2::new(-340.0, -220.0), Vec2::new(330.0, 220.0)),

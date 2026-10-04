@@ -427,7 +427,7 @@ pub fn draw(
             frame.nodes.push((place(corner - size, size), node, UiTransform::IDENTITY));
             // East is right and north is up.
             let spot = |k: &Kart| {
-                let north = if variant.mirror { -max_y - k.pos.z / UNIT } else { min_y + k.pos.z / UNIT };
+                let north = if variant.mirror { k.pos.z / UNIT - max_y } else { min_y + k.pos.z / UNIT };
                 corner + Vec2::new(k.pos.x / UNIT - max_x, north) * per_unit
             };
             // The marker picture holds four; the first is the one for other racers.
@@ -439,7 +439,7 @@ pub fn draw(
                 }
             }
             // The player: an arrow pointing the way the kart is.
-            let heading = Vec2::new(forward.x, forward.z * variant.side());
+            let heading = Vec2::new(forward.x, forward.z);
             let turn = UiTransform { rotation: Rot2::radians(heading.y.atan2(heading.x)), ..UiTransform::IDENTITY };
             let node = ImageNode { image: art.arrow.clone(), image_mode: NodeImageMode::Stretch, ..default() };
             frame.nodes.push((place(spot(player) - ARROW_SPAN / 2.0, Vec2::splat(ARROW_SPAN)), node, turn));
@@ -468,8 +468,9 @@ pub fn draw(
     // The port's own keys, under whatever the race's end offers.
     let extras = "R: REPLAY   P: PHOTO";
     if replay.showing.is_some() {
-        let at = Vec2::new((width - frame.width("font_ths", "ESC: BACK", 0.75)) / 2.0, HEIGHT - 2.0 * line);
-        frame.write("font_ths", "ESC: BACK", at, 0.75, white);
+        let keys = "LEFT RIGHT: CAR   T: CAMERA   ESC: BACK";
+        let at = Vec2::new((width - frame.width("font_ths", keys, 0.6)) / 2.0, HEIGHT - 1.2 * line);
+        frame.write("font_ths", keys, at, 0.6, white);
     } else if race.phase == Phase::Finished && settings.time_race {
         // Against the clock: the laps, what they come to, the time to beat, and how it went.
         let mut rows: Vec<(String, String, Color)> = time_race

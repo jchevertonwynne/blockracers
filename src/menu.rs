@@ -131,6 +131,60 @@ impl Settings {
         }
     }
 
+    /// The settings that are kept between sessions, a line each. Which circuit and
+    /// what kind of race are chosen afresh each time.
+    fn write(&self) -> String {
+        let on = |on: bool| on as usize;
+        let kept = [
+            ("laps", self.lap_choice),
+            ("opponents", self.opponents),
+            ("difficulty", self.difficulty),
+            ("music", self.music),
+            ("sound", self.sound),
+            ("mirror", on(self.mirror)),
+            ("reverse", on(self.reverse)),
+            ("bricks", self.bricks),
+            ("elimination", on(self.elimination)),
+            ("vsync", on(self.vsync)),
+            ("fullscreen", on(self.fullscreen)),
+            ("smoothing", on(self.smoothing)),
+        ];
+        kept.iter().map(|(name, value)| format!("{name}={value}\n")).collect()
+    }
+
+    /// Takes what a file of `write`'s has to say, leaving alone anything it doesn't
+    /// mention or that is out of range.
+    fn read(&mut self, text: &str) {
+        for line in text.lines() {
+            let Some((name, Ok(value))) = line.split_once('=').map(|(name, value)| (name, value.trim().parse::<usize>())) else {
+                continue;
+            };
+            let on = value != 0;
+            match name {
+                "laps" if value < LAP_CHOICES.len() => self.lap_choice = value,
+                "opponents" if value <= MAX_OPPONENTS => self.opponents = value,
+                "difficulty" if value < DIFFICULTIES.len() => self.difficulty = value,
+                "music" if value <= MAX_VOLUME => self.music = value,
+                "sound" if value <= MAX_VOLUME => self.sound = value,
+                "mirror" => self.mirror = on,
+                "reverse" => self.reverse = on,
+                "bricks" if value < BRICK_RULES.len() => self.bricks = value,
+                "elimination" => self.elimination = on,
+                "vsync" => self.vsync = on,
+                "fullscreen" => self.fullscreen = on,
+                "smoothing" => self.smoothing = on,
+                _ => {}
+            }
+        }
+    }
+
+    /// Takes up the settings left by the last session, if there was one.
+    pub fn restore(&mut self) {
+        if let Some(text) = settings_file().and_then(|file| std::fs::read_to_string(file).ok()) {
+            self.read(&text);
+        }
+    }
+
     /// Whether this race is one on its own, which is where the port's rules apply.
     fn single(&self) -> bool {
         !self.time_race && self.championship.is_none()
@@ -203,6 +257,29 @@ impl Settings {
     pub fn ai_pace(&self) -> f32 {
         DIFFICULTIES[self.difficulty].1
     }
+}
+
+/// Where the settings are kept: `$BRICK_SETTINGS`, or a file in the home folder.
+fn settings_file() -> Option<std::path::PathBuf> {
+    match std::env::var_os("BRICK_SETTINGS") {
+        Some(file) => Some(file.into()),
+        None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_settings")),
+    }
+}
+
+/// Keeps the settings whenever they change, for the next session.
+pub fn keep(settings: Res<Settings>, mut kept: Local<Option<String>>) {
+    if !settings.is_changed() {
+        return;
+    }
+    let text = settings.write();
+    // The first look is at what was just restored, which is on file already.
+    if kept.as_ref().is_some_and(|kept| *kept != text) {
+        if let Some(Err(error)) = settings_file().map(|file| std::fs::write(file, &text)) {
+            warn!("could not keep the settings: {error}");
+        }
+    }
+    *kept = Some(text);
 }
 
 pub const MAX_VOLUME: usize = 20;
@@ -328,4 +405,20 @@ fn menu(
             colour.0 = wanted;
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn settings_come_back_as_they_were_kept() {
+    let mut settings = Settings::new(&Circuits(Vec::new()));
+    (settings.lap_choice, settings.opponents, settings.music, settings.bricks) = (4, 2, 7, 3);
+    (settings.mirror, settings.vsync, settings.elimination) = (true, false, true);
+    let mut back = Settings::new(&Circuits(Vec::new()));
+    back.read(&settings.write());
+    assert_eq!(back.write(), settings.write());
+    assert_eq!((back.lap_choice, back.opponents, back.music, back.bricks), (4, 2, 7, 3));
+    assert!(back.mirror && !back.vsync && back.elimination && !back.reverse && back.smoothing);
+    // Nonsense and things out of range are passed over.
+    back.read("laps=99\nbricks=six\nfuel=3\nopponents=1\n\nmusic 4");
+    assert_eq!((back.lap_choice, back.bricks, back.opponents, back.music), (4, 3, 1, 7));
 }

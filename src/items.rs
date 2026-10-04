@@ -144,7 +144,7 @@ pub struct Pickup {
 }
 
 /// Something a power-up has put into the world. Its position is its `Transform`.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub enum Action {
     /// `on_hit` is an event of the circuit's to set off where it lands.
     Cannonball { owner: Entity, vel: Vec3, travelled: f32, on_hit: Option<i32> },
@@ -572,7 +572,7 @@ pub fn actions(
                         }
                         done = true;
                     }
-                } else if let Some(hit) = track.collision.any(pos, next) {
+                } else if let Some(hit) = track.collision.shot(pos, next) {
                     // Some surfaces answer to being shot.
                     if let (Some(event), Some(events)) = (hit.surface.shot_event, &mut events) {
                         events.fire(event, Some(hit.point), &mut sfx);
@@ -596,7 +596,7 @@ pub fn actions(
                         tf.translation = next;
                         sfx.sustain_nearest(flight::HOOK, id::HOOK_FLIGHT, flight_sound(next, *vel), FLIGHT_SOUND_RANGE.1);
                         let caught = karts.iter_mut().find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, next, KART_RADIUS));
-                        let mut missed = track.collision.any(pos, next).is_some() || done;
+                        let mut missed = track.collision.shot(pos, next).is_some() || done;
                         let mut hooked = false;
                         if let Some((victim, mut k)) = caught {
                             if k.shielded() {

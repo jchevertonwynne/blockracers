@@ -245,25 +245,42 @@ pub fn parse_placements(data: &[u8]) -> Vec<(String, [f32; 3], [f32; 3], [f32; 3
     out
 }
 
-/// `.TRB` trigger spheres: (centre, radius, event id, whether only the players' cars
-/// set it off). The last is the flag that `TriggerList::RegisterTrigger` turns into
-/// the one `RaceRoster` skips the computer's cars for.
-pub fn parse_triggers(data: &[u8]) -> Vec<([f32; 3], f32, i32, bool)> {
+/// A trigger sphere of a `.TRB`, as `RacerTriggerList` reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Trigger {
+    pub centre: [f32; 3],
+    pub radius: f32,
+    pub event: i32,
+    /// The flag that `TriggerList::RegisterTrigger` turns into the one `RaceRoster`
+    /// skips the computer's cars for.
+    pub players_only: bool,
+    /// The laps a racer must have finished for the trigger to notice them.
+    pub lap: Option<i32>,
+    /// The collision volume tested against a racer only while they are inside. Each is
+    /// a finish line or a door's, which the port keeps in the world all the time.
+    pub volume: Option<String>,
+}
+
+pub fn parse_triggers(data: &[u8]) -> Vec<Trigger> {
     let mut r = Reader::new(data);
     let mut out = Vec::new();
-    let mut current: Option<([f32; 3], f32, i32, bool)> = None;
+    let mut current: Option<Trigger> = None;
     r.next();
     while let Some(token) = r.next() {
         match token {
-            Token::LCurly => current = Some(([0.0; 3], 0.0, -1, false)),
+            Token::LCurly => {
+                current = Some(Trigger { centre: [0.0; 3], radius: 0.0, event: -1, players_only: false, lap: None, volume: None })
+            }
             Token::RCurly => out.extend(current.take()),
             Token::Key(key) => {
                 let Some(trigger) = &mut current else { continue };
                 match key {
-                    0x29 => trigger.0 = r.floats().unwrap_or_default(),
-                    0x2a => trigger.1 = r.float().unwrap_or_default(),
-                    0x2b => trigger.2 = r.int().unwrap_or(-1),
-                    0x2f => trigger.3 = true,
+                    0x29 => trigger.centre = r.floats().unwrap_or_default(),
+                    0x2a => trigger.radius = r.float().unwrap_or_default(),
+                    0x2b => trigger.event = r.int().unwrap_or(-1),
+                    0x2d => trigger.volume = r.string().map(|name| name.to_lowercase()),
+                    0x2e => trigger.lap = r.int(),
+                    0x2f => trigger.players_only = true,
                     _ => {}
                 }
             }
@@ -364,9 +381,14 @@ fn the_code_pads_are_for_players_only() {
     let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
     let triggers = parse_triggers(jam.get("/GAMEDATA/RACEC0R3/MAINTRIG.TRB").unwrap());
     // The six pads of the moon's code, which the computer's cars drive over too.
-    let pads: Vec<_> = triggers.iter().filter(|t| (200..=205).contains(&t.2)).collect();
+    let pads: Vec<_> = triggers.iter().filter(|t| (200..=205).contains(&t.event)).collect();
     assert_eq!(pads.len(), 6);
-    assert!(pads.iter().all(|t| t.3));
+    assert!(pads.iter().all(|t| t.players_only));
     // The triggers that bring in the doors' collision are everyone's.
-    assert!(triggers.iter().filter(|t| t.2 >= 1000).all(|t| !t.3));
+    let volumes: Vec<_> = triggers.iter().filter_map(|t| t.volume.as_deref().filter(|_| !t.players_only)).collect();
+    assert_eq!(volumes, ["colrtdor", "colftdor", "starfin"]);
+    // One trigger in the desert is for racers who have done a lap, and no others.
+    let desert = parse_triggers(jam.get("/GAMEDATA/RACEC0R2/NEWTRIG.TRB").unwrap());
+    let gated: Vec<_> = desert.iter().filter(|t| t.lap.is_some()).map(|t| (t.event, t.lap)).collect();
+    assert_eq!(gated, [(10, Some(1))]);
 }

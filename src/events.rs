@@ -48,6 +48,8 @@ struct Trigger {
     active: bool,
     /// The computer's cars pass through without setting it off.
     players_only: bool,
+    /// Only racers who have finished this many laps set it off.
+    lap: Option<i32>,
 }
 
 /// An event starting or ending, for the hazards and animations that hang on it.
@@ -113,6 +115,9 @@ pub struct TrackEvents {
     inside: Vec<Vec<Entity>>,
     /// Everything that has started or ended since the hazards last looked.
     pub fired: Vec<Fired>,
+    /// What events do to the sky, and the changes asked for since the sky last looked.
+    skies: Vec<crate::sky::Change>,
+    pub sky: Vec<crate::sky::Change>,
 }
 
 fn to_world(p: [f32; 3]) -> Vec3 {
@@ -259,6 +264,28 @@ fn parse_doors(tokens: &[Token]) -> Vec<(String, String)> {
     records(tokens, 0x52).into_iter().filter_map(|(_, fields)| Some((name(fields, 0x33)?, name(fields, 0x4a)?))).collect()
 }
 
+/// The sky state records: `event [on end] { name, time, what to hide and show }`.
+fn parse_skies(tokens: &[Token]) -> Vec<crate::sky::Change> {
+    records(tokens, 0x42)
+        .into_iter()
+        .map(|(header, fields)| {
+            let after = |key: u16| fields.iter().position(|t| *t == Token::Key(key)).and_then(|at| fields.get(at + 1));
+            let has = |key: u16| fields.contains(&Token::Key(key));
+            crate::sky::Change {
+                event: number(header.first()) as i32,
+                on_end: header.contains(&Token::Key(0x3c)),
+                state: match after(0x43) {
+                    Some(Token::Str(name)) => Some(name.to_lowercase()),
+                    _ => None,
+                },
+                seconds: after(0x44).map_or(0.0, |t| number(Some(t)) / 1000.0),
+                dome: if has(0x45) { Some(false) } else { has(0x46).then_some(true) },
+                world: if has(0x47) { Some(false) } else { has(0x48).then_some(true) },
+            }
+        })
+        .collect()
+}
+
 fn parse_timers(tokens: &[Token]) -> Vec<Timer> {
     records(tokens, 0x27)
         .into_iter()
@@ -297,14 +324,16 @@ pub fn load(race: &str) -> Option<TrackEvents> {
         events.animations.extend(parse_animations(&tokens));
         events.delays.extend(parse_delays(&tokens));
         events.doors.extend(parse_doors(&tokens));
+        events.skies.extend(parse_skies(&tokens));
     }
     for data in with_ext(".TRB") {
-        events.triggers.extend(route::parse_triggers(data).into_iter().map(|(centre, radius, event, players_only)| Trigger {
-            centre: to_world(centre),
-            radius: radius * UNIT,
-            event,
+        events.triggers.extend(route::parse_triggers(data).into_iter().map(|t| Trigger {
+            centre: to_world(t.centre),
+            radius: t.radius * UNIT,
+            event: t.event,
             active: false,
-            players_only,
+            players_only: t.players_only,
+            lap: t.lap,
         }));
     }
     for data in with_ext(".TIB") {
@@ -359,6 +388,7 @@ impl TrackEvents {
     pub fn start(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
         debug!("event {event} starts");
         self.fired.push(Fired { event, start: true, at, racer: None });
+        self.sky.extend(self.skies.iter().filter(|s| s.event == event && !s.on_end).cloned());
         self.hold(event, false, sfx);
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if !sound.on_end && !sound.active {
@@ -371,6 +401,7 @@ impl TrackEvents {
     pub fn end(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
         debug!("event {event} ends");
         self.fired.push(Fired { event, start: false, at, racer: None });
+        self.sky.extend(self.skies.iter().filter(|s| s.event == event && s.on_end).cloned());
         self.hold(event, true, sfx);
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if sound.on_end && !sound.active {
@@ -415,13 +446,15 @@ pub fn track_events(
     for i in 0..events.triggers.len() {
         let trigger = &events.triggers[i];
         let (centre, radius, event, active) = (trigger.centre, trigger.radius, trigger.event, trigger.active);
-        let players_only = trigger.players_only;
+        let (players_only, lap) = (trigger.players_only, trigger.lap);
         if event < 0 {
             continue;
         }
         let inside: Vec<Entity> = karts
             .iter()
-            .filter(|(_, k, player)| (*player || !players_only) && k.pos.distance_squared(centre) < radius * radius)
+            // `RacerTriggerList::Entry::OnEvent`: a lap's trigger is for racers on that lap.
+            .filter(|(_, k, player)| (*player || !players_only) && lap.is_none_or(|lap| k.lap - 1 == lap))
+            .filter(|(_, k, _)| k.pos.distance_squared(centre) < radius * radius)
             .map(|(e, ..)| e)
             .collect();
         let touched = !inside.is_empty();
@@ -643,4 +676,16 @@ pub fn part_animations(
             track.collision.set_passable(tag, animated.part != resting);
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn the_moon_s_events_change_its_sky() {
+    use crate::sky::Change;
+    let Some(events) = load("RACEC0R3") else { return };
+    // Event 50 flashes the sky as it starts, and lets it back to the open air as it ends.
+    let change = |on_end, state: &str, seconds| Change { event: 50, on_end, state: Some(state.into()), seconds, dome: None, world: None };
+    assert_eq!(events.skies, [change(false, "flash", 0.25), change(true, "openair", 0.5)]);
+    // The castle has a second sky, and nothing that asks for it.
+    assert!(load("RACEC0R0").unwrap().skies.is_empty());
 }

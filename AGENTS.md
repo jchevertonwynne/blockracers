@@ -51,7 +51,8 @@ menu instead. These combine with it:
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
 | `BRICK_EVENTS=18@3` | circuit events to set off, and when |
-| `BRICK_KEYS=Escape@4,Down@4.5` | keys to press, and when (`P` is photo mode; `R` at the finish is the replay) |
+| `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (`P` is photo mode; `R` at the finish is the replay) |
+| `BRICK_SETTINGS=<file>` | where settings are kept (default `~/.brick_racers_settings`; demos neither read nor write it) |
 | `BRICK_START=1` | keep the drop-in and countdown (demos skip them) |
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |

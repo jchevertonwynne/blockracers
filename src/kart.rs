@@ -637,7 +637,6 @@ pub fn player_input(
     race: Res<Race>,
     pause: Res<crate::Pause>,
     photo: Res<crate::replay::Photo>,
-    variant: Res<crate::variant::Variant>,
     mut start: Local<StartBoost>,
     mut q: Query<(&mut Kart, &mut Controls), With<Player>>,
 ) {
@@ -654,8 +653,7 @@ pub fn player_input(
         keys.any_pressed(pos) as i32 as f32 - keys.any_pressed(neg) as i32 as f32
     };
     c.throttle = axis([KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown]);
-    // In the mirror, left on the screen is the car's right.
-    c.steer = axis([KeyCode::KeyA, KeyCode::ArrowLeft], [KeyCode::KeyD, KeyCode::ArrowRight]) * variant.side();
+    c.steer = axis([KeyCode::KeyA, KeyCode::ArrowLeft], [KeyCode::KeyD, KeyCode::ArrowRight]);
     c.drift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     c.use_item = keys.just_pressed(KeyCode::Space);
 

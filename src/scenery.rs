@@ -27,8 +27,48 @@ fn basis() -> Quat {
     Quat::from_mat3(&Mat3::from_cols(Vec3::X, Vec3::NEG_Z, Vec3::Y))
 }
 
+/// Whether the race in hand is mirrored. The original hands a flag to each of its
+/// loaders, which negate Y in what they read; here the one place everything is turned
+/// from the game's axes to ours does it for them all.
+static MIRROR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sets whether what is loaded and placed from here on is mirrored.
+pub fn set_mirror(mirror: bool) {
+    MIRROR.store(mirror, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn mirror() -> bool {
+    MIRROR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A place or a direction of the game's as ours.
 pub fn to_world(p: Vec3) -> Vec3 {
-    Vec3::new(p.x, p.z, -p.y) * UNIT
+    to_world_in(p, mirror())
+}
+
+/// As `to_world`, in a race that is or is not mirrored.
+pub fn to_world_in(p: Vec3, mirror: bool) -> Vec3 {
+    let y = if mirror { -p.y } else { p.y };
+    Vec3::new(p.x, p.z, -y) * UNIT
+}
+
+/// Our own mirror: the game's Y is our Z.
+const MIRROR_WORLD: Vec3 = Vec3::new(1.0, 1.0, -1.0);
+
+/// A model's turn and size in a mirrored race, from its turn and size in a plain one
+/// (`GolWorldDatabase::MirrorY`): the model is turned over along its own Y, which is
+/// what leaves the turn a turn.
+pub fn mirrored_model(rotation: Quat, scale: Vec3) -> (Quat, Vec3) {
+    let own = Vec3::new(1.0, -1.0, 1.0);
+    let turned = Mat3::from_diagonal(MIRROR_WORLD) * Mat3::from_quat(rotation) * Mat3::from_diagonal(own);
+    (Quat::from_mat3(&turned), scale * own)
+}
+
+/// A car's turn in a mirrored race, from its turn in a plain one. The car itself is
+/// not turned over, as the original's are not: its left and right change places.
+pub fn mirrored_car(rotation: Quat) -> Quat {
+    let turned = Mat3::from_diagonal(MIRROR_WORLD) * Mat3::from_quat(rotation) * Mat3::from_diagonal(Vec3::new(-1.0, 1.0, 1.0));
+    Quat::from_mat3(&turned)
 }
 
 /// A model placed in the world, ready to spawn.
@@ -101,7 +141,14 @@ pub struct Prop {
 pub struct Scrolling {
     offset: Vec2,
     pub materials: Vec<Handle<StandardMaterial>>,
+    /// Which of the model's materials each of those is.
+    pub indices: Vec<usize>,
 }
+
+/// One of the code puzzle's lights: which of its model's materials change with the
+/// code. The rest of the light stays as it is.
+#[derive(Component)]
+pub struct CodeLight(pub Vec<usize>);
 
 /// Pictures that hazards swap onto models, by material name.
 #[derive(Resource, Default)]
@@ -367,6 +414,7 @@ impl Template {
             let parent = bone.and_then(|b| joints.get(b)).copied().unwrap_or(root);
             for (mesh, material, index) in surfaces {
                 scrolling.materials.push(material.clone());
+                scrolling.indices.push(*index);
                 let mesh = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()))).id();
                 commands.entity(parent).add_child(mesh);
                 if let Some((_, start, reels)) = self.cycles.iter().find(|c| c.0 == *index && c.1 < c.2.len()) {
@@ -476,22 +524,26 @@ pub fn spawn_scenery(
 ) {
     let mut scenery = Scenery::default();
     for mut def in std::mem::take(&mut world.props) {
-        // The code puzzle's lights are worked by the puzzle.
-        if crate::hazards::CODE_LIGHTS.contains(&def.name.as_str()) {
-            def.cycles.clear();
-        }
+        // The code puzzle's lights are worked by the puzzle: the materials their
+        // tracks are bound to are the ones it changes.
+        let code_light = crate::hazards::CODE_LIGHTS.contains(&def.name.as_str()).then(|| {
+            CodeLight(std::mem::take(&mut def.cycles).into_iter().map(|cycle| cycle.0).collect())
+        });
         // The sky's models are put round the camera (`RaceSkyState::SetPosition`), and
         // drawn large enough to be behind everything.
         let size = if def.backdrop { crate::sky::WORLD_SCALE } else { 1.0 };
-        let transform = Transform {
-            translation: to_world(def.position),
-            rotation: basis() * def.rotation,
-            scale: Vec3::splat(def.scale * UNIT * size),
-        };
+        let (mut rotation, mut scale) = (basis() * def.rotation, Vec3::splat(def.scale * UNIT * size));
+        if mirror() {
+            (rotation, scale) = mirrored_model(rotation, scale);
+        }
+        let transform = Transform { translation: to_world(def.position), rotation, scale };
         let prop = Prop { position: def.position, rotation: def.rotation, scale: def.scale, scroll: def.scroll };
         let root = commands.spawn((transform, Visibility::default())).id();
         if def.backdrop {
             commands.entity(root).insert(crate::sky::Backdrop);
+        }
+        if let Some(light) = code_light {
+            commands.entity(root).insert(light);
         }
         Template::new(&mut def, &mut meshes, &mut materials, &mut images).build(&mut commands, root, prop);
         scenery.0.insert(def.name, root);
@@ -654,4 +706,23 @@ fn material_animations_bind_to_models() {
     starts.sort();
     assert_eq!(starts, [0, 1]);
     assert_eq!(sphinx.cycles[0].2.iter().map(|r| r.pictures.len()).collect::<Vec<_>>(), [1, 1, 5, 6]);
+}
+
+#[cfg(test)]
+#[test]
+fn a_mirrored_model_is_the_plain_one_in_a_mirror() {
+    // A model turned and placed any old way, and a point of it.
+    let (rotation, scale) = (Quat::from_euler(EulerRot::YXZ, 0.7, -0.3, 1.1), Vec3::splat(2.5));
+    let (place, point) = (Vec3::new(40.0, -12.0, 7.0), Vec3::new(1.0, 2.0, 3.0));
+    let plain = Transform { translation: to_world_in(place, false), rotation, scale };
+    let (turned, sized) = mirrored_model(rotation, scale);
+    let mirrored = Transform { translation: to_world_in(place, true), rotation: turned, scale: sized };
+    let (here, there) = (plain.transform_point(point), mirrored.transform_point(point));
+    assert!(there.distance(here * MIRROR_WORLD) < 1e-3, "{here} {there}");
+    assert!((turned.length() - 1.0).abs() < 1e-4);
+    // A car points the mirrored way and stays the right way up, with its sides swapped.
+    let car = mirrored_car(rotation);
+    assert!((car * Vec3::NEG_Z).distance((rotation * Vec3::NEG_Z) * MIRROR_WORLD) < 1e-4);
+    assert!((car * Vec3::Y).distance((rotation * Vec3::Y) * MIRROR_WORLD) < 1e-4);
+    assert!((car * Vec3::X).distance((rotation * Vec3::NEG_X) * MIRROR_WORLD) < 1e-4);
 }
