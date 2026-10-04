@@ -287,6 +287,7 @@ pub fn draw(
     pause: Res<crate::Pause>,
     championship: Res<crate::championship::Championship>,
     time_race: Res<crate::time_race::TimeRace>,
+    (variant, replay): (Res<crate::variant::Variant>, Res<crate::replay::Replay>),
 ) {
     for root in &roots {
         commands.entity(root).despawn();
@@ -317,6 +318,7 @@ pub fn draw(
             frame.banner(&format!("{}", left.ceil() as u32), banner_at, swell, yellow);
         }
         Phase::Racing if race.time < 2.0 => frame.banner(&string(text::GO), banner_at, 1.8, yellow),
+        Phase::Finished if replay.showing.is_some() => frame.banner("REPLAY", banner_at, 1.0, Color::WHITE),
         Phase::Finished => frame.banner(&string(text::FINISH), banner_at, 1.0, Color::WHITE),
         _ => {}
     }
@@ -420,20 +422,24 @@ pub fn draw(
             let range = Vec2::new(max_x - min_x, max_y - min_y);
             let per_unit = MAP_SIZE / range.max_element();
             let size = range * per_unit;
-            let node = ImageNode { image: picture.clone(), image_mode: NodeImageMode::Stretch, ..default() };
+            // Mirrored, the map is turned over top to bottom, as `RaceHud` draws it.
+            let node = ImageNode { image: picture.clone(), image_mode: NodeImageMode::Stretch, flip_y: variant.mirror, ..default() };
             frame.nodes.push((place(corner - size, size), node, UiTransform::IDENTITY));
             // East is right and north is up.
-            let spot = |k: &Kart| corner + Vec2::new(k.pos.x / UNIT - max_x, min_y + k.pos.z / UNIT) * per_unit;
+            let spot = |k: &Kart| {
+                let north = if variant.mirror { -max_y - k.pos.z / UNIT } else { min_y + k.pos.z / UNIT };
+                corner + Vec2::new(k.pos.x / UNIT - max_x, north) * per_unit
+            };
             // The marker picture holds four; the first is the one for other racers.
             if let Some((handle, _)) = art.pictures[10].clone() {
-                for (kart, _) in karts.iter().filter(|k| !k.1) {
+                for (kart, _) in karts.iter().filter(|k| !k.1 && k.0.out.is_none()) {
                     let rect = Some(Rect::new(0.0, 0.0, MARKER, MARKER));
                     let node = ImageNode { image: handle.clone(), rect, image_mode: NodeImageMode::Stretch, ..default() };
                     frame.nodes.push((place(spot(kart) - MARKER / 2.0, Vec2::splat(MARKER)), node, UiTransform::IDENTITY));
                 }
             }
             // The player: an arrow pointing the way the kart is.
-            let heading = Vec2::new(forward.x, forward.z);
+            let heading = Vec2::new(forward.x, forward.z * variant.side());
             let turn = UiTransform { rotation: Rot2::radians(heading.y.atan2(heading.x)), ..UiTransform::IDENTITY };
             let node = ImageNode { image: art.arrow.clone(), image_mode: NodeImageMode::Stretch, ..default() };
             frame.nodes.push((place(spot(player) - ARROW_SPAN / 2.0, Vec2::splat(ARROW_SPAN)), node, turn));
@@ -459,7 +465,12 @@ pub fn draw(
 
     // The finishing order, and what to press next. In a circuit the points go beside
     // it, and after the last race the order is the circuit's.
-    if race.phase == Phase::Finished && settings.time_race {
+    // The port's own keys, under whatever the race's end offers.
+    let extras = "R: REPLAY   P: PHOTO";
+    if replay.showing.is_some() {
+        let at = Vec2::new((width - frame.width("font_ths", "ESC: BACK", 0.75)) / 2.0, HEIGHT - 2.0 * line);
+        frame.write("font_ths", "ESC: BACK", at, 0.75, white);
+    } else if race.phase == Phase::Finished && settings.time_race {
         // Against the clock: the laps, what they come to, the time to beat, and how it went.
         let mut rows: Vec<(String, String, Color)> = time_race
             .run
@@ -486,6 +497,8 @@ pub fn draw(
         let prompt = format!("ENTER: {}   ESC: {}", string(text::RESTART), string(text::EXIT));
         let at = Vec2::new((width - frame.width("font_ths", &prompt, 0.75)) / 2.0, HEIGHT * 0.3 + 7.5 * line);
         frame.write("font_ths", &prompt, at, 0.75, white);
+        let at = Vec2::new((width - frame.width("font_ths", extras, 0.75)) / 2.0, HEIGHT * 0.3 + 8.3 * line);
+        frame.write("font_ths", extras, at, 0.75, white);
     } else if race.phase == Phase::Finished {
         let run = championship.run.as_ref();
         let over = championship.over();
@@ -519,6 +532,8 @@ pub fn draw(
         };
         let at = Vec2::new((width - frame.width("font_ths", &prompt, 0.75)) / 2.0, HEIGHT * 0.3 + 6.5 * line);
         frame.write("font_ths", &prompt, at, 0.75, white);
+        let at = Vec2::new((width - frame.width("font_ths", extras, 0.75)) / 2.0, HEIGHT * 0.3 + 7.3 * line);
+        frame.write("font_ths", extras, at, 0.75, white);
     }
 
     // A warp washes the screen blue as the car goes into the tunnel and comes out of it.

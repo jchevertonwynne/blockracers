@@ -18,10 +18,15 @@ mod opponent;
 mod particles;
 mod physics;
 mod racer_sounds;
+mod replay;
 mod roster;
+mod rules;
 mod scenery;
+mod sky;
 mod time_race;
 mod track;
+mod variant;
+mod video;
 mod world;
 
 use bevy::{
@@ -154,6 +159,10 @@ fn main() {
                 "Tab" => KeyCode::Tab,
                 "Left" => KeyCode::ArrowLeft,
                 "Right" => KeyCode::ArrowRight,
+                "P" => KeyCode::KeyP,
+                "R" => KeyCode::KeyR,
+                "W" => KeyCode::KeyW,
+                "E" => KeyCode::KeyE,
                 _ => return None,
             };
             Some((key, at.parse().ok()?))
@@ -188,6 +197,17 @@ fn main() {
     if demo.is_some() && std::env::var("BRICK_SOUND").is_err() {
         (settings.music, settings.sound) = (0, 0);
     }
+    // `BRICK_MIRROR`, `BRICK_REVERSE`, `BRICK_ELIMINATION` and `BRICK_BRICKS=red` (or
+    // yellow, blue, green, none) turn on the port's own ways of racing.
+    let set = |name: &str| std::env::var(name).is_ok();
+    (settings.mirror, settings.reverse, settings.elimination) = (set("BRICK_MIRROR"), set("BRICK_REVERSE"), set("BRICK_ELIMINATION"));
+    if let Ok(colour) = std::env::var("BRICK_BRICKS") {
+        settings.bricks = ["normal", "red", "yellow", "blue", "green", "none"].iter().position(|&c| c == colour).unwrap_or(0);
+    }
+    // `BRICK_OPPONENTS=1`: how many of the computer's cars a demo races.
+    if let Some(opponents) = std::env::var("BRICK_OPPONENTS").ok().and_then(|n| n.parse::<usize>().ok()) {
+        settings.opponents = opponents.min(menu::MAX_OPPONENTS);
+    }
     // `BRICK_TIME=1`: a demo's race is against the clock.
     settings.time_race = std::env::var("BRICK_TIME").is_ok();
     // `BRICK_SERIES=0`: a demo races this circuit's races rather than one on its own.
@@ -221,6 +241,10 @@ fn main() {
         .insert_resource(settings)
         .init_resource::<camera::Rig>()
         .init_resource::<Pause>()
+        .init_resource::<variant::Variant>()
+        .init_resource::<replay::Replay>()
+        .init_resource::<replay::Photo>()
+        .add_systems(Update, video::apply)
         .init_resource::<time_race::TimeRace>()
         .insert_resource(championship)
         .add_systems(OnEnter(Screen::Loading), |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race))
@@ -232,6 +256,7 @@ fn main() {
                 load_race,
                 world::spawn_world.run_if(resource_exists::<LoadedWorld>),
                 scenery::spawn_scenery.run_if(resource_exists::<LoadedWorld>),
+                sky::spawn.run_if(resource_exists::<LoadedWorld>),
                 setup_brick_world.run_if(not(resource_exists::<LoadedWorld>)),
                 kart::spawn_karts,
                 time_race::spawn_ghosts,
@@ -245,14 +270,21 @@ fn main() {
             Update,
             (
                 race_flow,
-                kart::player_input,
-                kart::ai_drive,
-                items::use_items,
-                items::actions,
-                kart::kart_physics,
-                kart::kart_collisions,
-                (kart::update_places, time_race::time_race).chain(),
-                items::pickups,
+                // A replay shows the race again rather than running it on.
+                (
+                    kart::player_input,
+                    kart::ai_drive,
+                    items::use_items,
+                    items::actions,
+                    kart::kart_physics,
+                    kart::kart_collisions,
+                    (kart::update_places, rules::elimination, time_race::time_race).chain(),
+                    items::pickups,
+                    replay::record,
+                )
+                    .chain()
+                    .run_if(replay::live),
+                replay::play,
                 racer_sounds::racer_sounds,
                 events::track_events,
                 events::part_animations,
@@ -270,9 +302,11 @@ fn main() {
                     .chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
-                (chase_camera, particles::particles).chain(),
+                variant::set_view,
+                (chase_camera.run_if(not(replay::shooting)), replay::photo, sky::follow, particles::particles).chain(),
                 hud::update_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
-                hud::original::draw.run_if(resource_exists::<hud::original::Art>),
+                hud::original::draw.run_if(resource_exists::<hud::original::Art>).run_if(not(replay::shooting)),
+                variant::uncull,
                 tag_race_entities,
             )
                 .chain()
@@ -284,6 +318,8 @@ fn main() {
 fn setup_scene(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
+        // Far enough to take in the sky, which is drawn large and a long way off.
+        Projection::Perspective(PerspectiveProjection { far: 5000.0, ..default() }),
         Transform::from_xyz(0.0, 10.0, 20.0),
         // The original's colours are baked in and meant to reach the screen as they are.
         Tonemapping::None,
@@ -301,11 +337,18 @@ fn load_race(
     circuits: Res<Circuits>,
     settings: Res<Settings>,
     demo: Option<Res<DemoShot>>,
+    championship: Res<championship::Championship>,
     mut rig: ResMut<camera::Rig>,
 ) {
     let circuit = &circuits.0[settings.circuit];
+    let variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
+    commands.insert_resource(variant);
+    commands.insert_resource(replay::Replay::default());
     match circuit.race.as_deref().and_then(|race| world::load_in(race, settings.championship.as_deref(), settings.time_race)) {
-        Some((track, loaded)) => {
+        Some((mut track, loaded)) => {
+            if variant.reverse {
+                track.reverse();
+            }
             commands.insert_resource(track);
             commands.insert_resource(loaded);
         }
@@ -313,8 +356,13 @@ fn load_race(
             if circuit.race.is_some() {
                 warn!("could not load {}; using the brick circuit", circuit.name);
             }
-            commands.insert_resource(Track::built(circuit.layout));
+            let mut track = Track::built(circuit.layout);
+            if variant.reverse {
+                track.reverse();
+            }
+            commands.insert_resource(track);
             commands.remove_resource::<LoadedWorld>();
+            commands.insert_resource(ClearColor(SKY));
         }
     }
     match circuit.race.as_deref().and_then(events::load) {
@@ -456,7 +504,12 @@ fn race_flow(
     mut championship: ResMut<championship::Championship>,
     circuits: Res<Circuits>,
     mut settings: ResMut<Settings>,
+    (mut replay, photo): (ResMut<replay::Replay>, Res<replay::Photo>),
 ) {
+    // In photo mode the keys are the camera's.
+    if photo.0.is_some() {
+        return;
+    }
     let mut restart = false;
     if let Some(dialog) = &mut pause.0 {
         // Paused: the keys work the menu and nothing else moves.
@@ -499,6 +552,17 @@ fn race_flow(
         if !restart {
             return;
         }
+    } else if replay.showing.is_some() {
+        // Any of the keys that began or would leave the replay ends it.
+        if keys.any_just_pressed([KeyCode::Escape, KeyCode::Enter, KeyCode::KeyR]) {
+            sfx.play(audio::id::MENU_BACK);
+            replay.showing = None;
+        }
+        return;
+    } else if race.phase == Phase::Finished && keys.just_pressed(KeyCode::KeyR) && replay.ready() {
+        sfx.play(audio::id::MENU_CONFIRM);
+        replay.start();
+        return;
     } else if keys.just_pressed(KeyCode::Escape) {
         sfx.play(audio::id::MENU_BACK);
         // Without the game's own lettering there is no menu to show: just leave.
@@ -604,7 +668,7 @@ fn chase_camera(
     }
     t.rotation = rotation;
 
-    if let Projection::Perspective(p) = &mut *projection {
+    if let Some(p) = variant::lens(&mut projection) {
         if player.warp > 0.0 {
             // Down the tunnel the view opens right out and closes again.
             let through = 1.0 - player.warp / items::WARP_TIME;

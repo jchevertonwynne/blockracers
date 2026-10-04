@@ -79,6 +79,7 @@ fn clock(t: f32) -> String {
 pub fn update_text_hud(
     race: Res<Race>,
     settings: Res<Settings>,
+    replay: Res<crate::replay::Replay>,
     karts: Query<(&Kart, Has<Player>)>,
     mut lap: Single<&mut Text, (With<LapText>, Without<PlaceText>, Without<TimeText>, Without<ItemText>, Without<CenterText>)>,
     mut place: Single<&mut Text, (With<PlaceText>, Without<TimeText>, Without<ItemText>, Without<CenterText>)>,
@@ -119,6 +120,7 @@ pub fn update_text_hud(
         Phase::Racing if race.time < 1.0 => "GO!".to_string(),
         Phase::Racing if player.wrong_way() => "WRONG WAY".to_string(),
         Phase::Racing => String::new(),
+        Phase::Finished if replay.showing.is_some() => "REPLAY\n\nESC: back".to_string(),
         Phase::Finished => {
             let mut rows: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
             rows.sort_by_key(|k| k.place);
@@ -127,7 +129,7 @@ pub fn update_text_hud(
                 let time = k.finished.map_or("--".to_string(), clock);
                 out += &format!("{}  {}  {}\n", ordinal(k.place), k.name, time);
             }
-            out + "\nENTER: race again    ESC: menu"
+            out + "\nENTER: race again    ESC: menu\nR: replay    P: photo"
         }
     };
     set(&mut center, message);

@@ -19,6 +19,8 @@ pub struct Series {
     pub champion: &'static str,
     /// The folders of its races, in the order they are run.
     pub rounds: Vec<String>,
+    /// Which of them are run mirrored.
+    pub mirrored: Vec<bool>,
 }
 
 /// A circuit being raced: which race it has come to and who has what.
@@ -57,6 +59,7 @@ impl Championship {
             .map(|(code, rounds)| Series {
                 champion: roster::field(&jam, &code).first().map_or("", |d| d.name),
                 code,
+                mirrored: rounds.iter().map(|r| r.mirrored).collect(),
                 rounds: rounds.into_iter().map(|r| r.folder).collect(),
             })
             .collect();
@@ -69,6 +72,12 @@ impl Championship {
         let series = self.series.get(self.chosen).filter(|_| self.chosen < self.unlocked)?;
         self.run = Some(Run { series: self.chosen, round: 0, points: [0; 6], round_points: [0; 6], scored: false });
         Some((series.code.clone(), series.rounds[0].clone()))
+    }
+
+    /// Whether the race in hand is run mirrored; `None` when no circuit is being raced.
+    pub fn mirrored(&self) -> Option<bool> {
+        let run = self.run.as_ref()?;
+        Some(self.series.get(run.series)?.mirrored.get(run.round).copied().unwrap_or(false))
     }
 
     /// Gives out the points for a race from the places its racers took, by grid slot.
@@ -120,12 +129,14 @@ impl Championship {
 #[cfg(test)]
 #[test]
 fn a_circuit_is_scored_race_by_race() {
-    let series = |code: &str, rounds: usize| Series { code: code.into(), champion: "", rounds: vec!["RACE".into(); rounds] };
+    let series = |code: &str, rounds: usize| Series { code: code.into(), champion: "", rounds: vec!["RACE".into(); rounds], mirrored: vec![code == "c1"; rounds] };
     let mut championship = Championship { series: vec![series("c0", 2), series("c1", 4)], unlocked: 1, chosen: 1, run: None };
     // The second circuit isn't open yet.
     assert!(championship.begin().is_none());
     championship.chosen = 0;
+    assert_eq!(championship.mirrored(), None);
     assert_eq!(championship.begin(), Some(("c0".into(), "RACE".into())));
+    assert_eq!(championship.mirrored(), Some(false));
     // The player (slot 5) wins, then comes fourth.
     championship.score(&[(5, 1), (0, 2), (1, 3), (2, 4), (3, 5), (4, 6)]);
     championship.score(&[(5, 6)]);

@@ -21,7 +21,7 @@ use crate::track::Track;
 use crate::world::LoadedWorld;
 use bevy::prelude::*;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Power {
     Red,
     Yellow,
@@ -180,6 +180,7 @@ pub struct ItemAssets {
 pub fn setup_items(
     mut commands: Commands,
     track: Res<Track>,
+    settings: Res<crate::menu::Settings>,
     loaded: Option<Res<LoadedWorld>>,
     models: Option<Res<Models>>,
     swatches: Option<Res<Swatches>>,
@@ -237,7 +238,11 @@ pub fn setup_items(
     let coloured = powers.map(|p| material(p.color()));
     let white = material(WHITE);
 
+    let rule = settings.brick_rule();
+    let placed = loaded.is_some();
     let mut spawn = |pos: Vec3, power: Option<Power>| {
+        // The race's rule may recolour the brick, or leave it out.
+        let Some(power) = crate::rules::brick(rule, power) else { return };
         let mat = match power {
             Some(p) => &coloured[powers.iter().position(|&q| q == p).unwrap()],
             None => &white,
@@ -250,7 +255,10 @@ pub fn setup_items(
             Some(Power::Green) => ["gen-t", "genblen-t"],
             None => ["enh", "enhblen"],
         };
-        let at = Transform::from_translation(pos + Vec3::Y * BRICK_HEIGHT).with_scale(Vec3::splat(BRICK_SCALE));
+        // The original's own placements are where the brick is drawn (`PickupBrick::Draw`);
+        // ours are on the road, and the brick is held above it.
+        let lift = if placed { 0.0 } else { BRICK_HEIGHT };
+        let at = Transform::from_translation(pos + Vec3::Y * lift).with_scale(Vec3::splat(BRICK_SCALE));
         let model = models.as_ref().and_then(|models| {
             let brick = models.spawn(&mut commands, names[0], at, Motion::Loop)?;
             if let Some(glow) = models.spawn(&mut commands, names[1], Transform::IDENTITY, Motion::Loop) {

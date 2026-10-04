@@ -38,7 +38,8 @@ impl Circuits {
     }
 }
 
-pub const LAP_CHOICES: [i32; 4] = [1, 3, 5, 7];
+/// The last three are longer than any race of the original's.
+pub const LAP_CHOICES: [i32; 7] = [1, 3, 5, 7, 10, 15, 20];
 pub const MAX_OPPONENTS: usize = 5;
 pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("Hard", 1.06)];
 
@@ -55,6 +56,51 @@ pub struct Settings {
     /// Steps of the original's volume sliders, 0 to 20.
     pub music: usize,
     pub sound: usize,
+    /// What the port adds to the original's game. All start off.
+    pub mirror: bool,
+    /// Round the circuit the other way.
+    pub reverse: bool,
+    /// Which of `BRICK_RULES` the circuit's bricks follow.
+    pub bricks: usize,
+    /// The last car is put out each lap, until one is left.
+    pub elimination: bool,
+    pub vsync: bool,
+    pub fullscreen: bool,
+    /// Edges smoothed by multisampling.
+    pub smoothing: bool,
+}
+
+/// What may be done with a circuit's bricks: left alone, every coloured one made the
+/// same colour, or none put out at all.
+pub const BRICK_RULES: [&str; 6] = ["Normal", "All red", "All yellow", "All blue", "All green", "None"];
+
+/// The settings the original has no counterpart for.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Extra {
+    Mirror,
+    Reverse,
+    Bricks,
+    Elimination,
+    VSync,
+    Fullscreen,
+    Smoothing,
+}
+
+impl Extra {
+    pub const RACE: [Extra; 4] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination];
+    pub const VIDEO: [Extra; 3] = [Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Extra::Mirror => "Mirrored",
+            Extra::Reverse => "Reversed",
+            Extra::Bricks => "Bricks",
+            Extra::Elimination => "Elimination",
+            Extra::VSync => "Frame rate",
+            Extra::Fullscreen => "Full screen",
+            Extra::Smoothing => "Smooth edges",
+        }
+    }
 }
 
 impl Settings {
@@ -66,7 +112,66 @@ impl Settings {
             Some(_) => c.race == wanted,
             None => wanted.as_deref() == Some(c.layout.key()),
         });
-        Settings { circuit: circuit.unwrap_or(0), lap_choice: 1, championship: None, time_race: false, opponents: MAX_OPPONENTS, difficulty: 1, music: 14, sound: MAX_VOLUME }
+        Settings {
+            circuit: circuit.unwrap_or(0),
+            lap_choice: 1,
+            championship: None,
+            time_race: false,
+            opponents: MAX_OPPONENTS,
+            difficulty: 1,
+            music: 14,
+            sound: MAX_VOLUME,
+            mirror: false,
+            reverse: false,
+            bricks: 0,
+            elimination: false,
+            vsync: true,
+            fullscreen: false,
+            smoothing: true,
+        }
+    }
+
+    /// Whether this race is one on its own, which is where the port's rules apply.
+    fn single(&self) -> bool {
+        !self.time_race && self.championship.is_none()
+    }
+
+    /// Whether the last car goes out each lap: it takes someone to race against.
+    pub fn eliminating(&self) -> bool {
+        self.elimination && self.single() && self.opponents > 0
+    }
+
+    /// The rule the race's bricks follow, as an index into `BRICK_RULES`.
+    pub fn brick_rule(&self) -> usize {
+        if self.single() { self.bricks } else { 0 }
+    }
+
+    /// Steps an extra setting on or back.
+    pub fn turn(&mut self, extra: Extra, change: i32) {
+        let flip = |on: &mut bool| *on = !*on;
+        match extra {
+            Extra::Mirror => flip(&mut self.mirror),
+            Extra::Reverse => flip(&mut self.reverse),
+            Extra::Bricks => self.bricks = (self.bricks as i32 + change).rem_euclid(BRICK_RULES.len() as i32) as usize,
+            Extra::Elimination => flip(&mut self.elimination),
+            Extra::VSync => flip(&mut self.vsync),
+            Extra::Fullscreen => flip(&mut self.fullscreen),
+            Extra::Smoothing => flip(&mut self.smoothing),
+        }
+    }
+
+    /// An extra setting as the menus show it.
+    pub fn shown(&self, extra: Extra) -> String {
+        let on = |on: bool| if on { "On" } else { "Off" }.to_string();
+        match extra {
+            Extra::Mirror => on(self.mirror),
+            Extra::Reverse => on(self.reverse),
+            Extra::Bricks => BRICK_RULES[self.bricks].to_string(),
+            Extra::Elimination => on(self.elimination),
+            Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
+            Extra::Fullscreen => on(self.fullscreen),
+            Extra::Smoothing => on(self.smoothing),
+        }
     }
 
     /// How many of the computer's cars race: none against the clock.
@@ -77,6 +182,10 @@ impl Settings {
     pub fn laps(&self) -> i32 {
         if self.time_race {
             return crate::time_race::LAPS as i32;
+        }
+        // One car goes at the end of each lap, and the last lap leaves the winner.
+        if self.eliminating() {
+            return self.opponents as i32;
         }
         LAP_CHOICES[self.lap_choice]
     }
@@ -97,7 +206,10 @@ impl Settings {
 }
 
 pub const MAX_VOLUME: usize = 20;
-const ROWS: usize = 7;
+/// The plain menu's rows: the six settings it always had, the extras, and the start.
+const EXTRAS: [Extra; 7] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination, Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
+const ROWS: usize = 7 + EXTRAS.len();
+const START: usize = ROWS - 1;
 
 #[derive(Component)]
 struct Row(usize);
@@ -127,22 +239,23 @@ fn spawn_menu(mut commands: Commands) {
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(14.0),
+                row_gap: Val::Px(6.0),
                 ..default()
             },
             BackgroundColor(Color::srgb(0.08, 0.10, 0.16)),
         ))
         .with_children(|menu| {
-            menu.spawn((Text::new("BRICK RACERS"), text(72.0), TextColor(YELLOW)));
-            menu.spawn(Node { height: Val::Px(24.0), ..default() });
+            menu.spawn((Text::new("BRICK RACERS"), text(60.0), TextColor(YELLOW)));
+            menu.spawn(Node { height: Val::Px(10.0), ..default() });
             for row in 0..ROWS {
-                menu.spawn((Row(row), Text::new(""), text(34.0)));
+                menu.spawn((Row(row), Text::new(""), text(26.0)));
             }
-            menu.spawn(Node { height: Val::Px(24.0), ..default() });
+            menu.spawn(Node { height: Val::Px(10.0), ..default() });
             menu.spawn((
                 Text::new(
                     "Up / Down: choose    Left / Right: change    Enter: race\n\
-                     In a race    WASD / arrows: drive    Shift: powerslide    Space: power-up    Esc: menu",
+                     In a race    WASD / arrows: drive    Shift: powerslide    Space: power-up    Esc: menu\n\
+                     P: photo mode    R at the finish: replay",
                 ),
                 text(18.0),
                 TextLayout::justify(Justify::Center),
@@ -181,11 +294,12 @@ fn menu(
             3 => settings.difficulty = step(settings.difficulty, DIFFICULTIES.len()),
             4 => settings.music = step(settings.music, MAX_VOLUME + 1),
             5 => settings.sound = step(settings.sound, MAX_VOLUME + 1),
-            _ => {}
+            START => {}
+            row => settings.turn(EXTRAS[row - 6], change as i32),
         }
         match cursor.0 {
             4 | 5 => sfx.play(id::MENU_SLIDER),
-            6 => {}
+            START => {}
             _ => sfx.play(id::MENU_SELECT),
         }
     }
@@ -203,7 +317,8 @@ fn menu(
             3 => option("Difficulty", DIFFICULTIES[settings.difficulty].0.to_string()),
             4 => option("Music", settings.music.to_string()),
             5 => option("Sound", settings.sound.to_string()),
-            _ => "Start race".to_string(),
+            START => "Start race".to_string(),
+            row => option(EXTRAS[row - 6].label(), settings.shown(EXTRAS[row - 6])),
         };
         if text.0 != line {
             text.0 = line;

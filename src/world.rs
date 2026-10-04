@@ -80,6 +80,8 @@ pub struct LoadedWorld {
     /// The record run of a time race, and cars for it and the player's best to be shown as.
     pub ghost: Option<crate::time_race::Run>,
     pub ghost_models: Vec<KartModel>,
+    /// The colours of the sky.
+    pub sky: Option<crate::sky::Sky>,
     /// Scenery and animated models around the track.
     pub props: Vec<scenery::PropDef>,
     /// The models power-ups are made of.
@@ -599,7 +601,8 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
         .filter_map(|material| picture(&library, material))
         .chain(crate::item_models::PICTURES.iter().filter_map(|material| picture(&powerups, material)))
         .collect();
-    Some((track, LoadedWorld { surfaces, bricks, karts, field, routes, ghost, ghost_models, props, models, emitters, swatches }))
+    let sky = with_ext(".SKB").find_map(|f| crate::sky::Sky::parse(jam.get(f)?));
+    Some((track, LoadedWorld { sky, surfaces, bricks, karts, field, routes, ghost, ghost_models, props, models, emitters, swatches }))
 }
 
 /// Render components for one surface.

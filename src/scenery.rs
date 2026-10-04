@@ -46,6 +46,8 @@ pub struct PropDef {
     /// Materials of the model that play through pictures: which material, the track
     /// it starts on, and the tracks there are.
     cycles: Vec<(usize, usize, Arc<Vec<ReelDef>>)>,
+    /// Part of the sky world, which goes where the camera goes.
+    backdrop: bool,
 }
 
 /// One track of a material animation: its timing and the pictures it shows, with the
@@ -279,6 +281,7 @@ pub fn load_files(jam: &Jam, dir: &str, files: &[&str], library: &Library, skip:
                 .map(|bone| (bone, library.surfaces(&model, |b| b.bone.filter(|_| rig.is_some()) == bone, Vec3::from)))
                 .collect();
             props.push(PropDef {
+                backdrop: file.to_uppercase().ends_with("/BACKGRD.WDB"),
                 name: name.unwrap_or(model_name).to_lowercase(),
                 surfaces,
                 rig,
@@ -477,13 +480,19 @@ pub fn spawn_scenery(
         if crate::hazards::CODE_LIGHTS.contains(&def.name.as_str()) {
             def.cycles.clear();
         }
+        // The sky's models are put round the camera (`RaceSkyState::SetPosition`), and
+        // drawn large enough to be behind everything.
+        let size = if def.backdrop { crate::sky::WORLD_SCALE } else { 1.0 };
         let transform = Transform {
             translation: to_world(def.position),
             rotation: basis() * def.rotation,
-            scale: Vec3::splat(def.scale * UNIT),
+            scale: Vec3::splat(def.scale * UNIT * size),
         };
         let prop = Prop { position: def.position, rotation: def.rotation, scale: def.scale, scroll: def.scroll };
         let root = commands.spawn((transform, Visibility::default())).id();
+        if def.backdrop {
+            commands.entity(root).insert(crate::sky::Backdrop);
+        }
         Template::new(&mut def, &mut meshes, &mut materials, &mut images).build(&mut commands, root, prop);
         scenery.0.insert(def.name, root);
     }

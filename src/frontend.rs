@@ -1,7 +1,8 @@
 //! The original game's front end, drawn from its own menu data: the screen layouts
 //! (`.MIB`), pictures, bitmap fonts and string tables in `MENUDATA`. Main menu, single
 //! race and options are here; the screens for things the port doesn't have (building,
-//! circuit race, versus, time race, video, controls) are shown but can't be chosen.
+//! versus, controls) are shown but can't be chosen. The video options are the port's
+//! own, and so is the extras page: the ways of racing the original doesn't have.
 //!
 //! Colours and the make-up of each widget follow the styles in `GSTYLES.MSB`. The
 //! spinning models the original shows on these screens are not drawn.
@@ -14,7 +15,7 @@ use crate::assets::{
     tokens::{Token, tokenize},
 };
 use crate::audio::{Sfx, id};
-use crate::menu::{Circuits, DIFFICULTIES, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, Screen, Settings};
+use crate::menu::{Circuits, DIFFICULTIES, Extra, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, Screen, Settings};
 use bevy::{
     asset::RenderAssetUsages,
     image::ImageSampler,
@@ -78,7 +79,43 @@ enum Page {
     TimeRace,
     Options,
     GameOptions,
+    VideoOptions,
     AudioOptions,
+    Extras,
+}
+
+impl Page {
+    /// The item a page opens on.
+    fn first(self) -> usize {
+        match self {
+            Page::Main => 2,
+            // Past the extras, to the first of the original's own.
+            Page::Options => 1,
+            _ => 0,
+        }
+    }
+
+    /// The port's settings a page shows, a selector to each.
+    fn extras(self) -> &'static [Extra] {
+        match self {
+            Page::VideoOptions => &Extra::VIDEO,
+            Page::Extras => &Extra::RACE,
+            _ => &[],
+        }
+    }
+}
+
+/// Where the rows of a page of the port's settings go: the rectangles the original
+/// gives the two rows of its game options, carried on down the screen.
+fn rows(art: &Art, count: usize, names: [&str; 2]) -> Vec<Rect> {
+    let (first, second) = (art.place("options", names[0]), art.place("options", names[1]));
+    // Three rows fit at the original's spacing; more are closed up.
+    let step = if count > 3 { 2.2 / (count - 1) as f32 } else { 1.0 };
+    let row = |n: usize| {
+        let n = n as f32 * step;
+        Rect::from_corners(first.min + (second.min - first.min) * n, first.max + (second.max - first.max) * n)
+    };
+    (0..count).map(row).collect()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -100,6 +137,8 @@ enum Action {
     Difficulty,
     Music,
     Sound,
+    /// One of the port's own settings.
+    Extra(Extra),
 }
 
 enum Widget {
@@ -306,8 +345,18 @@ fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, champi
             ]
         }
         Page::Options => vec![
+            // The port's own page, a row above the original's first.
+            Item {
+                widget: Widget::Button {
+                    at: art.place("options", "game").min * 2.0 - art.place("options", "video").min,
+                    label: "EXTRAS".into(),
+                    icon: None,
+                },
+                action: Action::Go(Page::Extras),
+                enabled: true,
+            },
             button("options", "game", text::GAME_OPTIONS, Action::Go(Page::GameOptions), None),
-            button("options", "video", text::VIDEO_OPTIONS, Action::Nothing, None),
+            button("options", "video", text::VIDEO_OPTIONS, Action::Go(Page::VideoOptions), None),
             button("options", "audio", text::AUDIO_OPTIONS, Action::Go(Page::AudioOptions), None),
             button("options", "player1", text::CONTROLS[0], Action::Nothing, None),
             button("options", "player2", text::CONTROLS[1], Action::Nothing, None),
@@ -326,6 +375,16 @@ fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, champi
                 selector(row(2.0), None, DIFFICULTIES[settings.difficulty].0.to_string(), Action::Difficulty),
                 back("options", Page::Options),
             ]
+        }
+        Page::VideoOptions | Page::Extras => {
+            let extras = page.extras();
+            let mut items: Vec<Item> = rows(art, extras.len(), ["chmpcont", "lapcont"])
+                .into_iter()
+                .zip(extras)
+                .map(|(area, &extra)| selector(area, None, settings.shown(extra), Action::Extra(extra)))
+                .collect();
+            items.push(back("options", Page::Options));
+            items
         }
         Page::AudioOptions => vec![
             Item { widget: Widget::Slider { area: art.place("options", "musicvol"), value: settings.music }, action: Action::Music, enabled: true },
@@ -355,6 +414,14 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
                 (third, "DIFFICULTY".into(), "font_ths"),
             ]
         }
+        Page::VideoOptions | Page::Extras => {
+            let extras = page.extras();
+            let title = if page == Page::Extras { "EXTRAS".to_string() } else { art.string(text::VIDEO_OPTIONS) };
+            let mut labels = vec![(Rect::new(375.0, 20.0, 375.0, 68.0), title, "fontmenu")];
+            let places = rows(art, extras.len(), ["chmptext", "laptext"]);
+            labels.extend(places.into_iter().zip(extras).map(|(area, extra)| (area, extra.label().to_string(), "font_ths")));
+            labels
+        }
         Page::AudioOptions => vec![
             banner(text::AUDIO_OPTIONS),
             beside("mvoltext", art.string(text::MUSIC_VOLUME)),
@@ -374,9 +441,11 @@ fn enter(mut menu: ResMut<Menu>) {
         Ok("options") => Page::Options,
         Ok("game") => Page::GameOptions,
         Ok("audio") => Page::AudioOptions,
+        Ok("video") => Page::VideoOptions,
+        Ok("extras") => Page::Extras,
         _ => return,
     };
-    (menu.page, menu.focus) = (page, 0);
+    (menu.page, menu.focus) = (page, page.first());
 }
 
 fn leave(mut commands: Commands, roots: Query<Entity, With<Root>>, mut scale: ResMut<UiScale>) {
@@ -489,11 +558,11 @@ fn input(
         let back = match menu.page {
             Page::Main => None,
             Page::SingleRace | Page::CircuitRace | Page::TimeRace | Page::Options => Some(Page::Main),
-            Page::GameOptions | Page::AudioOptions => Some(Page::Options),
+            Page::GameOptions | Page::VideoOptions | Page::AudioOptions | Page::Extras => Some(Page::Options),
         };
         if let Some(back) = back {
             sfx.play(id::MENU_BACK);
-            go(&mut menu, back, if back == Page::Main { 2 } else { 0 });
+            go(&mut menu, back, back.first());
         }
         return;
     }
@@ -528,6 +597,7 @@ fn input(
             Action::Difficulty => settings.difficulty = turn(settings.difficulty, DIFFICULTIES.len()),
             Action::Music => settings.music = (settings.music as i32 + change).clamp(0, MAX_VOLUME as i32) as usize,
             Action::Sound => settings.sound = (settings.sound as i32 + change).clamp(0, MAX_VOLUME as i32) as usize,
+            Action::Extra(extra) => settings.turn(extra, change),
             _ => {}
         }
         if !matches!(action, Action::Go(_) | Action::Race | Action::TimeRace | Action::StartSeries | Action::Quit | Action::Nothing) {
@@ -540,7 +610,7 @@ fn input(
             Action::Go(page) => {
                 let forward = !matches!(page, Page::Main) && !(page == Page::Options && menu.page != Page::Main);
                 sfx.play(if forward { id::MENU_CONFIRM } else { id::MENU_BACK });
-                go(&mut menu, page, if page == Page::Main { 2 } else { 0 });
+                go(&mut menu, page, page.first());
             }
             Action::Race | Action::TimeRace => {
                 sfx.play(id::MENU_CONFIRM);
@@ -649,13 +719,27 @@ fn draw(
         } else if menu.page == Page::TimeRace {
             format!("{}\n\nLAPS {}", circuits.0[settings.circuit].name, crate::time_race::LAPS)
         } else {
-            format!(
-                "{}\n\nLAPS {}\n\nOPPONENTS {}\n\n{}",
-                circuits.0[settings.circuit].name,
-                settings.laps(),
-                settings.opponents,
-                DIFFICULTIES[settings.difficulty].0
-            )
+            // Whichever of the port's ways of racing are on, under the original's settings.
+            let mut extras: Vec<String> = Vec::new();
+            let reversed = crate::variant::Variant::of(&settings, &championship, circuits.0[settings.circuit].race.as_deref()).reverse;
+            for (on, extra) in [(settings.mirror, Extra::Mirror), (reversed, Extra::Reverse), (settings.eliminating(), Extra::Elimination)] {
+                if on {
+                    extras.push(extra.label().to_string());
+                }
+            }
+            if settings.bricks > 0 {
+                extras.push(format!("BRICKS {}", settings.shown(Extra::Bricks)));
+            }
+            let mut lines = vec![
+                circuits.0[settings.circuit].name.clone(),
+                format!("LAPS {}", settings.laps()),
+                format!("OPPONENTS {}", settings.opponents),
+                DIFFICULTIES[settings.difficulty].0.to_string(),
+            ];
+            // The frame holds the original's four lines spaced out; any more are closed up.
+            let gap = if extras.is_empty() { "\n\n" } else { "\n" };
+            lines.extend(extras);
+            lines.join(gap)
         };
         words!("font_ths", &summary, frame, LABEL, true);
     }

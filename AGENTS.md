@@ -20,6 +20,9 @@ behave, sound and look like the original; the decompilation is the reference for
   constants and its order of operations, and name the original in the module comment.
 - If the original does something the port has no feature for yet, build the feature.
   Don't leave a stand-in without saying so.
+- What the port adds to the original (replays, photo mode, reversed circuits, the brick
+  rules, elimination, the video options) is off until asked for, and says in its
+  module comment that it is the port's own.
 - Units: the game's are Z-up; ours are Y-up, with one game unit `physics::UNIT` of
   ours. Use `scenery::to_world` for positions.
 - Rotations: the game multiplies vectors from the other side, so its quaternions must
@@ -48,12 +51,18 @@ menu instead. These combine with it:
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
 | `BRICK_EVENTS=18@3` | circuit events to set off, and when |
-| `BRICK_KEYS=Escape@4,Down@4.5` | keys to press, and when |
+| `BRICK_KEYS=Escape@4,Down@4.5` | keys to press, and when (`P` is photo mode; `R` at the finish is the replay) |
 | `BRICK_START=1` | keep the drop-in and countdown (demos skip them) |
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |
 | `BRICK_TIME=1` | time race |
-| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio` | menu page to open on |
+| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras` | menu page to open on |
+| `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
+| `BRICK_ELIMINATION=1` | the last car goes out each lap |
+| `BRICK_BRICKS=red\|yellow\|blue\|green\|none` | what the circuit's bricks are made |
+| `BRICK_OPPONENTS=1` | how many of the computer's cars race |
+| `BRICK_PHOTOS=<folder>` | where photo mode saves (default `screenshots/`) |
+| `BRICK_GHOSTS=<folder>` | where best time-race runs are kept (default `~/.brick_racers_ghosts`) |
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
 | `RUST_LOG=legoracers::hazards=debug` | per-module logging |
 

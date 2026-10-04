@@ -329,6 +329,68 @@ impl Track {
         self.pts.len()
     }
 
+    /// Where along the lap the finish line is crossed.
+    fn finish_distance(&self) -> f32 {
+        let lift = Vec3::Y;
+        (0..self.n())
+            .find(|&i| self.course.finish.any(self.pts[i] + lift, self.pts[(i + 1) % self.n()] + lift).is_some())
+            .map_or(0.0, |i| i as f32 * self.spacing)
+    }
+
+    /// Turns the circuit round, to be raced the other way: the racing line, the
+    /// checkpoints and the lap zones are walked backwards, and the grid is put on what
+    /// was the far side of the finish line.
+    pub fn reverse(&mut self) {
+        // Two columns, the same way the grid is drawn up on a circuit without one.
+        let finish = self.finish_distance();
+        self.course.grid = (0..6)
+            .map(|place| {
+                // The first place on a grid is the one furthest back.
+                let s = finish + 8.0 + ((5 - place) / 2) as f32 * 6.0;
+                let lat = self.road * if place % 2 == 0 { 0.375 } else { -0.375 };
+                (self.surface_point(s, lat), -self.sample(s).1.with_y(0.0).normalize())
+            })
+            .collect();
+
+        // The line: the same samples from the same first one, the other way.
+        let n = self.n();
+        self.pts[1..].reverse();
+        for list in [&mut self.fwd, &mut self.flat, &mut self.right] {
+            list[1..].reverse();
+            for v in list.iter_mut() {
+                *v = -*v;
+            }
+        }
+        self.curv = (0..n).map(|i| self.flat[i].angle_between(self.flat[(i + 1) % n]) / self.spacing).collect();
+
+        // Each gate leads to the ones that led to it, the main route's first.
+        let gates = &mut self.course.checkpoints;
+        let mut before = vec![Vec::new(); gates.len()];
+        for main in [true, false] {
+            for (from, gate) in gates.iter().enumerate() {
+                for (branch, &to) in gate.next.iter().enumerate() {
+                    if (branch == 0) == main && to < before.len() && !before[to].contains(&from) {
+                        before[to].push(from);
+                    }
+                }
+            }
+        }
+        for (gate, next) in gates.iter_mut().zip(before) {
+            (gate.normal, gate.next) = (-gate.normal, next);
+        }
+        if !gates.is_empty() {
+            self.course.compute_fractions();
+        }
+        // The stretch after the line is now the one before it.
+        for zone in &mut self.course.zones {
+            zone.2 = match zone.2 {
+                0 => 2,
+                2 => 0,
+                other => other,
+            };
+        }
+    }
+
     /// Interpolated (position, tangent, right) at distance `s`, which may be any real number.
     pub fn sample(&self, s: f32) -> (Vec3, Vec3, Vec3) {
         let x = s.rem_euclid(self.length) / self.spacing;
@@ -577,6 +639,33 @@ mod tests {
         for &(centre, radius, _) in &t.course.zones {
             let crossing = t.pts[(0..n).find(|&i| bridged[i]).unwrap()];
             assert!(xz_dist2(centre, crossing).sqrt() > 2.0 * radius);
+        }
+    }
+
+    #[test]
+    fn a_reversed_circuit_is_the_same_road_the_other_way() {
+        for layout in Layout::ALL {
+            let (forward, mut back) = (Track::built(layout), Track::built(layout));
+            back.reverse();
+            let n = forward.n();
+            assert_eq!(back.pts[0], forward.pts[0]);
+            for i in 1..n {
+                assert_eq!(back.pts[i], forward.pts[n - i]);
+                assert!(back.fwd[i].dot(forward.fwd[n - i]) < -0.999);
+                assert!((back.pts[(i + 1) % n] - back.pts[i]).dot(back.flat[i]) > 0.0);
+            }
+            // The gates run the other way round the lap, each against its old self.
+            let (was, now) = (&forward.course.checkpoints, &back.course.checkpoints);
+            assert_eq!(now[0].next, [was.len() - 1]);
+            assert_eq!(now[1].next, [0]);
+            assert!((now[1].fraction - was[was.len() - 1].fraction).abs() < 1e-6);
+            assert!(now.iter().zip(was).all(|(a, b)| a.normal == -b.normal));
+            // The grid waits before the line, facing it, on what was the way out.
+            for &(position, facing) in &back.course.grid {
+                let (_, s, _) = back.project(position, back.nearest(position));
+                assert!(s > back.length - 30.0, "{layout:?} grid at {s}");
+                assert!(facing.dot(back.flat[back.nearest(position)]) > 0.95);
+            }
         }
     }
 

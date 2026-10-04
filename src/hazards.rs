@@ -472,13 +472,15 @@ pub fn hazards(
                         events.end(28, None, &mut sfx);
                     }
                 }
-                for f in fired.iter().filter(|f| f.start && f.racer.is_none()) {
+                for f in fired.iter().filter(|f| f.start) {
                     // 207 to 209 show each step's answer in turn.
-                    if let Some(step) = f.event.checked_sub(207).filter(|s| (0..3).contains(s)) {
+                    if let Some(step) = f.event.checked_sub(207).filter(|s| (0..3).contains(s) && f.racer.is_none()) {
                         events.fire(if code[step as usize] { 29 } else { 20 }, f.at, &mut sfx);
                     }
-                    // 200 to 205 are the two pads at each of the three steps.
-                    let Some(pad) = f.event.checked_sub(200).filter(|c| (0..6).contains(c)) else { continue };
+                    // 200 to 205 are the two pads at each of the three steps. Every racer
+                    // driving onto one counts (`HazardManager::DispatchEventStart`),
+                    // whoever else is on it already.
+                    let Some(pad) = f.event.checked_sub(200).filter(|c| (0..6).contains(c) && f.racer.is_some()) else { continue };
                     let (step, first) = ((pad / 2) as u8, pad % 2 == 0);
                     events.fire(if first { 21 } else { 30 }, f.at, &mut sfx);
                     if first != code[step as usize] {

@@ -1,12 +1,17 @@
 //! Time races: three laps alone against the clock, with two ghost cars for company —
 //! Veronica Voltage's record run, from the circuit's `GHOST.GHB`, and the player's own
 //! best. Follows `TimeRaceManager`.
+//!
+//! The port keeps the player's best runs between sessions, as files in
+//! `$BRICK_GHOSTS` or `~/.brick_racers_ghosts`, one for each circuit and each way of
+//! running it (mirrored, reversed).
 
 use crate::assets::tokens::{Reader, Token};
 use crate::kart::{Kart, Player};
 use crate::menu::{Circuits, Settings};
 use crate::opponent::facing;
 use crate::scenery::to_world;
+use crate::variant::Variant;
 use crate::world::{KartModel, LoadedWorld};
 use crate::{Phase, Race};
 use bevy::prelude::*;
@@ -57,6 +62,26 @@ impl Run {
         (!run.samples.is_empty()).then_some(run)
     }
 
+    /// As the lines of a file: the laps' times, then a sample to a line.
+    fn write(&self) -> String {
+        let mut out = format!("{} {} {}\n", self.laps[0], self.laps[1], self.laps[2]);
+        for (p, q) in &self.samples {
+            out += &format!("{} {} {} {} {} {} {}\n", p.x, p.y, p.z, q.x, q.y, q.z, q.w);
+        }
+        out
+    }
+
+    fn read(text: &str) -> Option<Run> {
+        let mut lines = text.lines().map(|line| line.split(' ').map(str::parse::<f32>).collect::<Result<Vec<_>, _>>());
+        let laps = lines.next()?.ok()?;
+        let mut run = Run { laps: [*laps.first()?, *laps.get(1)?, *laps.get(2)?], samples: Vec::new() };
+        for line in lines {
+            let &[x, y, z, qx, qy, qz, qw] = &line.ok()?[..] else { return None };
+            run.samples.push((Vec3::new(x, y, z), Quat::from_xyzw(qx, qy, qz, qw)));
+        }
+        (!run.samples.is_empty()).then_some(run)
+    }
+
     pub fn total(&self) -> f32 {
         self.laps.iter().sum()
     }
@@ -83,6 +108,21 @@ pub struct TimeRace {
     pub result: Option<bool>,
 }
 
+/// Where the player's best runs are kept.
+fn ghost_folder() -> Option<std::path::PathBuf> {
+    match std::env::var_os("BRICK_GHOSTS") {
+        Some(folder) => Some(folder.into()),
+        None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_ghosts")),
+    }
+}
+
+/// What a circuit's best run goes by: its folder (or a built-in circuit's key), and
+/// which way round it was run.
+fn run_key(circuits: &Circuits, settings: &Settings, variant: Variant) -> String {
+    let circuit = &circuits.0[settings.circuit];
+    format!("{}{}", circuit.race.as_deref().unwrap_or(circuit.layout.key()), variant.suffix())
+}
+
 /// A ghost car: which run it replays.
 #[derive(Component)]
 pub struct Ghost {
@@ -94,6 +134,7 @@ pub fn spawn_ghosts(
     mut commands: Commands,
     settings: Res<Settings>,
     circuits: Res<Circuits>,
+    variant: Res<Variant>,
     mut time_race: ResMut<TimeRace>,
     mut loaded: Option<ResMut<LoadedWorld>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -101,9 +142,20 @@ pub fn spawn_ghosts(
     mut images: ResMut<Assets<Image>>,
 ) {
     *time_race = TimeRace { best: std::mem::take(&mut time_race.best), ..default() };
-    let Some(loaded) = loaded.as_mut().filter(|_| settings.time_race) else { return };
-    time_race.record = loaded.ghost.take();
-    let folder = circuits.0[settings.circuit].race.clone().unwrap_or_default();
+    if !settings.time_race {
+        return;
+    }
+    // A best run from an earlier session.
+    let folder = run_key(&circuits, &settings, *variant);
+    if !time_race.best.contains_key(&folder) {
+        let saved = ghost_folder().and_then(|dir| std::fs::read_to_string(dir.join(&folder)).ok());
+        if let Some(run) = saved.as_deref().and_then(Run::read) {
+            time_race.best.insert(folder.clone(), run);
+        }
+    }
+    let Some(loaded) = loaded.as_mut() else { return };
+    // The record was not set going round backwards.
+    time_race.record = loaded.ghost.take().filter(|_| !variant.reverse);
     let runs = [(true, time_race.record.is_some()), (false, time_race.best.contains_key(&folder))];
     for (record, there) in runs {
         let Some(model) = loaded.ghost_models.pop().filter(|_| there) else { continue };
@@ -177,12 +229,13 @@ pub fn time_race(
     race: Res<Race>,
     settings: Res<Settings>,
     circuits: Res<Circuits>,
+    variant: Res<Variant>,
     mut time_race: ResMut<TimeRace>,
     player: Query<&Kart, With<Player>>,
     mut ghosts: Query<(&Ghost, &mut Transform, &mut Visibility)>,
 ) {
     let (true, Ok(player)) = (settings.time_race, player.single()) else { return };
-    let folder = circuits.0[settings.circuit].race.clone().unwrap_or_default();
+    let folder = run_key(&circuits, &settings, *variant);
     let time_race = &mut *time_race;
     for (ghost, mut transform, mut visibility) in &mut ghosts {
         let run = if ghost.record { time_race.record.as_ref() } else { time_race.best.get(&folder) };
@@ -220,12 +273,30 @@ pub fn time_race(
         Phase::Finished if time_race.result.is_none() => {
             let total = time_race.run.total();
             if time_race.best.get(&folder).is_none_or(|best| total < best.total()) {
+                if let Some(dir) = ghost_folder() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Err(error) = std::fs::write(dir.join(&folder), time_race.run.write()) {
+                        warn!("could not keep the best run: {error}");
+                    }
+                }
                 time_race.best.insert(folder, time_race.run.clone());
             }
             time_race.result = Some(time_race.record.as_ref().is_some_and(|record| total < record.total()));
         }
         Phase::Finished => {}
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_run_comes_back_from_its_file_as_it_went() {
+    let samples = (0..40).map(|i| (Vec3::new(i as f32 * 1.37, 0.25, -3.0), Quat::from_rotation_y(i as f32 * 0.1))).collect();
+    let run = Run { laps: [31.25, 30.5, 33.125], samples };
+    let back = Run::read(&run.write()).unwrap();
+    assert_eq!((back.laps, back.samples.len()), (run.laps, 40));
+    assert_eq!(back.at(3.1).unwrap(), run.at(3.1).unwrap());
+    // Anything else in the file, and there is no run.
+    assert!(Run::read("").is_none() && Run::read("1 2 3\n").is_none() && Run::read("1 2 3\n4 5 six 7 8 9 10\n").is_none());
 }
 
 #[cfg(test)]

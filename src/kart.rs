@@ -80,6 +80,8 @@ pub struct Kart {
     pub progress: f32,
     pub place: usize,
     pub finished: Option<f32>,
+    /// When the car was put out of an elimination race.
+    pub out: Option<f32>,
 
     // Power-ups and their effects (timers in seconds).
     pub held: Option<Power>,
@@ -200,6 +202,7 @@ impl Kart {
             progress: 0.0,
             place: slot + 1,
             finished: None,
+            out: None,
             held: None,
             whites: 0,
             spin: 0.0,
@@ -514,6 +517,7 @@ pub fn spawn_karts(
     mut commands: Commands,
     track: Res<Track>,
     settings: Res<Settings>,
+    variant: Res<crate::variant::Variant>,
     mut loaded: Option<ResMut<LoadedWorld>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -553,7 +557,8 @@ pub fn spawn_karts(
             if let Some(entry) = loaded.field.get(slot) {
                 state.name = if slot == player_slot { driver.name } else { entry.name };
             }
-            if let Some(record) = loaded.routes.get(slot).filter(|_| slot != player_slot) {
+            // There are no recordings of a circuit driven backwards.
+            if let Some(record) = loaded.routes.get(slot).filter(|_| slot != player_slot && !variant.reverse) {
                 state.route = Some(RoutePlay::new(record.clone()));
                 state.play_route(0.0);
                 skill = 1.0;
@@ -631,11 +636,13 @@ pub fn player_input(
     keys: Res<ButtonInput<KeyCode>>,
     race: Res<Race>,
     pause: Res<crate::Pause>,
+    photo: Res<crate::replay::Photo>,
+    variant: Res<crate::variant::Variant>,
     mut start: Local<StartBoost>,
     mut q: Query<(&mut Kart, &mut Controls), With<Player>>,
 ) {
-    // The keys are the pause menu's while it is up.
-    if pause.0.is_some() {
+    // The keys are the pause menu's while it is up, and the camera's in photo mode.
+    if pause.0.is_some() || photo.0.is_some() {
         return;
     }
     let Ok((mut kart, mut c)) = q.single_mut() else { return };
@@ -647,7 +654,8 @@ pub fn player_input(
         keys.any_pressed(pos) as i32 as f32 - keys.any_pressed(neg) as i32 as f32
     };
     c.throttle = axis([KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown]);
-    c.steer = axis([KeyCode::KeyA, KeyCode::ArrowLeft], [KeyCode::KeyD, KeyCode::ArrowRight]);
+    // In the mirror, left on the screen is the car's right.
+    c.steer = axis([KeyCode::KeyA, KeyCode::ArrowLeft], [KeyCode::KeyD, KeyCode::ArrowRight]) * variant.side();
     c.drift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     c.use_item = keys.just_pressed(KeyCode::Space);
 
@@ -685,6 +693,7 @@ pub fn ai_drive(
     time: Res<Time>,
     track: Res<Track>,
     race: Res<Race>,
+    variant: Res<crate::variant::Variant>,
     mut rng: ResMut<Rng>,
     mut q: Query<(&mut Kart, &mut Ai, &mut Controls, Has<Player>)>,
 ) {
@@ -692,7 +701,7 @@ pub fn ai_drive(
     let racing = matches!(race.phase, Phase::Racing | Phase::Finished);
     let player_progress = q.iter().find(|x| x.3).map_or(0.0, |x| x.0.progress);
     for (mut k, mut ai, mut c, is_player) in &mut q {
-        if is_player && k.finished.is_none() && !race.demo {
+        if (is_player && k.finished.is_none() && !race.demo) || k.out.is_some() {
             continue;
         }
         // A car on a recording is paced, not driven: the leader of the player held
@@ -700,7 +709,8 @@ pub fn ai_drive(
         let ahead = k.progress > player_progress;
         if let Some(route) = &mut k.route {
             route.racing = racing;
-            route.base = ai.skill * if ahead { 1.0 - RUBBER_BAND } else { 1.0 + RUBBER_BAND };
+            let band = if ahead { 1.0 - RUBBER_BAND } else { 1.0 + RUBBER_BAND };
+            route.base = ai.skill * (band + variant.rubber_band_boost());
         }
         if !racing {
             *c = Controls::default();
@@ -738,7 +748,9 @@ const SCRAPE_COOLDOWN: f32 = 0.25;
 pub fn kart_physics(time: Res<Time>, track: Res<Track>, mut q: Query<(&mut Kart, &Controls)>) {
     let dt = time.delta_secs().min(0.05);
     for (mut kart, c) in &mut q {
-        kart.advance(c, &track, dt);
+        if kart.out.is_none() {
+            kart.advance(c, &track, dt);
+        }
     }
 }
 
@@ -879,15 +891,17 @@ pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player
 
 /// What karts are ranked by, biggest first: finishers ahead of everyone still racing
 /// and the earliest of them first, then the rest by how far round they are.
-fn place_key(k: &Kart) -> (bool, f32) {
-    match k.finished {
-        Some(time) => (true, -time),
-        None => (false, k.progress),
+/// Cars put out of an elimination race come after those, the last to go first.
+fn place_key(k: &Kart) -> (u8, f32) {
+    match (k.out, k.finished) {
+        (Some(time), _) => (0, time),
+        (None, Some(time)) => (2, -time),
+        (None, None) => (1, k.progress),
     }
 }
 
 pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut Kart>) {
-    let mut order: Vec<((bool, f32), Mut<Kart>)> = q
+    let mut order: Vec<((u8, f32), Mut<Kart>)> = q
         .iter_mut()
         .map(|mut k| {
             if race.phase == Phase::Racing && k.finished.is_none() && k.lap > settings.laps() {
@@ -908,8 +922,9 @@ pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut
     }
 }
 
-pub fn sync_karts(mut q: Query<(&Kart, &mut Transform, Has<Player>)>) {
-    for (k, mut t, is_player) in &mut q {
+pub fn sync_karts(mut q: Query<(&Kart, &mut Transform, &mut Visibility, Has<Player>)>) {
+    for (k, mut t, mut visibility, is_player) in &mut q {
+        visibility.set_if_neq(if k.out.is_some() { Visibility::Hidden } else { Visibility::Inherited });
         // Lean into corners.
         let lean = if k.warp > 0.0 { 0.0 } else { -k.steer * 0.07 * (k.vel.length() / MAX_SPEED).min(1.0) };
         // The player's warp is seen from a tunnel, which is put well away from the circuit.
@@ -961,6 +976,15 @@ mod tests {
         });
         let order: Vec<_> = karts.iter().map(|k| (k.finished, k.progress)).collect();
         assert_eq!(order, [(Some(46.79), 0.0), (Some(48.56), 0.0), (Some(49.16), 0.0), (None, 325.0), (None, 310.0)]);
+        // Put out of an elimination race, a car is behind everyone still in it, and
+        // ahead of those who went before.
+        (karts[3].out, karts[0].out, karts[0].finished) = (Some(20.0), Some(30.0), Some(30.0));
+        karts.sort_by(|a, b| {
+            let (a, b) = (place_key(a), place_key(b));
+            b.0.cmp(&a.0).then(b.1.total_cmp(&a.1))
+        });
+        let order: Vec<_> = karts.iter().map(|k| (k.out, k.progress)).collect();
+        assert_eq!(order, [(None, 0.0), (None, 0.0), (None, 310.0), (Some(30.0), 0.0), (Some(20.0), 325.0)]);
     }
 
     /// Lets the AI drive one kart alone and returns the times at which it started each lap.
@@ -990,6 +1014,33 @@ mod tests {
             let laps = solo_run(&Track::built(layout), 150.0);
             assert!(laps.len() >= 3, "{layout:?} {laps:?}");
         }
+    }
+
+    #[test]
+    fn ai_laps_the_built_in_circuits_backwards() {
+        for layout in crate::track::Layout::ALL {
+            let mut track = Track::built(layout);
+            track.reverse();
+            let laps = solo_run(&track, 150.0);
+            assert!(laps.len() >= 3, "{layout:?} {laps:?}");
+        }
+    }
+
+    /// Needs the original game data; silently passes without it.
+    #[test]
+    fn ai_laps_the_original_circuits_backwards() {
+        let mut failed = Vec::new();
+        for (race, name) in crate::world::circuits() {
+            let Some((mut track, _)) = crate::world::load(&race) else { continue };
+            track.reverse();
+            print!("{race} {name} reversed: ");
+            let laps = solo_run(&track, 240.0);
+            if laps.len() < 3 {
+                failed.push(race);
+            }
+        }
+        // The ones it can't get round are the ones that are never reversed.
+        assert!(failed.is_empty() || failed == crate::variant::ONE_WAY, "{failed:#?}");
     }
 
     /// Needs the original game data; silently passes without it.
