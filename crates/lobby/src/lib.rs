@@ -8,7 +8,7 @@
 //! | `DELETE /sessions/{id}` | the host taking it down |
 //! | `GET /sessions?protocol=N` | the list |
 //! | `GET /healthz`, `GET /metrics` | for the cluster's probes and scraping |
-//! | `GET /` | a line saying what this is, for whoever comes looking and for the check that it is up |
+//! | `GET /` | a page saying what this is, where its source is, and how busy it is |
 //!
 //! Nothing is kept across a restart: a host whose session has gone is told so by its
 //! next beat (404) and lists it again.
@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::Html;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use lobby_api::{GONE_AFTER, MAX_ENDPOINT, MAX_NAME, MAX_PLAYERS, Register, Registered, Session, Status};
@@ -44,11 +45,20 @@ struct Entry {
     heard: Instant,
 }
 
-#[derive(Default)]
+/// Where the game and this server come from.
+const SOURCE: &str = "https://github.com/jchevertonwynne/blockracers";
+
 pub struct Lobby {
     sessions: Mutex<HashMap<String, Entry>>,
     listed: AtomicU64,
     refused: AtomicU64,
+    started: Instant,
+}
+
+impl Default for Lobby {
+    fn default() -> Self {
+        Lobby { sessions: Mutex::default(), listed: AtomicU64::default(), refused: AtomicU64::default(), started: Instant::now() }
+    }
 }
 
 type Shared = Arc<Lobby>;
@@ -67,7 +77,7 @@ pub fn app() -> Router {
     Router::new()
         .route("/sessions", post(register).get(list))
         .route("/sessions/{id}", put(beat).delete(close))
-        .route("/", get(|| async { "The Brick Racers lobby: the list of sessions being hosted. The game reads it at /sessions.\n" }))
+        .route("/", get(home))
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(MAX_BODY))
@@ -161,6 +171,95 @@ async fn list(State(lobby): State<Shared>, Query(which): Query<Which>) -> Json<V
     let mut found: Vec<Session> = sessions.values().filter(|e| e.protocol == which.protocol).map(|e| e.session.clone()).collect();
     found.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
     Json(found)
+}
+
+/// Text made safe to put in a page: a session's name is whatever its host typed.
+fn escaped(text: &str) -> String {
+    text.chars().fold(String::new(), |mut out, c| {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+        out
+    })
+}
+
+/// So many seconds, as a person would say it.
+fn span(seconds: u64) -> String {
+    match seconds {
+        0..60 => format!("{seconds} s"),
+        60..3600 => format!("{} min", seconds / 60),
+        3600..86400 => format!("{} h {} min", seconds / 3600, seconds % 3600 / 60),
+        _ => format!("{} d {} h", seconds / 86400, seconds % 86400 / 3600),
+    }
+}
+
+/// The page at the root: what this is, where its source is, and how busy it is. How
+/// a session is dialled is left off it; the game reads that from `/sessions`.
+async fn home(State(lobby): State<Shared>) -> Html<String> {
+    let mut sessions: Vec<Session> = lobby.live().values().map(|e| e.session.clone()).collect();
+    sessions.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    let players: usize = sessions.iter().map(|session| session.status.players as usize).sum();
+    let racing = sessions.iter().filter(|session| session.status.racing).count();
+    let rows: String = sessions
+        .iter()
+        .map(|session| {
+            let doing = match (session.status.racing, session.status.circuit.is_empty()) {
+                (true, false) => format!("racing {}", escaped(&session.status.circuit)),
+                (true, true) => "racing".to_string(),
+                (false, _) => "in the room".to_string(),
+            };
+            let locked = if session.locked { "password" } else { "open" };
+            format!("<tr><td>{}</td><td>{}</td><td>{}/{}</td><td>{doing}</td><td>{locked}</td></tr>", escaped(&session.name), escaped(&session.host), session.status.players, session.max)
+        })
+        .collect();
+    let table = if sessions.is_empty() {
+        "<p>Nobody is hosting a race just now.</p>".to_string()
+    } else {
+        format!("<table><tr><th>Session</th><th>Host</th><th>Players</th><th>Now</th><th>Entry</th></tr>{rows}</table>")
+    };
+    Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Brick Racers lobby</title>
+<style>
+body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; }}
+dl {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 1rem; }}
+dt {{ font-size: .8rem; opacity: .7; }}
+dd {{ margin: 0; font-size: 1.6rem; font-variant-numeric: tabular-nums; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ text-align: left; padding: .35rem .6rem .35rem 0; border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent); }}
+</style>
+<h1>Brick Racers lobby</h1>
+<p>The list of races being hosted online in Brick Racers. This server only keeps the list: players connect to each other directly, and nothing of a race passes through here.</p>
+<p>The game and this server: <a href="{SOURCE}">{SOURCE}</a></p>
+<h2>Now</h2>
+<dl>
+<div><dt>Sessions</dt><dd>{now}</dd></div>
+<div><dt>Players</dt><dd>{players}</dd></div>
+<div><dt>Racing</dt><dd>{racing}</dd></div>
+</dl>
+{table}
+<h2>Since this server started</h2>
+<dl>
+<div><dt>Up for</dt><dd>{up}</dd></div>
+<div><dt>Sessions hosted</dt><dd>{listed}</dd></div>
+<div><dt>Turned away</dt><dd>{refused}</dd></div>
+</dl>
+</html>
+"#,
+        now = sessions.len(),
+        up = span(lobby.started.elapsed().as_secs()),
+        listed = lobby.listed.load(Ordering::Relaxed),
+        refused = lobby.refused.load(Ordering::Relaxed),
+    ))
 }
 
 async fn metrics(State(lobby): State<Shared>) -> String {
@@ -259,6 +358,40 @@ mod tests {
         assert_eq!(send(&app, "PUT", &path, Some(&made.token), None, Some(status)).await.0, StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn the_root_says_what_this_is_and_how_busy() {
+        let app = app();
+        let (status, empty) = send(&app, "GET", "/", None, None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(empty.contains(&format!("<a href=\"{SOURCE}\">")) && empty.contains("Nobody is hosting"));
+
+        // A name is whatever its host typed, and is shown as typed, not acted on.
+        let racing = Status { players: 3, circuit: "Royal Knights Raceway".into(), racing: true };
+        host(&app, &Register { name: "<b>Friday</b> & co".into(), locked: true, status: racing, ..ask("x") }, None).await;
+        host(&app, &ask("Quiet"), None).await;
+        tokio::time::advance(Duration::from_secs(3700)).await;
+        let made = host(&app, &ask("Late"), None).await;
+        let (_, page) = send(&app, "GET", "/", None, None, None).await;
+        // The two from an hour ago have gone unheard from; the page shows what is there now.
+        assert!(!page.contains("Friday") && page.contains("<td>Late</td>"));
+        assert!(page.contains("<dt>Sessions</dt><dd>1</dd>") && page.contains("<dt>Sessions hosted</dt><dd>3</dd>"));
+        assert!(page.contains("<dd>1 h 1 min</dd>"));
+        // How to dial a session and its host's token are not on the page.
+        assert!(!page.contains("somewhere") && !page.contains(&made.token));
+
+        let busy = Status { players: 3, circuit: "Royal Knights Raceway".into(), racing: true };
+        host(&app, &Register { name: "<b>Friday</b> & co".into(), locked: true, status: busy, ..ask("x") }, None).await;
+        let (_, page) = send(&app, "GET", "/", None, None, None).await;
+        assert!(page.contains("<td>&lt;b&gt;Friday&lt;/b&gt; &amp; co</td>") && !page.contains("<b>Friday"));
+        assert!(page.contains("<td>3/6</td><td>racing Royal Knights Raceway</td><td>password</td>"));
+        assert!(page.contains("<dt>Players</dt><dd>4</dd>") && page.contains("<dt>Racing</dt><dd>1</dd>"));
+    }
+
+    #[test]
+    fn a_span_of_time_is_said_as_a_person_would() {
+        assert_eq!([span(5), span(125), span(3725), span(90_000)], ["5 s", "2 min", "1 h 2 min", "1 d 1 h"]);
+    }
+
     #[tokio::test]
     async fn only_its_host_changes_a_session_or_takes_it_down() {
         let app = app();
@@ -304,6 +437,6 @@ mod tests {
         assert!(metrics.contains(&format!("lobby_sessions {MAX_SESSIONS}\n")));
         assert!(metrics.contains("lobby_sessions_refused_total 2\n"));
         assert_eq!(send(&app, "GET", "/healthz", None, None, None).await, (StatusCode::OK, "ok".to_string()));
-        assert_eq!(send(&app, "GET", "/", None, None, None).await.0, StatusCode::OK);
+
     }
 }
