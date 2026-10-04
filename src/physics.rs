@@ -8,6 +8,10 @@
 //! speed and sideways grip drops. Engine thrust is balanced by quadratic drag chosen so
 //! that the terminal speed is the kart's top speed.
 //!
+//! A floating car (`Kart::hover`, the original's "slide" body) is shown lifted and
+//! leaning by `kart`; here it only stops feeling the surface under it and bounces
+//! off any landing.
+//!
 //! Where the original integrates a full rigid body with inertia tensors and then
 //! cancels most of the angular motion again, this keeps the body's attitude kinematic:
 //! four wheel probes find the ground and the body is levelled onto it.
@@ -53,7 +57,27 @@ const SPIN_LATERAL_DAMPING: f32 = 2.0;
 const COAST_DAMPING: f32 = 1.0;
 /// How fast the direction of travel swings round to where the body points, rad/s.
 const FACING_TURN_RATE: f32 = 2.5;
+/// `RacerCarBody::ApplyWallResponse`: a wall gives back this much of the speed the car
+/// met it with (less of it upwards), pushes it off at this speed, turns it away at up
+/// to this rate for this long, and won't throw it up faster than this.
 const WALL_HORIZONTAL_DAMPING: f32 = 0.3;
+const WALL_VERTICAL_DAMPING: f32 = 0.15;
+const WALL_PUSH: f32 = 4.0 * UNIT;
+const WALL_YAW: f32 = 4.0;
+pub const YAW_IMPULSE_TIME: f32 = 0.2;
+const WALL_MAX_RISE: f32 = 300.0 * UNIT;
+/// A car that has been in the air longer than this bounces if it lands harder than
+/// this, by this much of the speed it came down with.
+const LANDING_AIR_TIME: f32 = 0.4;
+const LANDING_BOUNCE_SPEED: f32 = 50.0 * UNIT;
+const LANDING_BOUNCE: f32 = 1.15;
+const HOVER_BOUNCE: f32 = 1.3;
+/// `RacerPhysics::IsMoving`.
+pub const MOVING_SPEED: f32 = 40.0 * UNIT;
+/// Leaving the ground starts the car downwards at this speed.
+const AIRBORNE_DROP: f32 = 8.0 * UNIT;
+/// Thrust that brings a car held by a magnet to a stop.
+const STOP_THRUST: f32 = THRUST * 2.0;
 /// Every champion's car weighs this (`CHAMPS.CCB`); it turns a surface's rolling
 /// resistance into drag.
 const MASS: f32 = 4500.0;
@@ -96,7 +120,7 @@ fn tangent(v: Vec3, normal: Vec3, fallback: Vec3) -> Vec3 {
 /// Advances one kart by `dt` (which should be small: a hundredth of a second or so).
 pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     let grounded = k.contacts > 0;
-    let spinning = k.spin > 0.0 || k.spin_out > 0.0;
+    let spinning = k.spin > 0.0;
     let boosting = k.boost > 0.0;
     let up = if grounded { k.ground_normal } else { Vec3::Y };
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, Vec3::NEG_Z);
@@ -106,33 +130,67 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     let vf = k.vel.dot(facing);
     let aligned = body_fwd.dot(vel_dir);
 
-    // --- DriveController: throttle to thrust.
-    let throttle = if spinning { 0.0 } else { c.throttle };
-    let mut thrust = THRUST * k.stats.acceleration * throttle;
+    // --- DriveController::Update: a slide ends when the car has all but stopped, and
+    // a turbo that meets a wall is weakened for the rest of its run.
+    if k.sliding && vf < CREEP_SPEED {
+        k.sliding = false;
+    }
+    if !boosting {
+        k.turbo_weak = false;
+    } else if k.wall_contact {
+        k.turbo_weak = true;
+    }
+
+    // --- PlayerControls::UpdateThrottle, Racer::StartDrift and EndDrift: the slide is
+    // asked for with the accelerator down and the wheels turned, and has to be let go
+    // of before another can begin.
+    if c.drift && k.steer != 0.0 {
+        let can_slide = !k.wall_contact && (k.hover || k.contacts >= 3) && aligned > POWERSLIDE_ALIGNMENT_MIN && vf >= POWERSLIDE_MIN_SPEED;
+        if !k.drifting && can_slide {
+            (k.drifting, k.sliding, k.slide_tight) = (true, true, c.tight);
+        }
+    } else {
+        (k.drifting, k.sliding) = (false, false);
+    }
+
+    // --- DriveController::SetThrottleInput and ApplyThrust. A cursed driver's foot
+    // is not their own.
+    let cursed = k.cursed > 0.0;
+    let throttle = if cursed { (c.throttle + k.curse_throttle).clamp(-1.0, 1.0) } else { c.throttle };
+    let mut thrust = THRUST * throttle;
     if throttle * vf < 0.0 {
         thrust *= BRAKE_SCALE;
     }
+    if k.magnet > 0.0 {
+        // `UpdateBrakeToStop`.
+        thrust = if vf > 0.0 { -STOP_THRUST } else { 0.0 };
+    }
     let mut max_speed = MAX_SPEED * k.stats.top_speed * k.top_factor;
     let mut grip_scale = 1.0;
-    if k.cursed > 0.0 {
-        max_speed *= 0.5;
-    }
     if boosting {
-        thrust = TURBO_THRUST * k.stats.acceleration * if k.wall_contact { 0.5 } else { 1.0 };
+        thrust = TURBO_THRUST * if k.turbo_weak { 0.5 } else { 1.0 };
         max_speed = BOOST_MAX_SPEED * k.stats.top_speed;
         grip_scale = BOOST_GRIP_SCALE;
     }
+    let thrust = thrust * k.stats.acceleration;
 
-    // --- DriveController: steering input to turn radius (positive turns left).
-    // A cursed driver's steering is reversed.
-    let curse = if k.cursed > 0.0 { -1.0 } else { 1.0 };
-    let input = if spinning { 0.0 } else { k.steer * curse * k.stats.handling };
+    // --- DriveController::SetSteeringInput: steering input to turn radius (positive
+    // turns left). A cursed driver's steering is reversed.
+    let mut input = k.steer * if cursed { -1.0 } else { 1.0 } * k.stats.handling;
     let mut radius = 0.0;
-    if input.abs() > 1e-3 {
+    if input != 0.0 {
         radius = 1.0 / (INV_MAX_TURN_RADIUS + (INV_MIN_TURN_RADIUS - INV_MAX_TURN_RADIUS) * input.abs());
-        if speed < LOW_SPEED {
-            radius *= LOW_SPEED_STEER_SCALE;
+    }
+    // `UpdateReturnToPath` sets the turn and the thrust without the driver's controls.
+    let mut thrust = thrust;
+    if let Some((turn, push)) = c.course {
+        (radius, input) = (turn.abs(), turn.signum());
+        if !boosting && k.magnet <= 0.0 {
+            thrust = THRUST * push * k.stats.acceleration;
         }
+    }
+    if radius != 0.0 && speed < LOW_SPEED {
+        radius *= LOW_SPEED_STEER_SCALE;
     }
     // The tightest circle the tyres can hold at this speed.
     let limit = if grounded {
@@ -141,29 +199,15 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
         FALLBACK_TURN_RADIUS
     };
 
-    if c.drift
-        && !k.sliding
-        && k.contacts >= 3
-        && !k.wall_contact
-        && aligned > POWERSLIDE_ALIGNMENT_MIN
-        && vf >= POWERSLIDE_MIN_SPEED
-    {
-        k.sliding = true;
-    }
-    if k.sliding && (!c.drift || vf < CREEP_SPEED) {
-        k.sliding = false;
-    }
-
-    let can_steer = aligned > 0.0
-        && (k.slipping || aligned >= 0.9)
-        && !k.wall_contact
-        && speed <= STEER_MAX_SPEED;
+    // --- DriveController::ApplySteering, with RacerPhysics::CanSteer.
+    let against = input * k.turn_radius < 0.0;
+    let can_steer = aligned > 0.0 && !against && (k.slipping || aligned >= 0.9) && !k.wall_contact && speed <= STEER_MAX_SPEED;
     let mut slip: Option<Slip> = None;
     if radius > 0.0 {
         if k.sliding {
             if can_steer {
                 let assist = (1.0 - radius / limit).max(0.05);
-                slip = Some((1.0 + 2.0 * assist, 0.25, PI));
+                slip = Some(if k.slide_tight { (1.0 + 2.0 * assist, 0.25, PI) } else { (1.0 + assist, 0.85, PI) });
                 if radius < limit {
                     radius += (limit - radius) * 0.25;
                 }
@@ -179,9 +223,18 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
         radius = if radius > MAX_TURN_RADIUS { 0.0 } else { radius.max(MIN_TURN_RADIUS) };
     }
     let radius = radius * input.signum();
+    k.turn_radius = radius;
+    // `AccumulateForces` gives up slip steering once the car is going backwards.
+    if aligned <= 0.0 {
+        slip = None;
+    }
     k.slipping = slip.is_some();
+    if let Some((_, ratio, _)) = slip {
+        k.slip_ratio = ratio;
+    }
 
     // --- RacerCarBody::AccumulateForces, as accelerations.
+    let turned = k.yaw_impulse > 0.0;
     let mut acc = Vec3::ZERO;
     let mut yaw_rate = 0.0;
     let mut facing_rate = 0.0;
@@ -190,27 +243,27 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
         let mut push = facing * thrust;
         push.y = push.y.min(GRAVITY);
         acc += push;
-        if radius != 0.0 {
+        if radius != 0.0 && !turned {
             yaw_rate = vf / radius;
         }
     } else {
-        // Gravity pulls along the slope; the ground carries the rest.
-        acc += Vec3::NEG_Y * GRAVITY + up * GRAVITY * up.y;
+        // Gravity pulls along the slope, if it is steep enough for this surface; the
+        // ground carries the rest.
+        let pull = Vec3::NEG_Y * GRAVITY + up * GRAVITY * up.y;
+        if pull.length() > GRAVITY * k.surface.support {
+            acc += pull;
+        }
 
         let forward_vel = facing * vf;
         let lateral_vel = k.vel - forward_vel - up * k.vel.dot(up);
         let mut contact_scale = 1.0;
-        if k.spin_out <= 0.0 {
-            acc += Vec3::from(k.surface.force);
-        }
-        let slip_ratio = if spinning { Some(0.85) } else { slip.map(|s| s.1) };
-        if let Some(ratio) = slip_ratio {
+        if slip.is_some() || spinning {
             if speed > 0.5 {
-                acc -= vel_dir * GRAVITY * k.surface.friction * ratio;
+                acc -= vel_dir * GRAVITY * k.surface.friction * k.slip_ratio;
             }
-            contact_scale = 1.0 - ratio;
+            contact_scale = 1.0 - k.slip_ratio;
         }
-        if spinning {
+        if spinning || turned {
             acc -= lateral_vel * SPIN_LATERAL_DAMPING * contact_scale;
         } else {
             acc -= lateral_vel * LATERAL_DAMPING * contact_scale;
@@ -220,7 +273,8 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
                 acc -= forward_vel * COAST_DAMPING;
             }
             if radius != 0.0 {
-                acc += up.cross(facing) * vf * vf / radius;
+                // The pull to the middle of the turn is level, whatever the road is.
+                acc += Vec3::Y.cross(facing).normalize_or_zero() * vf * vf / radius;
                 facing_rate = vf / radius;
                 yaw_rate = match slip {
                     Some((gain, _, max_lag)) if aligned >= max_lag.cos() => gain * facing_rate,
@@ -231,11 +285,17 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
             }
         }
     }
-    acc += k.external_force;
-    if k.spin > 0.0 {
-        yaw_rate = SPIN_RATE;
+    if k.spin_out <= 0.0 && !k.hover {
+        acc += Vec3::from(k.surface.force);
     }
-    let drag = thrust.abs() / (max_speed * max_speed) + k.surface.rolling_resistance / MASS / UNIT;
+    acc += k.external_force;
+    if spinning {
+        yaw_rate = k.spin_rate;
+    } else if turned {
+        yaw_rate = k.yaw_kick;
+    }
+    let rolling = if k.hover { 0.0 } else { k.surface.rolling_resistance };
+    let drag = thrust.abs() / (max_speed * max_speed) + rolling / MASS / UNIT;
     acc -= k.vel * speed * drag;
 
     k.vel += acc * dt;
@@ -244,8 +304,6 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     // --- RacerCarBody::UpdateFacingDirection.
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, body_fwd);
     match slip {
-        // A spinning kart keeps travelling the way it was going.
-        _ if k.spin > 0.0 => {}
         Some((_, _, max_lag)) if grounded && k.contacts > 2 && vf >= CREEP_SPEED && thrust > 0.0 => {
             let lag = facing.angle_between(body_fwd) + (facing_rate * dt).abs();
             facing = if lag > max_lag {
@@ -275,27 +333,23 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
 }
 
 /// Keeps the body out of walls: the kart's centre may not pass through one, and nor
-/// may the lines from the centre to each corner of the body.
+/// may the lines from the centre to each corner of the body. The wall met deepest is
+/// the one the car answers to.
 fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
     k.wall_contact = false;
-    let respond = |k: &mut Kart, normal: Vec3, push: f32| {
-        let Some(normal) = normal.with_y(0.0).try_normalize() else { return };
-        k.pos += normal * (push + 0.01);
-        let into = k.vel.dot(normal);
-        if into < 0.0 {
-            let head_on = (-into / k.vel.length().max(1e-3)).min(1.0);
-            k.vel -= normal * into;
-            let keep = 1.0 - WALL_HORIZONTAL_DAMPING * head_on;
-            k.vel.x *= keep;
-            k.vel.z *= keep;
+    let mut worst: Option<(f32, Vec3)> = None;
+    let mut push_out = |k: &mut Kart, normal: Vec3, push: f32| {
+        let Some(flat) = normal.with_y(0.0).try_normalize() else { return };
+        k.pos += flat * (push + 0.01);
+        if worst.is_none_or(|w| push > w.0) {
+            worst = Some((push, normal));
         }
-        k.wall_contact = true;
     };
 
     let centre = k.pos + Vec3::Y * BODY_POINT_HEIGHT;
     if let Some(hit) = world.wall(previous_centre, centre) {
         k.pos = hit.point - Vec3::Y * BODY_POINT_HEIGHT;
-        respond(k, hit.normal, 0.3);
+        push_out(k, hit.normal, 0.3);
     }
     for _ in 0..2 {
         for corner in k.body {
@@ -303,19 +357,42 @@ fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
             let reach = k.pos + k.rot * corner - centre;
             if let Some(hit) = world.wall(centre, centre + reach) {
                 let normal = hit.normal.with_y(0.0).normalize_or_zero();
-                respond(k, hit.normal, (1.0 - hit.t) * reach.dot(-normal).max(0.0));
+                push_out(k, hit.normal, (1.0 - hit.t) * reach.dot(-normal).max(0.0));
             }
         }
     }
+    let Some((_, normal)) = worst else { return };
+    k.wall_contact = true;
+
+    // --- RacerCarBody::ApplyWallResponse.
+    k.slipping = false;
+    let into = k.vel.dot(normal);
+    if into < 0.0 {
+        k.vel -= normal * into;
+    }
+    // Nose to the wall, the car is turned away from it.
+    if k.spin <= 0.0 && (k.rot * Vec3::NEG_Z).dot(normal) < 0.0 {
+        let side = (k.rot * Vec3::NEG_X).dot(normal);
+        k.yaw_kick = if side < 0.0 { -WALL_YAW * ((side + 1.0) * 0.5 + 0.5) } else { WALL_YAW * ((1.0 - side) * 0.5 + 0.5) };
+        k.yaw_impulse = YAW_IMPULSE_TIME;
+    }
+    if into < 0.0 {
+        k.vel.x -= normal.x * WALL_HORIZONTAL_DAMPING * into;
+        k.vel.z -= normal.z * WALL_HORIZONTAL_DAMPING * into;
+        k.vel.y -= normal.y * WALL_VERTICAL_DAMPING * into;
+    }
+    k.vel += normal * WALL_PUSH;
+    k.vel.y = k.vel.y.min(WALL_MAX_RISE);
 }
 
 /// Finds the ground under each wheel, rests the kart on it and levels the body.
 fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
-    let was_grounded = k.contacts > 0;
+    let was_grounded = k.contacts > 0 && k.spin_out <= 0.0;
     let reach = if was_grounded { CONTACT_PADDING } else { 0.0 };
     let mut hits = [None; 4];
     let mut lift = 0.0;
     let mut normal_sum = Vec3::ZERO;
+    let had_contact = k.contacts > 0;
     k.contacts = 0;
     let mut force = Vec3::ZERO;
     for (wheel, hit_point) in k.wheels.iter().zip(&mut hits) {
@@ -331,10 +408,14 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
             k.surface.rolling_resistance += hit.surface.rolling_resistance;
             k.surface.lateral_grip += hit.surface.lateral_grip;
             k.surface.friction += hit.surface.friction;
+            k.surface.support += hit.surface.support;
         }
         k.contacts += 1;
     }
     if k.contacts == 0 {
+        if had_contact {
+            k.vel.y -= AIRBORNE_DROP;
+        }
         k.ground_normal = Vec3::Y;
         k.surface = default();
         k.air_time += dt;
@@ -344,8 +425,8 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     k.surface.rolling_resistance /= count;
     k.surface.lateral_grip /= count;
     k.surface.friction /= count;
+    k.surface.support /= count;
     k.surface.force = (force / count).to_array();
-    k.air_time = 0.0;
     k.pos.y += lift / count;
 
     // With all four wheels down, the diagonals give the plane the kart sits on.
@@ -356,8 +437,20 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
             normal = n;
         }
     }
-    k.ground_normal = normal;
     let into = k.vel.dot(normal);
+    // `UpdateWheelContacts`: after a long enough fall a hard landing bounces the car
+    // back into the air.
+    // A floating car bounces off any landing, and harder (`UpdateSlideContacts`).
+    let (bounces, bounce) = if k.hover { (true, HOVER_BOUNCE) } else { (k.air_time > LANDING_AIR_TIME, LANDING_BOUNCE) };
+    if !was_grounded && bounces && into < -LANDING_BOUNCE_SPEED {
+        k.vel.y -= into * bounce;
+        k.contacts = 0;
+        k.ground_normal = Vec3::Y;
+        k.air_time += dt;
+        return;
+    }
+    k.air_time = 0.0;
+    k.ground_normal = normal;
     if into < 0.0 {
         k.vel -= normal * into;
     }

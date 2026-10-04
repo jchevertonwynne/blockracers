@@ -68,6 +68,8 @@ pub fn dress_actions(
         };
         let offset = Vec3::Y * lift;
         let place = Transform::from_translation(at.translation + offset);
+        // `CurseAction::Activate`: only the skull hovers; its auras stand on the road.
+        let grounded: &[&str] = if matches!(action, Action::Curse { .. }) { &["cgreen", "cgreen2"] } else { &[] };
         let sized = match action {
             Action::Explosion { radius, .. } => Some(*radius),
             _ => None,
@@ -75,6 +77,7 @@ pub fn dress_actions(
         let motion = if matches!(action, Action::Missile { .. }) { MISSILE_POSE } else { Motion::Loop };
         let mut dressed = false;
         for part in parts {
+            let (place, offset) = if grounded.contains(part) { (Transform::from_translation(at.translation), Vec3::ZERO) } else { (place, offset) };
             if let Some(model) = models.spawn(&mut commands, part, place, motion) {
                 commands.entity(model).insert(dressing(offset, aimed, sized));
                 dressed = true;

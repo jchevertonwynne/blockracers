@@ -62,21 +62,107 @@ const FIGURE_EIGHT: &[[f32; 3]] = &[
     [-95.0, 0.0, -88.0],
 ];
 
+/// The gauntlet's control points as (x, height, z). Two long straights, and short ones
+/// between corners for the rest of the hazards to stand on (see `gauntlet`): zigzags,
+/// esses, hairpins, hills, two tunnels and a loop that climbs over its own way in.
+/// The points are close together at the corners so that the spline keeps to them.
+const GAUNTLET: &[[f32; 3]] = &[
+    [0.0, 0.0, 0.0],
+    // The start straight: the hammer and the rolling stones.
+    [9.0, 0.0, 0.0], [27.0, 0.0, 0.0], [63.0, 0.0, 0.0], [87.0, 0.0, 0.0], [123.0, 0.0, 0.0],
+    [141.0, 0.0, 0.0], [150.0, 0.0, 0.0],
+    // A zigzag of two right angles.
+    [159.0, 0.0, -2.4], [165.6, 0.0, -9.0], [168.0, 0.0, -18.0], [168.0, 0.0, -30.0], [168.0, 0.0, -42.0],
+    [170.4, 0.0, -51.0], [177.0, 0.0, -57.6], [186.0, 0.0, -60.0],
+    // The saucer.
+    [195.0, 0.0, -60.0], [213.0, 0.0, -60.0], [259.0, 0.0, -60.0], [277.0, 0.0, -60.0], [286.0, 0.0, -60.0],
+    // Esses, then the crane.
+    [297.5, 0.0, -57.7], [307.2, 0.0, -51.2], [316.9, 0.0, -44.7], [328.4, 0.0, -42.4], [339.9, 0.0, -44.7],
+    [349.6, 0.0, -51.2], [359.4, 0.0, -57.7], [370.9, 0.0, -60.0], [379.9, 0.0, -60.0], [421.9, 0.0, -60.0],
+    [430.9, 0.0, -60.0], [444.9, 0.0, -63.8], [455.1, 0.0, -74.0], [458.9, 0.0, -88.0], [458.9, 0.0, -100.0],
+    [458.9, 0.0, -112.0],
+    // A switchback of two hairpins over a hill, which the warp pad skips.
+    [461.3, 0.8, -121.0], [467.9, 1.7, -127.6], [476.9, 2.5, -130.0], [485.9, 3.3, -127.6], [492.4, 4.2, -121.0],
+    [494.9, 5.0, -112.0], [494.9, 5.0, -103.0], [494.9, 5.0, -71.0], [494.9, 5.0, -62.0], [497.3, 4.2, -53.0],
+    [503.9, 3.3, -46.4], [512.9, 2.5, -44.0], [521.9, 1.7, -46.4], [528.4, 0.8, -53.0], [530.9, 0.0, -62.0],
+    // The cannons.
+    [530.9, 0.0, -71.0], [530.9, 0.0, -89.0], [530.9, 0.0, -115.0], [530.9, 0.0, -133.0], [530.9, 0.0, -142.0],
+    // Esses, then the lava.
+    [528.6, 0.0, -153.5], [522.1, 0.0, -163.2], [515.6, 0.0, -172.9], [513.3, 0.0, -184.4], [515.6, 0.0, -195.9],
+    [522.1, 0.0, -205.6], [528.6, 0.0, -215.4], [530.9, 0.0, -226.9], [530.9, 0.0, -235.9], [530.9, 0.0, -253.9],
+    [530.9, 0.0, -297.4], [530.9, 0.0, -315.4], [530.9, 0.0, -324.4], [527.6, 0.0, -336.4], [518.9, 0.0, -345.2],
+    [506.9, 0.0, -348.4],
+    // The force field.
+    [497.9, 0.0, -348.4], [479.9, 0.0, -348.4], [443.9, 0.0, -348.4], [425.9, 0.0, -348.4], [416.9, 0.0, -348.4],
+    // A kink, the smoke, and esses in a tunnel.
+    [407.8, 0.0, -347.0], [399.6, 0.0, -343.0], [392.3, 0.0, -337.8], [366.1, 0.0, -319.4], [358.7, 0.0, -314.3],
+    [350.5, 0.0, -310.2], [341.5, 0.0, -308.8], [326.7, 0.0, -312.5], [315.3, 0.0, -322.5], [303.8, 0.0, -332.5],
+    [289.1, 0.0, -336.1], [274.3, 0.0, -332.5], [262.8, 0.0, -322.5], [251.4, 0.0, -312.5], [236.6, 0.0, -308.8],
+    // The other long straight: the ghost and the dragon.
+    [227.6, 0.0, -308.8], [209.6, 0.0, -308.8], [173.6, 0.0, -308.8], [129.6, 0.0, -308.8], [93.6, 0.0, -308.8],
+    [75.6, 0.0, -308.8], [66.6, 0.0, -308.8],
+    // A zigzag the other way, over a hump.
+    [57.6, 0.7, -311.3], [51.0, 1.4, -317.8], [48.6, 2.0, -326.8], [48.6, 2.7, -335.8], [48.6, 3.0, -357.8],
+    [48.6, 2.5, -366.8], [46.2, 2.1, -375.8], [39.6, 1.6, -382.4], [30.6, 1.2, -384.8], [21.6, 0.8, -384.8],
+    [-0.4, 0.0, -384.8], [-9.4, 0.0, -384.8],
+    // Two hairpins out into the middle and back.
+    [-19.4, 0.0, -382.2], [-26.7, 0.0, -374.8], [-29.4, 0.0, -364.8], [-29.4, 0.0, -355.8], [-29.4, 0.0, -303.8],
+    [-29.4, 0.0, -294.8], [-31.8, 0.0, -285.8], [-38.4, 0.0, -279.3], [-47.4, 0.0, -276.8], [-56.4, 0.0, -279.3],
+    [-63.0, 0.0, -285.8], [-65.4, 0.0, -294.8], [-65.4, 0.0, -303.8], [-65.4, 0.0, -355.8], [-65.4, 0.0, -364.8],
+    [-68.1, 0.0, -374.8], [-75.4, 0.0, -382.2], [-85.4, 0.0, -384.8], [-100.4, 0.0, -384.8], [-115.4, 0.0, -384.8],
+    [-125.4, 0.0, -382.2], [-132.7, 0.0, -374.8], [-135.4, 0.0, -364.8], [-135.4, 0.0, -347.3], [-135.4, 0.0, -329.8],
+    [-137.8, 0.0, -320.8], [-144.4, 0.0, -314.3], [-153.4, 0.0, -311.8], [-162.4, 0.0, -314.3], [-169.0, 0.0, -320.8],
+    [-171.4, 0.0, -329.8], [-171.4, 0.0, -347.3], [-171.4, 0.0, -364.8], [-174.1, 0.0, -374.8], [-181.4, 0.0, -382.2],
+    [-191.4, 0.0, -384.8],
+    // Esses.
+    [-201.4, 0.0, -384.8], [-211.4, 0.0, -384.8], [-222.9, 0.0, -382.6], [-232.6, 0.0, -376.1], [-242.3, 0.0, -369.6],
+    [-253.8, 0.0, -367.3], [-265.3, 0.0, -369.6], [-275.0, 0.0, -376.1], [-284.7, 0.0, -382.6], [-296.2, 0.0, -384.8],
+    // Under the bridge, round a climbing loop and back over it.
+    [-305.2, 0.0, -384.8], [-323.2, 0.0, -384.8], [-349.1, 0.0, -384.8], [-367.1, 0.0, -384.8], [-376.1, 0.0, -384.8],
+    [-398.6, 1.3, -390.9], [-415.1, 2.6, -407.3], [-421.1, 3.9, -429.8], [-415.1, 5.2, -452.3], [-398.6, 6.5, -468.8],
+    [-376.1, 7.8, -474.8], [-353.6, 9.1, -468.8], [-337.2, 10.4, -452.3], [-331.1, 11.0, -429.8], [-331.1, 11.0, -420.8],
+    [-331.1, 11.0, -402.8], [-331.1, 11.0, -376.8], [-331.1, 11.0, -358.8], [-331.1, 11.0, -349.8],
+    // Down through esses, and through more in a tunnel.
+    [-329.1, 9.5, -334.3], [-323.1, 8.0, -319.8], [-316.0, 6.0, -300.3], [-316.0, 4.0, -279.4], [-323.1, 2.0, -259.8],
+    [-329.1, 0.5, -245.4], [-331.1, 0.0, -229.8], [-331.1, 0.0, -217.8], [-331.1, 0.0, -205.8], [-333.6, 0.0, -192.2],
+    [-340.5, 0.0, -180.1], [-347.4, 0.0, -168.1], [-349.9, 0.0, -154.4], [-347.4, 0.0, -140.7], [-340.5, 0.0, -128.7],
+    [-333.6, 0.0, -116.7], [-331.1, 0.0, -103.0],
+    // The barrels.
+    [-331.1, 0.0, -94.0], [-331.1, 0.0, -76.0], [-331.1, 0.0, -45.0], [-331.1, 0.0, -27.0], [-331.1, 0.0, -18.0],
+    [-328.7, 0.0, -9.0], [-322.1, 0.0, -2.4], [-313.1, 0.0, 0.0],
+    // The pillar.
+    [-304.1, 0.0, 0.0], [-286.1, 0.0, 0.0], [-260.1, 0.0, 0.0], [-242.1, 0.0, 0.0], [-233.1, 0.0, 0.0],
+    // Esses.
+    [-224.9, 0.0, -1.4], [-217.7, 0.0, -5.6], [-212.4, 0.0, -12.0], [-205.7, 0.0, -19.4], [-196.6, 0.0, -23.5],
+    [-186.6, 0.0, -23.5], [-177.5, 0.0, -19.4], [-170.8, 0.0, -12.0], [-165.4, 0.0, -5.6], [-158.2, 0.0, -1.4],
+    [-150.0, 0.0, 0.0],
+    // The ark and the curse, and home.
+    [-141.0, 0.0, 0.0], [-123.0, 0.0, 0.0], [-87.0, 0.0, 0.0], [-63.0, 0.0, 0.0], [-27.0, 0.0, 0.0],
+    [-9.0, 0.0, 0.0],
+];
+/// The gauntlet's tunnels: where each begins and ends, as (x, z).
+const GAUNTLET_TUNNELS: &[[[f32; 2]; 2]] = &[[[341.5, -308.8], [236.6, -308.8]], [[-331.1, -213.8], [-331.1, -95.0]]];
+/// How high a tunnel's roof is over its road, and how thick its walls and roof are.
+const TUNNEL_HEIGHT: f32 = 8.5;
+const TUNNEL_THICK: f32 = 1.6;
+
 /// The circuits built here rather than loaded from the original game's data.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Layout {
     #[default]
     Brick,
     FigureEight,
+    Gauntlet,
 }
 
 impl Layout {
-    pub const ALL: [Layout; 2] = [Layout::Brick, Layout::FigureEight];
+    pub const ALL: [Layout; 3] = [Layout::Brick, Layout::FigureEight, Layout::Gauntlet];
 
     pub fn name(self) -> &'static str {
         match self {
             Layout::Brick => "Brick Circuit",
             Layout::FigureEight => "Figure Eight",
+            Layout::Gauntlet => "Gauntlet",
         }
     }
 
@@ -85,17 +171,24 @@ impl Layout {
         match self {
             Layout::Brick => "BRICK",
             Layout::FigureEight => "FIGURE8",
+            Layout::Gauntlet => "GAUNTLET",
         }
     }
 
-    fn control(self) -> Vec<Vec3> {
+    fn control(self, mirror: bool) -> Vec<Vec3> {
         let (points, scale) = match self {
             Layout::Brick => (CONTROL, SCALE),
             Layout::FigureEight => (FIGURE_EIGHT, 1.0),
+            Layout::Gauntlet => (GAUNTLET, 1.0),
         };
         // Mirrored, the built-in circuits are turned over the same way the game's are.
-        let side = if crate::scenery::mirror() { -1.0 } else { 1.0 };
+        let side = if mirror { -1.0 } else { 1.0 };
         points.iter().map(|c| Vec3::new(c[0] * scale, c[1], c[2] * scale * side)).collect()
+    }
+
+    /// Where its tunnels begin and end, as (x, z) on the unmirrored circuit.
+    fn tunnels(self) -> &'static [[[f32; 2]; 2]] {
+        if self == Layout::Gauntlet { GAUNTLET_TUNNELS } else { &[] }
     }
 
     /// The ground the scenery is scattered over: (least x and z, greatest x and z).
@@ -108,6 +201,7 @@ impl Layout {
         match self {
             Layout::Brick => (Vec2::new(-300.0, -340.0), Vec2::new(350.0, 150.0)),
             Layout::FigureEight => (Vec2::new(-340.0, -220.0), Vec2::new(330.0, 220.0)),
+            Layout::Gauntlet => (Vec2::new(-540.0, -600.0), Vec2::new(650.0, 110.0)),
         }
     }
 }
@@ -132,6 +226,23 @@ pub struct Track {
     /// The collision surfaces by name: each one's tag in `collision`, and whether it
     /// starts out passable. Hazards open and close some of them.
     pub surfaces: HashMap<String, (usize, bool)>,
+    /// Stretches where part of the road is shut, which the computer's cars keep out of.
+    pub lanes: Vec<Lane>,
+    /// Ground the scattered scenery is kept off: centres and radii.
+    pub clearings: Vec<(Vec3, f32)>,
+    /// The stretches that run through a tunnel: the first sample of each and the one
+    /// after its last.
+    pub tunnels: Vec<(usize, usize)>,
+}
+
+/// The part of the road that is open between two distances round the lap, as lateral
+/// offsets.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Lane {
+    pub from: f32,
+    pub to: f32,
+    pub least: f32,
+    pub most: f32,
 }
 
 /// A gate of the checkpoint graph that orders the racers and guards against shortcuts.
@@ -218,9 +329,26 @@ impl Track {
         Track::built(Layout::Brick)
     }
 
+    /// The racing line of a built-in circuit as it is unmirrored, and nothing else.
+    pub fn plain(layout: Layout) -> Self {
+        Track::from_loop(&layout.control(false), ROAD_HW)
+    }
+
     /// One of the built-in circuits.
     pub fn built(layout: Layout) -> Self {
-        let mut track = Track::from_loop(&layout.control(), ROAD_HW);
+        let mirror = crate::scenery::mirror();
+        let mut track = Track::from_loop(&layout.control(mirror), ROAD_HW);
+        let side = if mirror { -1.0 } else { 1.0 };
+        track.tunnels = layout
+            .tunnels()
+            .iter()
+            .map(|ends| ends.map(|[x, z]| track.nearest(Vec3::new(x, 0.0, z * side))))
+            .map(|[from, to]| (from, to))
+            .collect();
+        // The spline dips a little before each climb; the road stays on the ground.
+        for p in &mut track.pts {
+            p.y = p.y.max(0.0);
+        }
         // Tarmac, verges and the inner faces of the barriers.
         let n = track.n();
         let grass = Surface { rolling_resistance: 20.0, ..default() };
@@ -325,7 +453,16 @@ impl Track {
             collision: Collision::default(),
             course: Course::default(),
             surfaces: HashMap::new(),
+            lanes: Vec::new(),
+            clearings: Vec::new(),
+            tunnels: Vec::new(),
         }
+    }
+
+    /// The lateral offset nearest `wanted` that is open at distance `s`.
+    pub fn lane(&self, s: f32, wanted: f32) -> f32 {
+        let s = s.rem_euclid(self.length);
+        self.lanes.iter().filter(|lane| s >= lane.from && s <= lane.to).fold(wanted, |lat, lane| lat.clamp(lane.least, lane.most))
     }
 
     pub fn n(&self) -> usize {
@@ -383,6 +520,14 @@ impl Track {
         }
         if !gates.is_empty() {
             self.course.compute_fractions();
+        }
+        // A tunnel is entered by what was its way out.
+        for tunnel in &mut self.tunnels {
+            *tunnel = (n + 1 - tunnel.1, n + 1 - tunnel.0);
+        }
+        // What was on the right is on the left, and as far from the line the other way.
+        for lane in &mut self.lanes {
+            *lane = Lane { from: self.length - lane.to, to: self.length - lane.from, least: -lane.most, most: -lane.least };
         }
         // The stretch after the line is now the one before it.
         for zone in &mut self.course.zones {
@@ -512,6 +657,24 @@ impl Track {
                 let half = Vec3::new(WALL + 0.8, 0.4, p0.distance(p1) / 2.0 + 0.05);
                 b.cuboid((p0 + p1) / 2.0 - up * 0.45, half, rot, GREY);
             }
+            if let Some(&(from, to)) = self.tunnels.iter().find(|t| (t.0..t.1).contains(&i)) {
+                // A tunnel: a wall either side and a roof, with a portal at each end.
+                let rot = Transform::IDENTITY.looking_to(p1 - p0, up).rotation;
+                let (mid, length) = ((p0 + p1) / 2.0, p0.distance(p1) / 2.0 + 0.05);
+                let portal = i < from + 2 || i + 2 >= to;
+                let (colour, extra) = match (portal, (i / 4) % 2 == 0) {
+                    (true, _) => (YELLOW, 0.6),
+                    (false, true) => (GREY, 0.0),
+                    (false, false) => (DARK_GREY, 0.0),
+                };
+                let across = (r0 + r1).normalize() * (WALL + 0.8 + TUNNEL_THICK / 2.0);
+                let wall = Vec3::new(TUNNEL_THICK / 2.0 + extra, TUNNEL_HEIGHT / 2.0, length);
+                for side in [-1.0, 1.0] {
+                    b.cuboid(mid + across * side + up * (TUNNEL_HEIGHT / 2.0 - 0.1), wall, rot, colour);
+                }
+                let roof = Vec3::new(WALL + 0.8 + TUNNEL_THICK + extra, TUNNEL_THICK / 2.0 + extra, length);
+                b.brick(mid + up * (TUNNEL_HEIGHT + TUNNEL_THICK / 2.0), roof, rot, colour, (8, 1));
+            }
             if span(i) != span((i + n - 1) % n) {
                 // Where the embankment stops for the bridge: its end, and a pier at
                 // each corner.
@@ -554,7 +717,7 @@ impl Track {
         for _ in 0..420 {
             let pos = Vec3::new(rng.range(least.x, most.x), 0.0, rng.range(least.y, most.y));
             let clear = self.pts.iter().map(|&p| xz_dist2(p, pos)).fold(f32::MAX, f32::min).sqrt();
-            if clear < WALL + 7.0 {
+            if clear < WALL + 7.0 || self.clearings.iter().any(|&(centre, radius)| xz_dist2(centre, pos) < radius * radius) {
                 continue;
             }
             let rot = Quat::from_rotation_y(rng.range(0.0, std::f32::consts::TAU));
@@ -594,7 +757,8 @@ mod tests {
         for layout in Layout::ALL {
             let t = Track::built(layout);
             let n = t.n();
-            assert!(t.length > 900.0 && t.length < 1400.0, "{layout:?} length {}", t.length);
+            let longest = if layout == Layout::Gauntlet { 3500.0 } else { 1400.0 };
+            assert!(t.length > 900.0 && t.length < longest, "{layout:?} length {}", t.length);
             for i in 0..n {
                 let j = (i + 1) % n;
                 for side in [-1.0, 1.0] {
@@ -643,6 +807,27 @@ mod tests {
             let crossing = t.pts[(0..n).find(|&i| bridged[i]).unwrap()];
             assert!(xz_dist2(centre, crossing).sqrt() > 2.0 * radius);
         }
+    }
+
+    #[test]
+    fn the_gauntlet_has_two_tunnels_and_a_bridge_and_corners_sharper_than_the_others() {
+        let t = Track::built(Layout::Gauntlet);
+        let (n, bridged) = (t.n(), t.bridged());
+        assert_eq!((0..n).filter(|&i| bridged[i] && !bridged[(i + n - 1) % n]).count(), 1);
+        // Each tunnel is a good stretch of level road, clear of the bridge.
+        assert_eq!(t.tunnels.len(), 2);
+        for &(from, to) in &t.tunnels {
+            assert!((to - from) as f32 * t.spacing > 100.0, "{from}..{to}");
+            assert!((from..to).all(|i| t.pts[i].y < 1.0 && !bridged[i]));
+        }
+        // Turned round, the same road is roofed.
+        let mut back = Track::built(Layout::Gauntlet);
+        back.reverse();
+        for (&(from, to), &(back_from, back_to)) in t.tunnels.iter().zip(&back.tunnels) {
+            assert_eq!((back.pts[back_from], back.pts[back_to - 1]), (t.pts[to - 1], t.pts[from]));
+        }
+        let sharpest = |t: &Track| t.curv.iter().copied().fold(0.0, f32::max);
+        assert!(sharpest(&t) > 1.0 / 20.0 && sharpest(&t) > sharpest(&Track::new()));
     }
 
     #[test]

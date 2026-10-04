@@ -45,10 +45,10 @@ pub const CODE_LIGHTS: [&str; 3] = ["mmcode1", "mmcode2", "mmcode3"];
 /// How fast each light flickers while the doors are open, in changes a second.
 const CODE_FLICKER: [f32; 3] = [3.0, 4.0, 5.0];
 
-/// Where the lava leaps between, and the frames of its animation at which it leaves
-/// and lands.
+/// Where the lava leaps between.
 const LAVA_POOLS: [Vec3; 3] =
     [Vec3::new(577.0, -444.0, 7.334), Vec3::new(605.0, -500.0, 19.0), Vec3::new(525.0, -505.0, 4.6)];
+/// The frames of the lava's animation at which it leaves each pool and lands in the next.
 const LAVA_LEAVES: [f32; 3] = [0.0, 61.0, 119.0];
 const LAVA_LANDS: [f32; 3] = [26.0, 86.0, 146.0];
 const CURSE_DROPS: [Vec3; 3] = [
@@ -67,7 +67,9 @@ const RAIN_DROP: f32 = 35.0;
 const LAVA_SMOKE: f32 = 0.8;
 const LAVA_WINDOW: f32 = 10.0;
 
-enum Kind {
+/// What a hazard is and how it stands. The fields that say how it stands start out
+/// as `parse` leaves them.
+pub enum Kind {
     /// Sounds its blow as it comes down.
     Hammer { raised: bool },
     /// A solid lump riding on a bone of an animated model.
@@ -133,11 +135,36 @@ struct Hazard {
     kind: Kind,
 }
 
+/// The places the original has written into its hazards rather than its circuits'
+/// files, in the game's coordinates. A circuit of the port's own has others.
+pub struct Places {
+    pub lava_pools: [Vec3; 3],
+    pub curse_drops: [Vec3; 3],
+    /// Where a warp pad delivers a car, and the way it leaves it facing.
+    pub warp_to: Vec3,
+    pub warp_facing: Vec3,
+}
+
+impl Default for Places {
+    fn default() -> Self {
+        Places { lava_pools: LAVA_POOLS, curse_drops: CURSE_DROPS, warp_to: WARP_PAD_TO, warp_facing: WARP_PAD_FACING }
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct Hazards {
     all: Vec<Hazard>,
     /// Set once they have been put in their starting state.
     ready: bool,
+    places: Places,
+}
+
+impl Hazards {
+    /// Hazards put together by hand: each with the event that sets it going.
+    pub fn of(all: Vec<(i32, Kind)>, places: Places) -> Self {
+        let all = all.into_iter().map(|(trigger, kind)| Hazard { trigger, active: false, kind }).collect();
+        Hazards { all, ready: false, places }
+    }
 }
 
 fn number(token: Option<&Token>) -> f32 {
@@ -271,7 +298,7 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
 /// Loads the hazards of a race (a folder name such as `RACEC0R0`).
 pub fn load(race: &str) -> Option<Hazards> {
     let jam = Jam::open(std::env::var("LEGO_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()))?;
-    Some(Hazards { all: parse(&tokenize(jam.get(&format!("/GAMEDATA/{race}/HAZARDS.HZB"))?)), ready: false })
+    Some(Hazards { all: parse(&tokenize(jam.get(&format!("/GAMEDATA/{race}/HAZARDS.HZB"))?)), ..default() })
 }
 
 /// Spins a kart round once, as most hazards do to whoever touches them.
@@ -361,11 +388,13 @@ pub fn hazards(
         };
     }
 
-    for (index, hazard) in hazards.all.iter_mut().enumerate() {
+    let Hazards { all, places, .. } = &mut *hazards;
+    for (index, hazard) in all.iter_mut().enumerate() {
         let slot = LOOP_SLOT + index as u16;
         if reset {
-            // The weather and the water are always at work; the rest wait for a trigger.
-            hazard.active = matches!(hazard.kind, Kind::Snowfall { .. } | Kind::Oscillator { .. });
+            // The weather and the water are always at work, unless given a trigger; the
+            // rest wait for theirs.
+            hazard.active = hazard.trigger < 0 && matches!(hazard.kind, Kind::Snowfall { .. } | Kind::Oscillator { .. });
             match &mut hazard.kind {
                 Kind::FallingPillar { fallen, landed } => {
                     (*fallen, *landed) = (false, false);
@@ -434,7 +463,7 @@ pub fn hazards(
                     k.warp = WARP_TIME;
                     // A car on a recording keeps to its recording.
                     if k.route.is_none() {
-                        k.warp_to = Some((k.pos, to_world(WARP_PAD_TO), to_world(WARP_PAD_FACING)));
+                        k.warp_to = Some((k.pos, to_world(places.warp_to), to_world(places.warp_facing)));
                     }
                 } else if !event.start {
                     hazard.active = false;
@@ -476,7 +505,7 @@ pub fn hazards(
                             events.start(16, event.at, &mut sfx);
                         }
                         Kind::CurseDrop => {
-                            let at = CURSE_DROPS[sfx.roll(3) as usize];
+                            let at = places.curse_drops[sfx.roll(3) as usize];
                             assets.curse(&mut commands, to_world(at));
                         }
                         Kind::CannonballRain { interval, timer, .. } => *timer = *interval,
@@ -486,7 +515,7 @@ pub fn hazards(
                     }
                 }
                 (Kind::FallingPillar { .. } | Kind::Sphinx { .. } | Kind::TriggeredAnimation { .. }, false) => {}
-                (Kind::SmokeVent { emitter }, false) | (Kind::Ghost { trail: emitter, .. }, false) => {
+                (Kind::SmokeVent { emitter }, false) | (Kind::Snowfall { emitter }, false) | (Kind::Ghost { trail: emitter, .. }, false) => {
                     hazard.active = false;
                     if let Some(entity) = emitter.take() {
                         commands.entity(entity).try_despawn();
@@ -677,7 +706,7 @@ pub fn hazards(
                     for pool in 0..3 {
                         if frame > LAVA_LEAVES[pool] && frame < LAVA_LANDS[pool] {
                             if let Some(emitters) = &emitters {
-                                emitters.spawn(&mut commands, "lavasmk", Transform::from_translation(to_world(LAVA_POOLS[pool])));
+                                emitters.spawn(&mut commands, "lavasmk", Transform::from_translation(to_world(places.lava_pools[pool])));
                             }
                             *smoke = LAVA_SMOKE;
                         }
@@ -692,7 +721,7 @@ pub fn hazards(
                         let just = |at: f32| frame > at && frame < at + LAVA_WINDOW;
                         let (leaves, lands) = (just(LAVA_LEAVES[pool]), just(LAVA_LANDS[pool]));
                         if leaves || lands {
-                            events.fire(43, Some(to_world(LAVA_POOLS[pool])), &mut sfx);
+                            events.fire(43, Some(to_world(places.lava_pools[pool])), &mut sfx);
                             (*cooldown, *flying) = (0.4, lands);
                         }
                     }

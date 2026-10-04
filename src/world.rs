@@ -71,6 +71,8 @@ pub struct KartModel {
 pub struct LoadedWorld {
     surfaces: Vec<Surface>,
     pub bricks: Vec<(Option<Power>, Vec3)>,
+    /// What the player's shots lock onto, and the event that puts each out of use.
+    pub targets: Vec<(Vec3, i32)>,
     /// One per grid slot, in the order of the driver roster.
     pub karts: Vec<KartModel>,
     /// Who is in each of those slots; the player is the last.
@@ -548,17 +550,15 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
         })
         .collect();
 
-    info!("loaded {race}: {model_file}, {route_file}, lap {:.0}", track.length);
-    // Karts are optional: without them the brick-built stand-ins are used.
+    let targets: Vec<(Vec3, i32)> = with_ext(".TGB")
+        .filter_map(|f| route::parse_targets(jam.get(f)?))
+        .flatten()
+        .map(|(position, index)| (to_world(position), index))
+        .collect();
+
+    info!("loaded {race}: {model_file}, {route_file}, lap {:.0}, {} targets", track.length, targets.len());
     let circuit = circuit.map(str::to_string).or_else(|| roster::circuit_of(&jam, race)).unwrap_or("c0".into());
-    let field = roster::field(&jam, &circuit);
-    let karts: Vec<KartModel> = field.iter().map_while(|driver| load_kart(&jam, driver)).collect();
-    if karts.len() != field.len() || karts.is_empty() {
-        warn!("could not load the original kart models");
-    }
     let ghost = jam.get(&format!("{dir}/GHOST.GHB")).and_then(crate::time_race::Run::parse);
-    let record_holder = roster::driver(&jam, roster::PLAYER);
-    let ghost_models: Vec<KartModel> = (0..2).filter_map(|_| load_kart(&jam, record_holder.as_ref()?)).collect();
     // Each of the computer's cars plays one of the drives recorded for its place on
     // the grid, picked by chance.
     let pick = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.subsec_nanos() as usize);
@@ -572,55 +572,118 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
         .collect();
     let track_model = model_file.rsplit('/').next().unwrap_or_default().trim_end_matches(".GDB").to_lowercase();
     let props = scenery::load(&jam, &dir, &library, &track_model);
+    // The circuit's own emitters first, then the ones every circuit shares.
+    let mut emitters = Vec::new();
+    for file in with_ext(".EMB") {
+        let animation = format!("{dir}/EMIT{}.MAB", &race[race.len().saturating_sub(4)..]);
+        add_emitters(&jam, file, &library, &animation, |_| true, &mut emitters);
+    }
+    let mut world = shared(&jam, &circuit, emitters);
+    world.swatches.extend(crate::hazards::SWATCHES.iter().filter_map(|material| picture(&library, material)));
+    let sky = with_ext(".SKB").find_map(|f| crate::sky::Sky::parse(jam.get(f)?));
+    Some((track, LoadedWorld { sky, surfaces, bricks, targets, routes, ghost, props, ..world }))
+}
+
+fn picture(library: &Library, material: &str) -> Option<(String, image::Pixels)> {
+    Some((material.to_string(), library.texture(material)?))
+}
+
+/// Adds the emitters of an emitter file that pass `keep` and aren't there already,
+/// with pictures from `library` and the material animation at `animation`.
+fn add_emitters(
+    jam: &Jam,
+    file: &str,
+    library: &Library,
+    animation: &str,
+    keep: impl Fn(&str) -> bool,
+    emitters: &mut Vec<(String, particles::EmitterDef, particles::Look)>,
+) {
+    let animation = jam.get(animation).and_then(mab::MaterialAnimation::parse).unwrap_or_default();
+    for (name, def) in jam.get(file).map(particles::parse).unwrap_or_default() {
+        if !keep(&name) || emitters.iter().any(|e| e.0 == name) {
+            continue;
+        }
+        let look = match (&def.material, def.track) {
+            (Some(material), _) => particles::Look {
+                frames: library.tinted(material).map(|p| (0, p)).into_iter().collect(),
+                track: None,
+                additive: library.additive(material),
+            },
+            (None, Some(track)) => particles::Look {
+                frames: animation
+                    .materials(track)
+                    .iter()
+                    .filter_map(|(material, frame)| Some((*frame, library.tinted(material)?)))
+                    .collect(),
+                track: animation.tracks.get(track).copied(),
+                additive: animation.materials(track).first().is_some_and(|m| library.additive(&m.0)),
+            },
+            _ => particles::Look::default(),
+        };
+        if look.frames.is_empty() {
+            warn!("no picture for the particles of {name}");
+        }
+        emitters.push((name, def, look));
+    }
+}
+
+/// What a race has whatever its circuit: the field of `circuit` and its cars, the
+/// power-ups' models and pictures, and the emitters every circuit shares, after the
+/// ones given.
+fn shared(jam: &Jam, circuit: &str, mut emitters: Vec<(String, particles::EmitterDef, particles::Look)>) -> LoadedWorld {
+    // Karts are optional: without them the brick-built stand-ins are used.
+    let field = roster::field(jam, circuit);
+    let karts: Vec<KartModel> = field.iter().map_while(|driver| load_kart(jam, driver)).collect();
+    if karts.len() != field.len() || karts.is_empty() {
+        warn!("could not load the original kart models");
+    }
+    let record_holder = roster::driver(jam, roster::PLAYER);
+    let ghost_models: Vec<KartModel> = (0..2).filter_map(|_| load_kart(jam, record_holder.as_ref()?)).collect();
     let powerups = ["POWERUP", "DTURBO0", "DTURBO1", "DTURBO2", "CURSE", "BARREL", "WARPHOLE", "CGREEN", "GRAPPLE", "DBRICKS", "DTUBE"];
     let powerups: Vec<String> = powerups.iter().flat_map(|n| [format!("{COMMON}/{n}.MDB"), format!("{COMMON}/{n}.TDB")]).collect();
-    let powerups = Library::new(&jam, powerups.iter().map(String::as_str), &[COMMON]);
+    let powerups = Library::new(jam, powerups.iter().map(String::as_str), &[COMMON]);
     let files = [format!("{COMMON}/POWERUP.WDB"), format!("{COMMON}/TURBO3.WDB")];
-    let models = scenery::load_files(&jam, COMMON, &files.each_ref().map(String::as_str), &powerups, "");
-    // The circuit's own emitters first, then the ones every circuit shares.
-    let shared = [format!("{COMMON}/EMITTER.MDB"), format!("{COMMON}/EMITTER.TDB")];
-    let shared = Library::new(&jam, shared.iter().map(String::as_str), &[COMMON]);
-    let animation = |file: &str| jam.get(file).and_then(mab::MaterialAnimation::parse).unwrap_or_default();
-    let mut emitters = Vec::new();
-    let shared_file = format!("{COMMON}/EMITTER.EMB");
-    let sources = with_ext(".EMB")
-        .map(|f| (f, &library, animation(&format!("{dir}/EMIT{}.MAB", &race[race.len().saturating_sub(4)..]))))
-        .chain([(shared_file.as_str(), &shared, animation(&format!("{COMMON}/EMITTER.MAB")))]);
-    for (file, library, animation) in sources {
-        for (name, def) in jam.get(file).map(particles::parse).unwrap_or_default() {
-            let look = match (&def.material, def.track) {
-                (Some(material), _) => particles::Look {
-                    frames: library.tinted(material).map(|p| (0, p)).into_iter().collect(),
-                    track: None,
-                    additive: library.additive(material),
-                },
-                (None, Some(track)) => particles::Look {
-                    frames: animation
-                        .materials(track)
-                        .iter()
-                        .filter_map(|(material, frame)| Some((*frame, library.tinted(material)?)))
-                        .collect(),
-                    track: animation.tracks.get(track).copied(),
-                    additive: animation.materials(track).first().is_some_and(|m| library.additive(&m.0)),
-                },
-                _ => particles::Look::default(),
-            };
-            if look.frames.is_empty() {
-                warn!("no picture for the particles of {name}");
-            }
-            if !emitters.iter().any(|e: &(String, _, _)| e.0 == name) {
-                emitters.push((name, def, look));
-            }
+    let models = scenery::load_files(jam, COMMON, &files.each_ref().map(String::as_str), &powerups, |_, _| true);
+    let common = [format!("{COMMON}/EMITTER.MDB"), format!("{COMMON}/EMITTER.TDB")];
+    let common = Library::new(jam, common.iter().map(String::as_str), &[COMMON]);
+    add_emitters(jam, &format!("{COMMON}/EMITTER.EMB"), &common, &format!("{COMMON}/EMITTER.MAB"), |_| true, &mut emitters);
+    let swatches = crate::item_models::PICTURES.iter().filter_map(|material| picture(&powerups, material)).collect();
+    LoadedWorld {
+        surfaces: Vec::new(),
+        bricks: Vec::new(),
+        targets: Vec::new(),
+        karts,
+        field,
+        routes: Vec::new(),
+        ghost: None,
+        ghost_models,
+        sky: None,
+        props: Vec::new(),
+        models,
+        emitters,
+        swatches,
+    }
+}
+
+/// What a circuit of the port's own takes from the game's data: the cars and the
+/// power-ups, and from each race named (a folder, then the names of models and of
+/// emitters) those models, where their own circuit puts them, and those emitters.
+pub fn borrowed(circuit: &str, races: &[(&str, &[&str], &[&str])]) -> Option<LoadedWorld> {
+    let jam = open_jam()?;
+    let (mut props, mut emitters) = (Vec::new(), Vec::new());
+    for &(race, models, particles) in races {
+        let dir = format!("/GAMEDATA/{race}");
+        let mut files: Vec<&str> = jam.list(&dir).collect();
+        files.sort();
+        let with_ext = |ext: &'static str| files.iter().copied().filter(move |f| f.ends_with(ext));
+        let library = Library::new(&jam, with_ext(".MDB").chain(with_ext(".TDB")), &[&dir, COMMON]);
+        props.extend(scenery::load_named(&jam, &dir, &library, models));
+        for file in with_ext(".EMB") {
+            let animation = format!("{dir}/EMIT{}.MAB", &race[race.len().saturating_sub(4)..]);
+            add_emitters(&jam, file, &library, &animation, |name| particles.contains(&name), &mut emitters);
         }
     }
-    let picture = |library: &Library, material: &str| Some((material.to_string(), library.texture(material)?));
-    let swatches = crate::hazards::SWATCHES
-        .iter()
-        .filter_map(|material| picture(&library, material))
-        .chain(crate::item_models::PICTURES.iter().filter_map(|material| picture(&powerups, material)))
-        .collect();
-    let sky = with_ext(".SKB").find_map(|f| crate::sky::Sky::parse(jam.get(f)?));
-    Some((track, LoadedWorld { sky, surfaces, bricks, karts, field, routes, ghost, ghost_models, props, models, emitters, swatches }))
+    Some(LoadedWorld { props, ..shared(&jam, circuit, emitters) })
 }
 
 /// Render components for one surface.

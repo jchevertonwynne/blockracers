@@ -27,6 +27,32 @@ const MAX_STEP: f32 = 1.0 / 120.0;
 /// A warp carries the kart along the racing line this fast, then drops it at this speed.
 const WARP_SPEED: f32 = 600.0 * UNIT;
 const WARP_EXIT_SPEED: f32 = 700.0 / 4500.0 * 1000.0 * UNIT;
+/// A car on a recording stays blown up until it lands; this is only longer than that.
+const ROUTE_SPIN_OUT: f32 = 60.0;
+/// `PlayerControls::UpdateSteering`: how fast the wheels turn, a second, of full lock:
+/// with a key held, back through the middle, in a slide and in a tight slide, and
+/// towards where a stick is held.
+const STEER_RATE: f32 = 1.25;
+const STEER_RETURN_RATE: f32 = 8.25;
+const STEER_DRIFT_RATE: f32 = 5.0;
+const STEER_SLIDE_RATE: f32 = 16.0;
+const STEER_IDLE_RATE: f32 = 2.5;
+/// A floating car rises to this height at this rate, a recorded one coming down at
+/// this; it leans up to this far, at this rate (`RacerCarBody::UpdateSlideBank`).
+const HOVER_HEIGHT: f32 = 6.0 * UNIT;
+const HOVER_RISE: f32 = 3.0 * UNIT;
+const HOVER_FALL: f32 = 15.0 * UNIT;
+const HOVER_BANK: f32 = std::f32::consts::FRAC_PI_4;
+const HOVER_BANK_RATE: f32 = 5.0;
+/// The strongest turbo dies away over this long, and may give out early once it has
+/// this much or less of its burn left.
+const TURBO_FADE: f32 = 0.7;
+const TURBO_EARLY_END: f32 = 4.5;
+/// A shove from a shield lasts this long (`Racer::ApplyShove`).
+const SHOVE_TIME: f32 = 0.75;
+/// `RacerPhysics::Update`: a car outside these heights, in game units, is put back
+/// where it last stood.
+const WORLD_HEIGHTS: (f32, f32) = (-250.0, 340.0);
 
 struct Driver {
     name: &'static str,
@@ -66,8 +92,28 @@ pub struct Kart {
     pub surface: Surface,
     pub wall_contact: bool,
     pub air_time: f32,
-    /// Powersliding.
+    /// Powersliding, and whether it is the tight slide of brake and accelerator together.
     pub sliding: bool,
+    pub slide_tight: bool,
+    /// A slide has been asked for and not yet let go of (`Racer::c_flagDrifting`).
+    pub drifting: bool,
+    /// How much of the tyres' hold the last slip steering gave up.
+    pub slip_ratio: f32,
+    /// The turn the car was last set to, signed.
+    pub turn_radius: f32,
+    /// A wall is turning the car: time left, and how fast.
+    pub yaw_impulse: f32,
+    pub yaw_kick: f32,
+    /// The turbo in use has met a wall, and is at half strength.
+    pub turbo_weak: bool,
+    /// A curse's hold on the accelerator: time until it changes, and what it adds.
+    pub curse_timer: f32,
+    pub curse_throttle: f32,
+    /// Where the car last had all four wheels down, clear of any wall.
+    pub safe: (Vec3, Quat),
+    /// A push from a shielded car: its acceleration and the time left of it.
+    pub shove: (Vec3, f32),
+    noise: u32,
     /// Turning tighter than the tyres can hold.
     pub slipping: bool,
     /// Smoothed steering input, -1..1 (positive is left).
@@ -90,8 +136,14 @@ pub struct Kart {
     pub held: Option<Power>,
     /// White bricks collected: the level the held power-up will fire at.
     pub whites: u8,
+    /// White bricks knocked out of the car since the bricks last looked.
+    pub white_drops: u8,
+    /// A coloured brick has just been taken.
+    pub collected: bool,
     /// Whirling round on the spot.
     pub spin: f32,
+    /// How fast, in radians a second.
+    pub spin_rate: f32,
     /// Blown into the air, with no control.
     pub spin_out: f32,
     pub boost: f32,
@@ -141,12 +193,21 @@ pub struct Kart {
     pub cues: Cues,
     /// The event of a pass-through surface the kart has just driven through.
     pub touched: Option<i32>,
+    /// The car has touched a surface that ends its race.
+    pub ended: bool,
     /// The horn has just sounded.
     pub honked: bool,
     /// Where this kart has just struck another.
     pub sparks: Option<Vec3>,
     /// The recorded drive this car plays back, if it is one of the computer's.
     pub route: Option<crate::opponent::RoutePlay>,
+    /// The player's car, its race run, making its way onto a recording.
+    pub returning: Option<Return>,
+    /// Floating clear of the road: the strongest turbo's doing, or a magnet's
+    /// (`Racer::Halt`). How high it has risen, and how far it leans.
+    pub hover: bool,
+    pub hover_lift: f32,
+    pub hover_bank: f32,
 }
 
 /// Multipliers from the car's handling, top speed and acceleration ratings.
@@ -200,6 +261,18 @@ impl Kart {
             wall_contact: false,
             air_time: 0.0,
             sliding: false,
+            slide_tight: false,
+            drifting: false,
+            slip_ratio: 0.0,
+            turn_radius: 0.0,
+            yaw_impulse: 0.0,
+            yaw_kick: 0.0,
+            turbo_weak: false,
+            curse_timer: 0.0,
+            curse_throttle: 0.0,
+            safe: (pos, Quat::from_rotation_y(yaw)),
+            shove: (Vec3::ZERO, 0.0),
+            noise: 0x9e37_79b9 ^ slot as u32,
             slipping: false,
             steer: 0.0,
             wheel_angle: 0.0,
@@ -214,7 +287,10 @@ impl Kart {
             out: None,
             held: None,
             whites: 0,
+            white_drops: 0,
+            collected: false,
             spin: 0.0,
+            spin_rate: physics::SPIN_RATE,
             spin_out: 0.0,
             boost: 0.0,
             boost_level: 0,
@@ -240,9 +316,14 @@ impl Kart {
             engine_pitch: 1.0,
             cues: Cues::default(),
             touched: None,
+            ended: false,
             honked: false,
             sparks: None,
             route: None,
+            returning: None,
+            hover: false,
+            hover_lift: 0.0,
+            hover_bank: 0.0,
         }
     }
 
@@ -293,17 +374,74 @@ impl Kart {
 
     /// Whirls the kart round `turns` times, unless protected.
     pub fn spin_round(&mut self, turns: f32) {
+        self.spin_at(turns, physics::SPIN_RATE);
+    }
+
+    /// `RacerPhysics::StartSpin`: `turns` times round at `rate` radians a second.
+    pub fn spin_at(&mut self, turns: f32, rate: f32) {
         if self.vulnerable() && self.spin <= 0.0 {
-            self.spin = turns * TAU / physics::SPIN_RATE;
+            (self.spin, self.spin_rate) = (turns * TAU / rate, rate);
         }
     }
 
-    /// Stops the kart dead and throws it forwards and up, unless protected.
-    pub fn launch(&mut self) {
-        if self.vulnerable() && self.spin_out <= 0.0 {
-            self.vel = self.facing * physics::LAUNCH_FORWARD_SPEED + Vec3::Y * physics::LAUNCH_UP_SPEED;
-            self.spin_out = physics::SPIN_OUT_TIME;
-            self.contacts = 0;
+    /// Stops the kart dead and throws it forwards and up with `force` of the full
+    /// throw, unless protected (`PowerupExplosion::OnEvent`, `LightningAction::OnHitRacer`).
+    /// A car on a recording hops where it is instead (`RacerPhysics::StartSpinOut`).
+    pub fn launch(&mut self, force: f32) -> bool {
+        if !self.vulnerable() {
+            return false;
+        }
+        // A car on a recording is blown up until it comes back down.
+        self.spin_out = if self.route.is_some() { ROUTE_SPIN_OUT } else { physics::SPIN_OUT_TIME };
+        match &mut self.route {
+            Some(route) => route.blow(),
+            None => {
+                self.vel = (self.facing * physics::LAUNCH_FORWARD_SPEED + Vec3::Y * physics::LAUNCH_UP_SPEED) * force;
+                self.contacts = 0;
+            }
+        }
+        true
+    }
+
+    /// `Racer::AttachCurse`: cursed for so long, which ends any turbo.
+    pub fn curse(&mut self, time: f32) {
+        (self.cursed, self.boost) = (time, 0.0);
+    }
+
+    /// `Racer::ApplyShove`: pushed for a while, unless being pushed already.
+    pub fn shove_with(&mut self, push: Vec3) {
+        if self.shove.1 <= 0.0 {
+            self.shove = (push, SHOVE_TIME);
+        }
+    }
+
+    fn random(&mut self, below: u32) -> u32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        self.noise % below
+    }
+
+    /// `RacerPhysics::StartBoost`: a cursed car gets no turbo.
+    pub fn start_boost(&mut self, level: u8) {
+        if self.cursed <= 0.0 {
+            (self.boost, self.boost_level) = (crate::items::TURBO_TIMES[level.min(2) as usize], level);
+            // `Racer::StartTurbo`: at full strength, and going the way the car points.
+            self.turbo_weak = false;
+            self.facing = (self.rot * Vec3::NEG_Z).normalize_or(self.facing);
+        }
+    }
+
+    /// Held by a magnet and brought to rest (`Racer::Halt`).
+    pub fn halted(&self) -> bool {
+        self.magnet > 0.0 && self.vel.length() <= 2.0 * UNIT
+    }
+
+    /// `Racer::DropWhiteBrick`: a hit knocks one of the white bricks out onto the road.
+    pub fn drop_white(&mut self) {
+        if self.whites > 0 {
+            self.whites -= 1;
+            self.white_drops += 1;
         }
     }
 
@@ -393,12 +531,93 @@ impl Kart {
     }
 }
 
+/// `DriveController::StartReturnToPath`: the recording being made for, how far along
+/// its lap the place aimed at is, that place and the way the recording faces there,
+/// and getting unstuck.
+pub struct Return {
+    record: std::sync::Arc<crate::assets::route::Record>,
+    ahead: f32,
+    target: Vec3,
+    heading: Vec3,
+    stuck: f32,
+    reversing: bool,
+}
+
+/// `DriveController::UpdateReturnToPath`: the place aimed at is reached this close,
+/// moved on when this close (or pointing the wrong way) but not from farther than
+/// this, by this much of the recording; the car goes at this part of full thrust.
+const RETURN_ARRIVE: f32 = 3.0 * UNIT;
+const RETURN_NEAR: f32 = 30.0 * UNIT;
+const RETURN_FAR: f32 = 80.0 * UNIT;
+const RETURN_STEP: f32 = 250.0;
+const RETURN_START: f32 = 1000.0;
+const RETURN_THRUST: f32 = 18.0 / 54.0;
+/// `UpdateStuckDetection`: slower than this for a second, the car backs up for two.
+const STUCK_SPEED: f32 = 9.0 * UNIT;
+
+impl Return {
+    fn new(record: std::sync::Arc<crate::assets::route::Record>) -> Self {
+        let (target, heading) = RoutePlay::preview(&record, RETURN_START);
+        Return { record, ahead: RETURN_START, target, heading, stuck: 0.0, reversing: false }
+    }
+
+    /// The turn and thrust that take the car on towards the recording, or the
+    /// recording itself once the car is on it.
+    fn drive(&mut self, k: &Kart, dt: f32) -> Result<(f32, f32), RoutePlay> {
+        let delta = self.target - k.pos;
+        let distance = delta.length();
+        if distance < RETURN_ARRIVE {
+            return Err(RoutePlay::at_loop(self.record.clone(), self.ahead));
+        }
+        self.stuck += dt;
+        let forward_speed = k.vel.dot(k.facing);
+        if k.spin > 0.0 {
+            (self.stuck, self.reversing) = (0.0, false);
+        } else if self.reversing {
+            if self.stuck >= 2.0 {
+                (self.stuck, self.reversing) = (0.0, false);
+            }
+        } else if forward_speed.abs() > STUCK_SPEED {
+            self.stuck = 0.0;
+        } else if self.stuck >= 1.0 {
+            (self.stuck, self.reversing) = (0.0, true);
+        }
+        // The circle that leaves the car's nose and passes through the place.
+        let left = k.rot * Vec3::NEG_X;
+        let to_left = left.dot(delta) >= 0.0;
+        let closing = left.dot(delta / distance).abs();
+        let mut radius = if closing < 0.0005 { 4096.0 * UNIT } else { distance / (2.0 * closing) };
+        if !to_left {
+            radius = -radius;
+        }
+        let mut thrust = RETURN_THRUST;
+        if self.reversing {
+            (radius, thrust) = (-radius, -1.0);
+        }
+        let pointing = if k.contacts >= 3 { k.rot * Vec3::NEG_Z } else { k.facing };
+        if (distance < RETURN_NEAR || self.heading.dot(pointing) < 0.5) && distance <= RETURN_FAR {
+            self.ahead += RETURN_STEP;
+            (self.target, self.heading) = RoutePlay::preview(&self.record, self.ahead);
+        }
+        Ok((radius, thrust))
+    }
+}
+
 #[derive(Component, Default)]
 pub struct Controls {
     pub throttle: f32,
     pub steer: f32,
+    /// The slide is asked for: the slide key with the accelerator down.
     pub drift: bool,
+    /// The brake is down too, which makes a slide the tight one.
+    pub tight: bool,
     pub use_item: bool,
+    /// `DriveController::UpdateReturnToPath` sets the turn and the thrust themselves:
+    /// the turn's radius, to the left if positive, and the thrust as a part of full.
+    pub course: Option<(f32, f32)>,
+    /// Steering is taken as it is given, not turned at the original's rates: for the
+    /// port's own driver, which the original has none of, and its quick steering.
+    pub direct: bool,
 }
 
 #[derive(Component)]
@@ -410,7 +629,19 @@ pub struct Ai {
     skill: f32,
     lane: f32,
     lane_timer: f32,
-    use_timer: f32,
+    /// `Racer::UpdateTimers`: time since the driver last thought about the brick it
+    /// holds, and how long it leaves between thoughts.
+    check: f32,
+    interval: f32,
+    /// Out of 256, how likely the driver is to use a red, yellow, green or blue brick
+    /// when it thinks of it.
+    chances: [u32; 4],
+    /// The colour the driver saves white bricks for, and how many.
+    charge: Option<(Power, u8)>,
+    /// Time until the driver may sound its horn at a car ahead.
+    taunt: f32,
+    /// The race has begun for this driver (`Racer::OnRaceStart`).
+    started: bool,
     /// Time spent going nowhere, and time left backing out of it.
     stuck: f32,
     reversing: f32,
@@ -433,13 +664,50 @@ pub struct Wheel {
 #[derive(Component)]
 pub struct Shield;
 
+/// `Racer::Initialize`: a driver's keenness on a colour, 0 to 100, as a chance in 256.
+fn chance(keenness: i32) -> u32 {
+    ((keenness as f32 * 0.8 * 100.0 * 0.011_111_111 * 0.01 + 0.2).min(1.0) * 255.0) as u32
+}
+
+/// How often a driver thinks about the brick it holds; how long it waits after
+/// picking one up, and after deciding against using it.
+const AI_CHECK: f32 = 0.15;
+const AI_CHECK_COLLECTED: f32 = 0.3;
+const AI_CHECK_PUT_OFF: f32 = 1.0;
+/// A driver only fires a red brick with a car this far ahead, in this cone.
+const AI_RED_TARGET: (f32, f32, f32) = (10.0 * UNIT, 250.0 * UNIT, 0.96);
+/// A driver sounds its horn at a car within this distance ahead, in this cone, and
+/// looks for one this often.
+const AI_TAUNT_TARGET: (f32, f32) = (13.0 * UNIT, 0.3);
+const AI_TAUNT_WAIT: f32 = 2.0;
+/// The field is not paced against the player until the race is this old (`RaceSetup`).
+const RUBBER_BAND_DELAY: f32 = 15.0;
+
 impl Ai {
+    /// Takes the driver's habits from the game's table.
+    fn knows(&mut self, driver: &crate::roster::Driver) {
+        self.chances = driver.keenness.map(chance);
+        let colour = match driver.charge.0 {
+            1 => Some(Power::Red),
+            2 => Some(Power::Blue),
+            3 => Some(Power::Green),
+            4 => Some(Power::Yellow),
+            _ => None,
+        };
+        self.charge = colour.map(|colour| (colour, driver.charge.1.clamp(0, 3) as u8));
+    }
+
     fn new(skill: f32, slot: usize) -> Self {
         Ai {
             skill,
             lane: 0.0,
             lane_timer: slot as f32 * 0.7,
-            use_timer: 2.0 + slot as f32,
+            check: 0.0,
+            interval: AI_CHECK,
+            chances: [50; 4].map(chance),
+            charge: None,
+            taunt: AI_TAUNT_WAIT + slot as f32,
+            started: false,
             stuck: 0.0,
             reversing: 0.0,
         }
@@ -455,14 +723,16 @@ impl Ai {
 
         // Steer at a point a little way up the road.
         let speed = k.vel.length();
-        let to = track.point(k.s + 8.0 + speed * 0.4, self.lane) - k.pos;
+        // Where part of the road is shut, the open part is steered for.
+        let ahead = k.s + 8.0 + speed * 0.4;
+        let to = track.point(ahead, track.lane(ahead, self.lane)) - k.pos;
         let err = wrap_angle((-to.x).atan2(-to.z) - k.yaw);
         c.steer = (err * 3.0).clamp(-1.0, 1.0);
 
         // Brake for the tightest corner coming up.
         let tightest = (2..18).map(|j| track.curv[(k.idx + j) % track.n()]).fold(1e-4, f32::max);
         c.throttle = if speed > (AI_LAT_ACCEL / tightest).sqrt() { -0.6 } else { 1.0 };
-        c.drift = false;
+        (c.drift, c.tight, c.direct) = (false, false, true);
 
         // Wedged against something: back out with the wheels turned the other way.
         self.stuck = if speed < 2.0 && k.spin <= 0.0 { self.stuck + dt } else { 0.0 };
@@ -575,10 +845,17 @@ pub fn spawn_karts(
                 skill = 1.0;
             }
         }
+        let mut habits = Ai::new(skill * settings.ai_pace(), slot);
+        if let Some(entry) = loaded.as_ref().and_then(|loaded| loaded.field.get(slot)).filter(|_| slot != player_slot) {
+            habits.knows(entry);
+        } else if slot == player_slot {
+            // `RaceState::CreateRacer`: a player's own driver is keen on everything.
+            habits.chances = [100; 4].map(chance);
+        }
         let mut kart = commands.spawn((
             state,
             Controls::default(),
-            Ai::new(skill * settings.ai_pace(), slot),
+            habits,
             RacerAudio::default(),
             crate::kart_effects::Effects::default(),
             Transform::default(),
@@ -646,6 +923,7 @@ pub fn player_input(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     race: Res<Race>,
+    settings: Res<Settings>,
     pause: Res<crate::Pause>,
     photo: Res<crate::replay::Photo>,
     mut start: Local<StartBoost>,
@@ -663,9 +941,20 @@ pub fn player_input(
     let axis = |pos: [KeyCode; 2], neg: [KeyCode; 2]| {
         keys.any_pressed(pos) as i32 as f32 - keys.any_pressed(neg) as i32 as f32
     };
-    c.throttle = axis([KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown]);
+    // `PlayerControls::UpdateThrottle`: a slide is the slide key with the accelerator
+    // down, and holds the accelerator full on; without it, accelerator and brake
+    // together are half throttle.
+    let (go, stop) = (keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]), keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]));
     c.steer = axis([KeyCode::KeyA, KeyCode::ArrowLeft], [KeyCode::KeyD, KeyCode::ArrowRight]);
-    c.drift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    c.drift = go && keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    c.tight = stop;
+    c.throttle = match (go, stop) {
+        (true, _) if c.drift => 1.0,
+        (true, true) => 0.5,
+        (go, stop) => go as i32 as f32 - stop as i32 as f32,
+    };
+    // The port's quick steering takes the keys as they are.
+    c.direct = settings.quick_steering;
     c.use_item = keys.just_pressed(KeyCode::Space);
 
     let dt = time.delta_secs();
@@ -691,8 +980,7 @@ pub fn player_input(
         fire = true;
     }
     if fire {
-        let level = (start.window >= BOOST_WINDOW_STRONG) as u8;
-        (kart.boost, kart.boost_level) = (crate::items::TURBO_TIMES[level as usize], level);
+        kart.start_boost((start.window >= BOOST_WINDOW_STRONG) as u8);
         start.window = 0.0;
     }
     start.racing = racing;
@@ -704,28 +992,79 @@ pub fn ai_drive(
     race: Res<Race>,
     variant: Res<crate::variant::Variant>,
     mut rng: ResMut<Rng>,
+    loaded: Option<Res<LoadedWorld>>,
     mut q: Query<(&mut Kart, &mut Ai, &mut Controls, Has<Player>)>,
 ) {
     let dt = time.delta_secs();
     let racing = matches!(race.phase, Phase::Racing | Phase::Finished);
     let player_progress = q.iter().find(|x| x.3).map_or(0.0, |x| x.0.progress);
+    let cars: Vec<(usize, Vec3)> = q.iter().filter(|x| x.0.out.is_none()).map(|x| (x.0.slot, x.0.pos)).collect();
+    // The nearest other car between two distances inside a cone ahead.
+    let ahead = |k: &Kart, (min, max, cone): (f32, f32, f32)| {
+        let forward = k.rot * Vec3::NEG_Z;
+        cars.iter().any(|&(slot, at)| {
+            let to = at - k.pos;
+            let distance = to.length();
+            slot != k.slot && (min..=max).contains(&distance) && to.dot(forward) >= cone * distance
+        })
+    };
     for (mut k, mut ai, mut c, is_player) in &mut q {
         if (is_player && k.finished.is_none() && !race.demo) || k.out.is_some() {
+            ai.started = racing;
             continue;
         }
-        // A car on a recording is paced, not driven: the leader of the player held
-        // back a little, anyone behind hurried.
-        let ahead = k.progress > player_progress;
+        // A car on a recording is paced, not driven: once the race has settled, ahead
+        // of the player it is held back a little, and behind it hurried (`RaceSetup::Update`).
+        let band = if race.time < RUBBER_BAND_DELAY || k.progress == player_progress {
+            None
+        } else if k.progress > player_progress {
+            Some(1.0 - RUBBER_BAND)
+        } else {
+            Some(1.0 + RUBBER_BAND)
+        };
+        let skill = ai.skill;
         if let Some(route) = &mut k.route {
             route.racing = racing;
-            let band = if ahead { 1.0 - RUBBER_BAND } else { 1.0 + RUBBER_BAND };
-            route.base = ai.skill * (band + variant.rubber_band_boost());
+            if race.time < RUBBER_BAND_DELAY {
+                route.base = skill;
+            } else if let Some(band) = band {
+                route.base = skill * (band + variant.rubber_band_boost());
+            }
         }
         if !racing {
             *c = Controls::default();
+            ai.started = false;
             continue;
         }
-        if k.route.is_none() {
+        // `Racer::OnRaceStart`: a driver keen on green bricks may be off with a turbo.
+        if !ai.started {
+            ai.started = true;
+            if !is_player && (rng.range(0.0, 256.0) as u32) < ai.chances[2] {
+                k.start_boost(0);
+            }
+        }
+        // `Racer::SwitchToAiControl`: the player's car, its race run, is driven onto
+        // the recording that begins nearest to it and then plays that.
+        if is_player && !race.demo && k.route.is_none() && k.returning.is_none() && !variant.reverse {
+            let nearest = loaded.as_ref().and_then(|loaded| {
+                let begins = |record: &std::sync::Arc<crate::assets::route::Record>| RoutePlay::loop_start(record).distance_squared(k.pos);
+                loaded.routes.iter().min_by(|a, b| begins(a).total_cmp(&begins(b)))
+            });
+            k.returning = nearest.map(|record| Return::new(record.clone()));
+        }
+        c.course = None;
+        if let Some(mut returning) = k.returning.take() {
+            match returning.drive(&k, dt) {
+                Ok(course) => {
+                    *c = Controls { course: Some(course), ..default() };
+                    k.returning = Some(returning);
+                }
+                Err(route) => {
+                    k.route = Some(route);
+                    *c = Controls::default();
+                }
+            }
+        } else if k.route.is_none() {
             ai.drive(&k, &mut c, &track, &mut rng, dt);
         }
 
@@ -740,17 +1079,58 @@ pub fn ai_drive(
                 1.0
             };
 
+        // `Racer::UpdateTimers` and `AiConsiderPowerup`.
         c.use_item = false;
-        if k.held.is_some() {
-            ai.use_timer -= dt;
-            if ai.use_timer <= 0.0 {
-                c.use_item = true;
-                ai.use_timer = rng.range(1.5, 5.0);
+        if std::mem::take(&mut k.collected) {
+            (ai.check, ai.interval) = (0.0, AI_CHECK_COLLECTED);
+        }
+        ai.check += dt;
+        if ai.check > ai.interval {
+            (ai.check, ai.interval) = (0.0, AI_CHECK);
+            if let Some(held) = k.held {
+                let mut keen = |colour: usize| (rng.range(0.0, 256.0) as u32) < ai.chances[colour];
+                let saving = ai.charge.is_some_and(|(colour, wanted)| colour == held && k.whites < wanted);
+                let fire = if saving {
+                    None
+                } else {
+                    match held {
+                        Power::Green => Some(keen(2)).filter(|keen| !*keen || !(k.spin > 0.0 || (k.finished.is_some() && k.whites == 3))),
+                        // A red brick waits for something to shoot at.
+                        Power::Red => ahead(&k, AI_RED_TARGET).then(|| keen(0)),
+                        Power::Yellow => Some(keen(1)),
+                        Power::Blue => Some(keen(3)),
+                    }
+                };
+                match fire {
+                    Some(true) => c.use_item = true,
+                    Some(false) => ai.interval = AI_CHECK_PUT_OFF,
+                    None if saving => ai.interval = AI_CHECK_PUT_OFF,
+                    None => {}
+                }
+            }
+        }
+
+        // A driver with a car right in front of it sounds its horn.
+        ai.taunt -= dt;
+        if ai.taunt <= 0.0 {
+            ai.taunt = AI_TAUNT_WAIT;
+            if ahead(&k, (0.0, AI_TAUNT_TARGET.0, AI_TAUNT_TARGET.1)) {
+                k.cues.horn = true;
+                ai.taunt += rng.range(0.0, 65536.0).floor() * 0.008;
             }
         }
     }
 }
 
+/// What every champion's car weighs.
+const CAR_MASS: f32 = 4500.0;
+/// How much of their closing speed two cars bounce apart with.
+const COLLISION_RESTITUTION: f32 = 0.75;
+/// A shield of the second strength shoves a car that touches it side on, with this
+/// acceleration; the stronger ones spin it, at this rate.
+const SHIELD_SHOVE: f32 = 200.0 * UNIT;
+const SHIELD_SHOVE_CONE: f32 = 0.7;
+const SHIELD_SPIN_RATE: f32 = 9.0;
 /// Gap between one kart's scraping sounds.
 const SCRAPE_COOLDOWN: f32 = 0.25;
 
@@ -783,14 +1163,61 @@ impl Kart {
             &mut k.cursed,
             &mut k.magnet,
             &mut k.warp,
+            &mut k.yaw_impulse,
+            &mut k.shove.1,
         ] {
             *timer = (*timer - dt).max(0.0);
         }
-        let steer = if k.spin > 0.0 || k.spin_out > 0.0 { 0.0 } else { c.steer };
-        k.steer += (steer - k.steer) * (1.0 - (-10.0 * dt).exp());
+        if c.direct {
+            k.steer += (c.steer - k.steer) * (1.0 - (-10.0 * dt).exp());
+        } else {
+            // `PlayerControls::UpdateSteering`.
+            let rate = match (k.drifting, k.slide_tight) {
+                (true, true) => STEER_SLIDE_RATE,
+                (true, false) => STEER_DRIFT_RATE,
+                (false, _) if c.steer.abs() >= 1.0 => STEER_RATE,
+                (false, _) => STEER_IDLE_RATE,
+            };
+            let (side, held) = (c.steer.signum(), c.steer.abs().min(1.0));
+            if held == 0.0 {
+                // Let go, the wheels come back to the middle and stop there.
+                k.steer -= k.steer.signum() * (STEER_RETURN_RATE * dt).min(k.steer.abs());
+            } else {
+                let turn = if k.steer * side < 0.0 {
+                    STEER_RETURN_RATE
+                } else if held >= 1.0 {
+                    rate
+                } else {
+                    ((1.0 - held) * 0.5 + 0.5) * rate
+                };
+                k.steer = if side > 0.0 { (k.steer + turn * dt).min(held) } else { (k.steer - turn * dt).max(-held) };
+            }
+        }
+        // `DriveController::Update`: a curse leans on the accelerator, changing its
+        // mind every half second or less.
+        if k.cursed > 0.0 {
+            k.curse_timer -= dt;
+            if k.curse_timer < 0.0 {
+                k.curse_timer = k.random(500) as f32 * 0.001;
+                k.curse_throttle = k.random(200) as f32 * 0.01 - 1.0;
+            }
+        }
+        if k.shove.1 > 0.0 {
+            k.external_force += k.shove.0;
+        }
 
         if k.route.is_some() {
+            let mark = k.route.as_ref().map(|route| route.mark());
             k.play_route(dt);
+            // Something solid that isn't the circuit itself (a shut door, say) turns
+            // a car on a recording back.
+            let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
+            if track.collision.wall(from + lift, k.pos + lift).is_some_and(|hit| hit.tag != 0) {
+                if let (Some(route), Some(mark)) = (&mut k.route, mark) {
+                    route.back_off(mark);
+                }
+                (k.pos, k.vel) = (from, Vec3::ZERO);
+            }
         } else if let (true, Some((from, to, facing))) = (warping, k.warp_to) {
             // Taken straight to where the warp comes out.
             k.pos = to - (to - from) * (k.warp / crate::items::WARP_TIME).clamp(0.0, 1.0);
@@ -811,14 +1238,40 @@ impl Kart {
             // Dropped back onto the road at speed when it ends.
             k.vel = k.facing * WARP_EXIT_SPEED;
             k.contacts = 4;
-        } else if k.magnet > 0.0 {
-            k.vel = Vec3::ZERO;
         } else {
             let steps = (dt / MAX_STEP).ceil().max(1.0);
             for _ in 0..steps as usize {
                 physics::step(k, c, &track.collision, dt / steps);
             }
+            // `Racer::UpdateTimers`: a car that drives for itself is over being blown
+            // up at once; it is only ever thrown.
+            k.spin_out = 0.0;
+            if k.contacts == 4 && !k.wall_contact {
+                k.safe = (k.pos, k.rot);
+            }
         }
+        // `Racer::Halt` and `Resume`: the strongest turbo floats the car, and so does
+        // a magnet once it has stopped it. The turbo gives out early on a car that
+        // isn't getting anywhere (`TurboAction::Update`).
+        let turbo = k.boost > 0.0 && k.boost_level == 2;
+        if turbo && k.boost > TURBO_FADE && k.boost < TURBO_FADE + TURBO_EARLY_END && k.vel.length() < physics::MOVING_SPEED {
+            k.boost = TURBO_FADE;
+        }
+        k.hover = turbo || (k.magnet > 0.0 && (k.hover || k.halted()));
+        let rise = |lift: f32, target: f32, rate: f32| lift + (target - lift).clamp(-rate * dt, rate * dt);
+        k.hover_lift = match (k.hover || warping, k.route.is_some()) {
+            (true, _) => rise(k.hover_lift, HOVER_HEIGHT, HOVER_RISE),
+            // A car on a recording settles; one that drives is simply down.
+            (false, true) => rise(k.hover_lift, 0.0, HOVER_FALL),
+            (false, false) => 0.0,
+        };
+        // `ComputeSlideBankTarget`: it leans into the turn it is set to.
+        let lean = if k.hover && k.route.is_none() && k.turn_radius != 0.0 {
+            -k.turn_radius.signum() * (1.0 - (k.turn_radius.abs() / (4096.0 * UNIT)).min(1.0)) * HOVER_BANK
+        } else {
+            0.0
+        };
+        k.hover_bank = if k.hover { rise(k.hover_bank, lean, HOVER_BANK_RATE) } else { 0.0 };
         k.external_force = Vec3::ZERO;
         let forward = k.rot * Vec3::NEG_Z;
         k.yaw = (-forward.x).atan2(-forward.z);
@@ -832,13 +1285,20 @@ impl Kart {
         }
         (k.idx, k.s, k.lat) = (idx, s, lat);
 
-        // Fallen out of the world, or flying for far too long: back onto the road.
-        if k.air_time > 4.0 || k.pos.y < track.pts[idx].y - 60.0 {
-            k.place(track, s, 0.0);
+        // Out of the world: back to where the car last stood.
+        if k.route.is_none() && !warping && !(WORLD_HEIGHTS.0 * UNIT..=WORLD_HEIGHTS.1 * UNIT).contains(&k.pos.y) {
+            (k.pos, k.rot) = k.safe;
+            k.vel = Vec3::ZERO;
+            k.facing = (k.rot * Vec3::NEG_Z).normalize_or(k.facing);
+            (k.idx, k.s, k.lat) = track.project(k.pos, track.nearest(k.pos));
         } else {
             let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
             if let Some(hit) = track.collision.touched(from + lift, k.pos + lift) {
                 k.touched = hit.surface.touch_event;
+                // `RacerPhysics::OnCollisionRecord`: a finishing surface ends the race.
+                if hit.surface.finish {
+                    k.ended = true;
+                }
             }
             k.follow_course(track, from);
         }
@@ -856,11 +1316,14 @@ impl Kart {
     }
 }
 
+/// `Racer::OnEvent`: cars that meet are parted and bounce off each other; a shield
+/// shoves or spins the car that touches it, and a curse is passed on.
 pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player>)>) {
     let mut pairs = q.iter_combinations_mut();
     while let Some([(mut a, a_player), (mut b, b_player)]) = pairs.fetch_next() {
-        // Karts on different levels (a bridge, say) or in warp pass each other by.
-        if (a.pos.y - b.pos.y).abs() > 2.0 || a.warp > 0.0 || b.warp > 0.0 {
+        // Karts on different levels (a bridge, say), in warp or blown into the air
+        // pass each other by.
+        if (a.pos.y - b.pos.y).abs() > 2.0 || a.warp > 0.0 || b.warp > 0.0 || a.spin_out > 0.0 || b.spin_out > 0.0 {
             continue;
         }
         let ((ends_a, radius_a), (ends_b, radius_b)) = (a.hull(), b.hull());
@@ -878,32 +1341,60 @@ pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player
         let Some((overlap, normal)) = worst else { continue };
         a.pos -= normal * overlap * 0.5;
         b.pos += normal * overlap * 0.5;
-        let closing = (b.vel - a.vel).dot(normal).min(0.0);
-        // Cars on recordings are moved off their line, and on or back along it.
-        a.shove(-normal * overlap * 0.5, normal * closing * 0.6);
-        b.shove(normal * overlap * 0.5, -normal * closing * 0.6);
-        if closing < 0.0 {
-            a.vel += normal * closing * 0.6;
-            b.vel -= normal * closing * 0.6;
-            // Only bumps the player is part of are heard.
-            if !(a_player || b_player) {
-                continue;
-            }
-            if a.scrape_cooldown <= 0.0 && b.scrape_cooldown <= 0.0 {
+        // Equal weights, and so each car takes half of what the bounce gives back.
+        let closing = (b.vel - a.vel).dot(normal) * (1.0 + COLLISION_RESTITUTION) * 0.5;
+        // Cars on recordings are moved off their line, and on or back along it, by
+        // the blow in the game's own units: its weight of car, its speeds.
+        let blow = -closing / UNIT * CAR_MASS / 1000.0;
+        a.shove(-normal * overlap * 0.5, -normal, blow);
+        b.shove(normal * overlap * 0.5, normal, blow);
+        a.vel += normal * closing;
+        b.vel -= normal * closing;
+
+        // Only bumps the player is part of are heard.
+        if a_player || b_player {
+            let (hitter, hit) = if a.vel.length_squared() > b.vel.length_squared() { (&mut a, &mut b) } else { (&mut b, &mut a) };
+            if hitter.scrape_cooldown <= 0.0 && hit.scrape_cooldown <= 0.0 {
                 let sound = id::CAR_HITS[sfx.roll(2) as usize];
-                sfx.play_at(sound, (a.pos + b.pos) * 0.5);
-                let contact = (a.pos + b.pos) * 0.5 + Vec3::Y * 0.6;
-                (a.sparks, b.sparks) = (Some(contact), Some(contact));
-                a.scrape_cooldown = SCRAPE_COOLDOWN;
-                b.scrape_cooldown = SCRAPE_COOLDOWN;
+                let contact = (hitter.pos + hit.pos) * 0.5;
+                sfx.play_at(sound, contact);
+                (hitter.sparks, hit.sparks) = (Some(contact + Vec3::Y * 0.6), Some(contact + Vec3::Y * 0.6));
+                hitter.scrape_cooldown = SCRAPE_COOLDOWN;
+                hit.scrape_cooldown = SCRAPE_COOLDOWN;
             }
             // Whoever ran into the other grumbles, unless a shield spared them.
-            let (hitter, hit) = if a.vel.length_squared() > b.vel.length_squared() { (&mut a, &mut b) } else { (&mut b, &mut a) };
             if hitter.shielded() {
                 hit.cues.reaction = Some(false);
             } else {
                 hitter.cues.reaction = Some(false);
             }
+        }
+
+        let touched = |shielded: &Kart, other: &mut Kart, away: Vec3| {
+            if !shielded.shielded() || other.shielded() {
+                return;
+            }
+            match shielded.shield_level {
+                // Struck in the side, the other car is pushed off.
+                1 if (other.rot * Vec3::NEG_Z).dot(away).abs() < SHIELD_SHOVE_CONE => other.shove_with(away * SHIELD_SHOVE),
+                2 => other.spin_at(1.0, SHIELD_SPIN_RATE),
+                3 => other.spin_at(2.0, SHIELD_SPIN_RATE),
+                _ => {}
+            }
+        };
+        touched(&a, &mut b, normal);
+        touched(&b, &mut a, -normal);
+        // A curse goes to the car that touches its bearer.
+        let passed = |cursed: &mut Kart, other: &mut Kart| {
+            let passes = cursed.cursed > 0.0 && other.cursed <= 0.0 && !other.shielded();
+            if passes {
+                other.curse(cursed.cursed);
+                cursed.cursed = 0.0;
+            }
+            passes
+        };
+        if !passed(&mut a, &mut b) {
+            passed(&mut b, &mut a);
         }
     }
 }
@@ -925,7 +1416,7 @@ pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut
         .map(|mut k| {
             // The rest of the field goes on finishing after the player has.
             let timed = matches!(race.phase, Phase::Racing | Phase::Finished);
-            if timed && k.finished.is_none() && k.out.is_none() && k.lap > settings.laps() {
+            if timed && k.finished.is_none() && k.out.is_none() && (k.lap > settings.laps() || k.ended) {
                 k.finished = Some(race.time);
             }
             (place_key(&k), k)
@@ -947,9 +1438,15 @@ pub fn sync_karts(mut q: Query<(&Kart, &mut Transform, &mut Visibility, Has<Play
     for (k, mut t, mut visibility, is_player) in &mut q {
         visibility.set_if_neq(if k.out.is_some() { Visibility::Hidden } else { Visibility::Inherited });
         // Lean into corners.
-        let lean = if k.warp > 0.0 { 0.0 } else { -k.steer * 0.07 * (k.vel.length() / MAX_SPEED).min(1.0) };
+        let lean = if k.warp > 0.0 {
+            0.0
+        } else if k.hover {
+            k.hover_bank
+        } else {
+            -k.steer * 0.07 * (k.vel.length() / MAX_SPEED).min(1.0)
+        };
         // The player's warp is seen from a tunnel, which is put well away from the circuit.
-        t.translation = k.pos + if is_player && k.warp > 0.0 { TUNNEL } else { Vec3::ZERO };
+        t.translation = k.pos + Vec3::Y * k.hover_lift + if is_player && k.warp > 0.0 { TUNNEL } else { Vec3::ZERO };
         t.rotation = k.rot * Quat::from_rotation_z(lean);
         // A warp opening swallows the car over its last quarter second.
         let size = if k.warp_start > 0.0 { (k.warp_start / WARP_SHRINK).min(1.0) } else { 1.0 };
@@ -1050,10 +1547,16 @@ mod tests {
         laps
     }
 
+    /// Long enough for two laps and the run up to the line, the longer the circuit.
+    fn lapping_time(track: &Track) -> f32 {
+        150.0f32.max(track.length * 0.09)
+    }
+
     #[test]
     fn ai_laps_the_built_in_circuits() {
         for layout in crate::track::Layout::ALL {
-            let laps = solo_run(&Track::built(layout), 150.0);
+            let track = Track::built(layout);
+            let laps = solo_run(&track, lapping_time(&track));
             assert!(laps.len() >= 3, "{layout:?} {laps:?}");
         }
     }
@@ -1063,9 +1566,34 @@ mod tests {
         for layout in crate::track::Layout::ALL {
             let mut track = Track::built(layout);
             track.reverse();
-            let laps = solo_run(&track, 150.0);
+            let laps = solo_run(&track, lapping_time(&track));
             assert!(laps.len() >= 3, "{layout:?} {laps:?}");
         }
+    }
+
+    /// Needs the original game data; silently passes without it.
+    #[test]
+    fn a_finished_car_follows_a_recording_round() {
+        let Some((track, world)) = crate::world::load("RACEC0R0") else { return };
+        let mut kart = Kart::new(&track, PLAYER_SLOT);
+        let mut returning = Return::new(world.routes[0].clone());
+        let (start, mut far, mut on_route) = (kart.pos, 0.0f32, false);
+        for _ in 0..(30.0 * 60.0) as usize {
+            let c = match returning.drive(&kart, 1.0 / 60.0) {
+                Ok(course) => Controls { course: Some(course), ..default() },
+                Err(route) => {
+                    kart.route = Some(route);
+                    on_route = true;
+                    break;
+                }
+            };
+            kart.advance(&c, &track, 1.0 / 60.0);
+            far = far.max(kart.pos.distance(start));
+            assert!(kart.pos.is_finite());
+        }
+        println!("went {far:.0} from the grid at up to a third thrust; on the recording: {on_route}");
+        // Half a minute at a third of the thrust takes it well round the circuit.
+        assert!(on_route || far > 100.0, "{far}");
     }
 
     /// Needs the original game data; silently passes without it.

@@ -96,6 +96,10 @@ pub struct Surface {
     pub rolling_resistance: f32,
     pub friction: f32,
     pub lateral_grip: f32,
+    /// How steep it has to be, as the sine of its slope, before a car slides down it.
+    pub support: f32,
+    /// Touching it ends the race for the car that does.
+    pub finish: bool,
     /// Push applied to karts standing on it (a current, say), in game coordinates.
     pub force: [f32; 3],
     /// Triggers and checkpoints: not part of the solid world.
@@ -120,6 +124,8 @@ impl Default for Surface {
             rolling_resistance: 0.0,
             friction: 0.25,
             lateral_grip: 3.0,
+            support: 0.5,
+            finish: false,
             force: [0.0; 3],
             non_solid: false,
             shots_pass: false,
@@ -149,11 +155,13 @@ pub fn parse_tmb(data: &[u8]) -> HashMap<String, Surface> {
                 let bytes = &name.as_bytes()[..name.len().min(8)];
                 s.particle[..bytes.len()].copy_from_slice(bytes);
             }
+            0x32 => s.support = r.float()?,
             0x33 => s.friction = r.float()?,
             0x34 => s.lateral_grip = r.float()?,
             0x36 => s.rolling_resistance = r.float()?,
             0x37 => s.non_solid = true,
             0x38 => s.shots_pass = true,
+            0x39 => s.finish = true,
             _ => {}
         }
         Some(())

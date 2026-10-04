@@ -167,7 +167,7 @@ impl Collision {
     pub fn touched(&self, from: Vec3, to: Vec3) -> Option<Hit> {
         let dir = to - from;
         let front = |normal: Vec3| (normal.dot(dir) < 0.0) != self.mirrored;
-        self.segment_through(from, to, front, true).filter(|hit| hit.surface.touch_event.is_some())
+        self.segment_through(from, to, front, true).filter(|hit| hit.surface.touch_event.is_some() || hit.surface.finish)
     }
 
     /// Drivable surface on the way straight down from `from`, at most `depth` below.

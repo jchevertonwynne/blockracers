@@ -213,6 +213,29 @@ pub fn parse_start_positions(data: &[u8]) -> Option<Vec<(usize, [f32; 3], [f32; 
     Some(out)
 }
 
+/// `.TGB` target points, which the player's shots lock onto: (position, the event that
+/// puts it out of use). Follows `TgbTargetPointList::Load`.
+pub fn parse_targets(data: &[u8]) -> Option<Vec<([f32; 3], i32)>> {
+    let mut r = Reader::new(data);
+    r.next()?;
+    let mut out = Vec::new();
+    for _ in 0..r.list_header()? {
+        r.next()?;
+        r.expect(Token::LCurly)?;
+        let (mut position, mut index) = ([0.0; 3], -1);
+        loop {
+            match r.next()? {
+                Token::RCurly => break,
+                Token::Key(0x28) => position = r.floats()?,
+                Token::Key(0x29) => index = r.int()?,
+                _ => return None,
+            }
+        }
+        out.push((position, index));
+    }
+    Some(out)
+}
+
 /// Where a collision `.WDB` places each of its volumes: (name, position, forward, up).
 pub fn parse_placements(data: &[u8]) -> Vec<(String, [f32; 3], [f32; 3], [f32; 3])> {
     let tokens = super::tokens::tokenize(data);
@@ -391,4 +414,15 @@ fn the_code_pads_are_for_players_only() {
     let desert = parse_triggers(jam.get("/GAMEDATA/RACEC0R2/NEWTRIG.TRB").unwrap());
     let gated: Vec<_> = desert.iter().filter(|t| t.lap.is_some()).map(|t| (t.event, t.lap)).collect();
     assert_eq!(gated, [(10, Some(1))]);
+}
+
+/// Needs the original game data; silently passes without it.
+#[cfg(test)]
+#[test]
+fn the_circuits_with_things_to_shoot_have_target_points() {
+    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
+    for race in ["RACEC0R1", "RACEC0R2", "RACEC2R0"] {
+        let targets = parse_targets(jam.get(&format!("/GAMEDATA/{race}/{race}.TGB")).unwrap()).unwrap();
+        assert!(!targets.is_empty(), "{race}");
+    }
 }

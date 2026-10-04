@@ -21,7 +21,7 @@ behave, sound and look like the original; the decompilation is the reference for
 - If the original does something the port has no feature for yet, build the feature.
   Don't leave a stand-in without saying so.
 - What the port adds to the original (replays, photo mode, reversed circuits, the brick
-  rules, elimination, the video options) is off until asked for, and says in its
+  rules, elimination, quick steering, the video options) is off until asked for, and says in its
   module comment that it is the port's own.
 - Units: the game's are Z-up; ours are Y-up, with one game unit `physics::UNIT` of
   ours. Use `scenery::to_world` for positions.
@@ -46,7 +46,7 @@ menu instead. These combine with it:
 
 | Variable | Does |
 |---|---|
-| `LEGO_RACE=RACEC0R0` | which race folder to load (`BRICK` and `FIGURE8` are the built-in circuits) |
+| `LEGO_RACE=RACEC0R0` | which race folder to load (`BRICK`, `FIGURE8` and `GAUNTLET` are the built-in circuits; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
 | `BRICK_CAM=x,y,z,tx,ty,tz` | fixed camera, in the game's coordinates |
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
@@ -60,7 +60,7 @@ menu instead. These combine with it:
 | `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras` | menu page to open on |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |
-| `BRICK_BRICKS=red\|yellow\|blue\|green\|none` | what the circuit's bricks are made |
+| `BRICK_BRICKS=red\|yellow\|blue\|green\|none\|random` | what the circuit's bricks are made |
 | `BRICK_OPPONENTS=1` | how many of the computer's cars race |
 | `BRICK_PHOTOS=<folder>` | where photo mode saves (default `screenshots/`) |
 | `BRICK_GHOSTS=<folder>` | where best time-race runs are kept (default `~/.brick_racers_ghosts`) |

@@ -20,6 +20,11 @@ pub struct Driver {
     pub chassis: String,
     /// Which set of voice clips is the driver's.
     pub voice: usize,
+    /// How keen the driver is on each colour of brick: red, yellow, green, blue.
+    pub keenness: [i32; 4],
+    /// The colour the driver saves white bricks up for (1 red, 2 blue, 3 green,
+    /// 4 yellow; 0 for none), and how many.
+    pub charge: (i32, i32),
 }
 
 impl Driver {
@@ -156,6 +161,15 @@ pub fn driver(jam: &Jam, code: &str) -> Option<Driver> {
         car: text(car, 0x29)?.trim_end_matches("cm").to_uppercase(),
         chassis: text(car, 0x2b)?,
         voice: number(fields, 0x34).unwrap_or(1) as usize,
+        keenness: [0x2c, 0x2d, 0x2e, 0x2f].map(|key| number(fields, key).unwrap_or(0)),
+        charge: {
+            let at = fields.iter().position(|t| *t == Token::Key(0x3a));
+            let int = |i: usize| match at.and_then(|at| fields.get(at + i)) {
+                Some(Token::Int(v)) => *v,
+                _ => 0,
+            };
+            (int(1), int(2))
+        },
     })
 }
 

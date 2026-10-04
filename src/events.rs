@@ -115,6 +115,9 @@ pub struct TrackEvents {
     inside: Vec<Vec<Entity>>,
     /// Everything that has started or ended since the hazards last looked.
     pub fired: Vec<Fired>,
+    /// Every event that has started: each puts the target points numbered for it out
+    /// of use (`TargetPointList::DisableTargetPoints`).
+    pub started: Vec<i32>,
     /// What events do to the sky, and the changes asked for since the sky last looked.
     skies: Vec<crate::sky::Change>,
     pub sky: Vec<crate::sky::Change>,
@@ -572,6 +575,12 @@ fn phase_length((length, random): (f32, bool), sfx: &mut Sfx) -> f32 {
 }
 
 impl TrackEvents {
+    /// Adds a trigger sphere, for a circuit that has no trigger file: its centre and
+    /// radius in ours.
+    pub fn trigger(&mut self, centre: Vec3, radius: f32, event: i32, players_only: bool) {
+        self.triggers.push(Trigger { centre, radius, event, active: false, players_only, lap: None });
+    }
+
     fn retrigger_delay(sfx: &mut Sfx) -> f32 {
         RETRIGGER.0 + sfx.roll(1000) as f32 * 0.001 * RETRIGGER.1
     }
@@ -612,6 +621,9 @@ impl TrackEvents {
     pub fn start(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
         debug!("event {event} starts");
         self.fired.push(Fired { event, start: true, at, racer: None });
+        if !self.started.contains(&event) {
+            self.started.push(event);
+        }
         self.sky.extend(self.skies.iter().filter(|s| s.event == event && !s.on_end).cloned());
         self.hold(event, false, sfx);
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {

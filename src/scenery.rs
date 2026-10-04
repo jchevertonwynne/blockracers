@@ -90,6 +90,22 @@ pub struct PropDef {
     backdrop: bool,
 }
 
+impl PropDef {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Where it is, in the game's coordinates.
+    pub fn position(&self) -> Vec3 {
+        self.position
+    }
+
+    /// Puts it somewhere else: turned and made larger or smaller, and moved to `position`.
+    pub fn moved(&mut self, turn: Quat, position: Vec3, scale: f32) {
+        (self.rotation, self.position, self.scale) = (turn * self.rotation, position, self.scale * scale);
+    }
+}
+
 /// One track of a material animation: its timing and the pictures it shows, with the
 /// frame each comes in at.
 pub struct ReelDef {
@@ -303,11 +319,19 @@ fn number(token: Option<&Token>) -> f32 {
 pub fn load(jam: &Jam, dir: &str, library: &Library, skip: &str) -> Vec<PropDef> {
     let mut files: Vec<&str> = jam.list(dir).filter(|f| f.ends_with(".WDB")).collect();
     files.sort();
-    load_files(jam, dir, &files, library, skip)
+    load_files(jam, dir, &files, library, |_, model| model != skip)
 }
 
-/// Loads what the given `.WDB` files of `dir` place.
-pub fn load_files(jam: &Jam, dir: &str, files: &[&str], library: &Library, skip: &str) -> Vec<PropDef> {
+/// Loads only the placements of `dir` with these names.
+pub fn load_named(jam: &Jam, dir: &str, library: &Library, names: &[&str]) -> Vec<PropDef> {
+    let mut files: Vec<&str> = jam.list(dir).filter(|f| f.ends_with(".WDB")).collect();
+    files.sort();
+    load_files(jam, dir, &files, library, |name, _| names.contains(&name))
+}
+
+/// Loads what the given `.WDB` files of `dir` place, of the placements that pass
+/// `keep`: it is given each one's name and its model's.
+pub fn load_files(jam: &Jam, dir: &str, files: &[&str], library: &Library, keep: impl Fn(&str, &str) -> bool) -> Vec<PropDef> {
     let mut props = Vec::new();
     for file in files {
         let tokens = tokenize(jam.get(file).unwrap_or_default());
@@ -341,7 +365,8 @@ pub fn load_files(jam: &Jam, dir: &str, files: &[&str], library: &Library, skip:
             // Static models name a model; jointed ones a model, a skeleton and an animation.
             let model_key = if *kind == 0x2e { 0x2a } else { 0x33 };
             let Some(model_name) = field(model_key, 0).and_then(|index| models.get(index as usize)) else { continue };
-            if model_name == skip {
+            let placed = name.unwrap_or(model_name).to_lowercase();
+            if !keep(&placed, model_name) {
                 continue;
             }
             let Some(model) = jam.get(&format!("{dir}/{model_name}.GDB")).and_then(Model::parse) else { continue };
@@ -371,7 +396,7 @@ pub fn load_files(jam: &Jam, dir: &str, files: &[&str], library: &Library, skip:
                 .collect();
             props.push(PropDef {
                 backdrop: file.to_uppercase().ends_with("/BACKGRD.WDB"),
-                name: name.unwrap_or(model_name).to_lowercase(),
+                name: placed,
                 surfaces,
                 rig,
                 position: vec3(0x31, 0).unwrap_or_default(),

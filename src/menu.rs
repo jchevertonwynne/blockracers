@@ -77,6 +77,9 @@ pub struct Settings {
     pub bricks: usize,
     /// The last car is put out each lap, until one is left.
     pub elimination: bool,
+    /// The wheels go to full lock almost at once, instead of turning as slowly as the
+    /// original's do.
+    pub quick_steering: bool,
     pub vsync: bool,
     pub fullscreen: bool,
     /// Edges smoothed by multisampling.
@@ -84,8 +87,11 @@ pub struct Settings {
 }
 
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
-/// same colour, or none put out at all.
-pub const BRICK_RULES: [&str; 6] = ["Normal", "All red", "All yellow", "All blue", "All green", "None"];
+/// same colour, none put out at all, or each coloured one a colour picked afresh every
+/// time it appears.
+pub const BRICK_RULES: [&str; 7] = ["Normal", "All red", "All yellow", "All blue", "All green", "None", "Random"];
+/// The rule that picks colours afresh.
+pub const RANDOM_BRICKS: usize = 6;
 
 /// The settings the original has no counterpart for.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -94,13 +100,14 @@ pub enum Extra {
     Reverse,
     Bricks,
     Elimination,
+    Steering,
     VSync,
     Fullscreen,
     Smoothing,
 }
 
 impl Extra {
-    pub const RACE: [Extra; 4] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination];
+    pub const RACE: [Extra; 5] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination, Extra::Steering];
     pub const VIDEO: [Extra; 3] = [Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
 
     pub fn label(self) -> &'static str {
@@ -109,6 +116,7 @@ impl Extra {
             Extra::Reverse => "Reversed",
             Extra::Bricks => "Bricks",
             Extra::Elimination => "Elimination",
+            Extra::Steering => "Steering",
             Extra::VSync => "Frame rate",
             Extra::Fullscreen => "Full screen",
             Extra::Smoothing => "Smooth edges",
@@ -138,6 +146,7 @@ impl Settings {
             reverse: false,
             bricks: 0,
             elimination: false,
+            quick_steering: false,
             vsync: true,
             fullscreen: false,
             smoothing: true,
@@ -158,6 +167,7 @@ impl Settings {
             ("reverse", on(self.reverse)),
             ("bricks", self.bricks),
             ("elimination", on(self.elimination)),
+            ("steering", on(self.quick_steering)),
             ("vsync", on(self.vsync)),
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
@@ -183,6 +193,7 @@ impl Settings {
                 "reverse" => self.reverse = on,
                 "bricks" if value < BRICK_RULES.len() => self.bricks = value,
                 "elimination" => self.elimination = on,
+                "steering" => self.quick_steering = on,
                 "vsync" => self.vsync = on,
                 "fullscreen" => self.fullscreen = on,
                 "smoothing" => self.smoothing = on,
@@ -221,6 +232,7 @@ impl Settings {
             Extra::Reverse => flip(&mut self.reverse),
             Extra::Bricks => self.bricks = (self.bricks as i32 + change).rem_euclid(BRICK_RULES.len() as i32) as usize,
             Extra::Elimination => flip(&mut self.elimination),
+            Extra::Steering => flip(&mut self.quick_steering),
             Extra::VSync => flip(&mut self.vsync),
             Extra::Fullscreen => flip(&mut self.fullscreen),
             Extra::Smoothing => flip(&mut self.smoothing),
@@ -235,6 +247,7 @@ impl Settings {
             Extra::Reverse => on(self.reverse),
             Extra::Bricks => BRICK_RULES[self.bricks].to_string(),
             Extra::Elimination => on(self.elimination),
+            Extra::Steering => if self.quick_steering { "Quick" } else { "Original" }.to_string(),
             Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
             Extra::Fullscreen => on(self.fullscreen),
             Extra::Smoothing => on(self.smoothing),
@@ -308,7 +321,7 @@ pub fn keep(settings: Res<Settings>, mut kept: Local<Option<String>>) {
 
 pub const MAX_VOLUME: usize = 20;
 /// The plain menu's rows: the six settings it always had, the extras, and the start.
-const EXTRAS: [Extra; 7] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination, Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
+const EXTRAS: [Extra; 8] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination, Extra::Steering, Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
 const ROWS: usize = 7 + EXTRAS.len();
 const START: usize = ROWS - 1;
 
@@ -467,5 +480,5 @@ fn single_races_are_listed_in_their_circuits_order() {
     );
     assert_eq!(listed[12], ("Rocket Racer Run", 3));
     // The built-in circuits come last, in a set of their own.
-    assert_eq!((listed.len(), listed[13].1, listed[14].1), (15, 4, 4));
+    assert_eq!((listed.len(), listed[13].1, listed[15].1), (16, 4, 4));
 }

@@ -457,7 +457,7 @@ fn a_replay_puts_power_ups_back_as_they_were() {
         step(&mut world, |world| world.run_system_once(record).unwrap());
     }
     // Something the race left lying about when it ended.
-    let left = world.spawn((Action::Explosion { age: 0.0, radius: 1.0 }, Transform::default())).id();
+    let left = world.spawn((Action::Explosion { age: 0.0, radius: 1.0, owner: None }, Transform::default())).id();
     world.resource_mut::<Replay>().start();
     let mut seen = Vec::new();
     for _ in 0..40 {

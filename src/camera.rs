@@ -22,6 +22,10 @@ const VIEWS: [View; 3] = [
     View { pitch: 8.0, height: 25.0, distance: 30.0, position_lag: 0.1, rotation_lag: 0.25 },
     View { pitch: 8.0, height: 45.0, distance: 10.0, position_lag: 0.05, rotation_lag: 0.25 },
 ];
+/// The view a finished race is watched from: over two seconds the camera swings
+/// round to the front of the car (`c_modeFinish`).
+const FINISH: View = View { pitch: 20.0, height: 15.0, distance: 32.0, position_lag: 0.18, rotation_lag: 0.35 };
+const FINISH_SWING: f32 = 2000.0;
 /// The fourth view is the driver's.
 const COCKPIT: usize = 3;
 const COCKPIT_LAG: (f32, f32) = (0.1, 0.25);
@@ -58,6 +62,8 @@ pub struct Rig {
     boosting: bool,
     car_yaw: f32,
     settled: bool,
+    /// Milliseconds into the swing round a finished car.
+    finish: Option<f32>,
 }
 
 impl Rig {
@@ -81,6 +87,16 @@ impl Rig {
     /// A lag as the fraction of the old value kept after `ms` milliseconds.
     fn kept(lag: f32, ms: f32) -> f32 {
         1.0 / ((1.0 - lag) / (lag * 250.0) * ms + 1.0)
+    }
+
+    /// `RaceCameraController::SetView(4)`: the race is run, and the camera comes round.
+    /// Any other time it is behind the car as usual.
+    pub fn finished(&mut self, finished: bool) {
+        if finished {
+            self.finish.get_or_insert(0.0);
+        } else {
+            self.finish = None;
+        }
     }
 
     /// Where the camera goes for the car as it is now, `dt` seconds on.
@@ -112,7 +128,24 @@ impl Rig {
             self.reach = (self.reach + TURBO_RELEASE * ms).min(1.0);
         }
 
-        let (raw_position, raw_rotation, lags) = if self.view == COCKPIT {
+        if let Some(since) = &mut self.finish {
+            *since = (*since + ms).min(FINISH_SWING);
+        }
+        let (raw_position, raw_rotation, lags) = if let Some(since) = self.finish {
+            // From the view it had, which for the driver's is none at all.
+            let from = VIEWS.get(self.view).map_or((0.0f32, 0.0f32, 0.0), |view| (view.pitch, view.height, view.distance));
+            let left = 1.0 - since / FINISH_SWING;
+            let mix = |from: f32, to: f32| to + (from - to) * left;
+            let distance = mix(from.2, FINISH.distance) * UNIT;
+            let pitch_sine = mix(from.0.to_radians().sin(), FINISH.pitch.to_radians().sin());
+            let pitch_cosine = mix(from.0.to_radians().cos(), FINISH.pitch.to_radians().cos());
+            let lift = mix(from.1.to_radians().sin(), FINISH.height.to_radians().sin());
+            let level = Quat::from_rotation_y(since / FINISH_SWING * PI) * Vec3::new(-self.heading.sin(), 0.0, -self.heading.cos());
+            let look = level * pitch_cosine - Vec3::Y * pitch_sine;
+            let back = if self.settled { self.rotation * Vec3::NEG_Z } else { look };
+            let position = self.target - back * distance + Vec3::Y * lift * distance;
+            (position, Transform::IDENTITY.looking_to(look, Vec3::Y).rotation, (FINISH.position_lag, FINISH.rotation_lag))
+        } else if self.view == COCKPIT {
             (kart.pos + kart.rot * Vec3::Y * EYE_HEIGHT, kart.rot, COCKPIT_LAG)
         } else {
             let view = &VIEWS[self.view.min(VIEWS.len() - 1)];

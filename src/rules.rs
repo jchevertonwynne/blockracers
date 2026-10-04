@@ -1,5 +1,5 @@
-//! Ways to race that the original doesn't have: a circuit's bricks all of one colour
-//! or taken away, and elimination, where the last car is put out each lap.
+//! Ways to race that the original doesn't have: a circuit's bricks all of one colour,
+//! taken away or of a colour picked afresh each time, and elimination, where the last car is put out each lap.
 
 use crate::items::Power;
 use crate::kart::{Kart, Player};
@@ -16,7 +16,8 @@ const PARKED: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
 pub fn brick(rule: usize, brick: Option<Power>) -> Option<Option<Power>> {
     let colours = [Power::Red, Power::Yellow, Power::Blue, Power::Green];
     match (rule, brick) {
-        (0, brick) => Some(brick),
+        // Under the random rule the bricks stand where they did; `items` picks colours.
+        (0 | crate::menu::RANDOM_BRICKS, brick) => Some(brick),
         (rule, _) if rule > colours.len() => None,
         (_, None) => Some(None),
         (rule, Some(_)) => Some(Some(colours[rule - 1])),
@@ -62,7 +63,8 @@ fn bricks_follow_the_rule_and_cars_go_a_lap_at_a_time() {
     assert_eq!(brick(4, None), Some(None));
     assert_eq!(brick(5, Some(Power::Red)), None);
     assert_eq!(brick(5, None), None);
-    assert_eq!(crate::menu::BRICK_RULES.len(), 6);
+    assert_eq!(brick(crate::menu::RANDOM_BRICKS, Some(Power::Red)), Some(Some(Power::Red)));
+    assert_eq!(crate::menu::BRICK_RULES.len(), 7);
     // Nobody goes on the grid or during the first lap; one has gone once the leader
     // starts the second, and with six cars the fifth lap's end leaves one.
     assert_eq!([0, 1, 2, 6].map(gone_by), [0, 0, 1, 5]);
