@@ -50,6 +50,10 @@ const CREEP_SPEED: f32 = 30.0 * UNIT;
 const STEER_MAX_SPEED: f32 = 155.0 * UNIT;
 const POWERSLIDE_MIN_SPEED: f32 = 50.0 * UNIT;
 const POWERSLIDE_ALIGNMENT_MIN: f32 = 0.85;
+// The steering slip's last term outside a powerslide: 0.7071 as the original writes it,
+// not the square root itself.
+#[allow(clippy::approx_constant)]
+const STEER_SLIP_ANGLE: f32 = 0.7071;
 
 /// Per-second decay rates of sideways velocity and (off the throttle) forward velocity.
 const LATERAL_DAMPING: f32 = 10.0;
@@ -214,7 +218,7 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
             }
         } else {
             if can_steer && radius < limit {
-                slip = Some((2.0 - radius / limit, 0.85, 0.7071));
+                slip = Some((2.0 - radius / limit, 0.85, STEER_SLIP_ANGLE));
             }
             if radius < limit {
                 radius = (limit + radius) * 0.5;

@@ -141,12 +141,11 @@ pub fn kart_effects(
     if boosting && !fx.boosting && fx.smoke.is_none() {
         fx.smoke = start(&mut commands, "carsmke", exhaust);
     }
-    if let Some(entity) = fx.smoke {
-        if follow(entity, exhaust).is_none_or(|puffs| puffs >= SMOKE_PUFFS) {
+    if let Some(entity) = fx.smoke
+        && follow(entity, exhaust).is_none_or(|puffs| puffs >= SMOKE_PUFFS) {
             commands.entity(entity).try_despawn();
             fx.smoke = None;
         }
-    }
 
     // Tyre smoke for as long as the tyres are skidding.
     let skidding = k.contacts > 0 && (k.sliding || k.spin > 0.0 || k.magnet > 0.0 || (boosting && k.boost_level > 0));

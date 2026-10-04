@@ -168,7 +168,7 @@ fn main() {
             [back, up, right] => Some(Vec3::new(back, up, right)),
             _ => None,
         };
-        let events = numbers("BRICK_EVENTS").chunks_exact(2).map(|pair| (pair[0] as i32, pair[1])).collect();
+        let events = numbers("BRICK_EVENTS").as_chunks::<2>().0.iter().map(|pair| (pair[0] as i32, pair[1])).collect();
         let keys = std::env::var("BRICK_KEYS").unwrap_or_default();
         let keys = keys.split(',').filter_map(|press| {
             let (key, at) = press.split_once('@')?;
@@ -517,12 +517,11 @@ fn demo_shot(
     mut sfx: ResMut<audio::Sfx>,
     mut player: Query<(&mut Kart, &mut kart::Controls), With<Player>>,
 ) {
-    if let Some(&(power, level, _)) = demo.powers.get(*used).filter(|p| time.elapsed_secs() >= p.2) {
-        if let Ok((mut kart, mut controls)) = player.single_mut() {
+    if let Some(&(power, level, _)) = demo.powers.get(*used).filter(|p| time.elapsed_secs() >= p.2)
+        && let Ok((mut kart, mut controls)) = player.single_mut() {
             (kart.held, kart.whites, controls.use_item) = (Some(power), level, true);
             *used += 1;
         }
-    }
     if let Some(mut events) = events {
         while let Some(&(event, _)) = demo.events.get(*fired).filter(|e| time.elapsed_secs() >= e.1) {
             events.fire(event, None, &mut sfx);

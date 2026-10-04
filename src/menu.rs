@@ -311,11 +311,10 @@ pub fn keep(settings: Res<Settings>, mut kept: Local<Option<String>>) {
     }
     let text = settings.write();
     // The first look is at what was just restored, which is on file already.
-    if kept.as_ref().is_some_and(|kept| *kept != text) {
-        if let Some(Err(error)) = settings_file().map(|file| std::fs::write(file, &text)) {
+    if kept.as_ref().is_some_and(|kept| *kept != text)
+        && let Some(Err(error)) = settings_file().map(|file| std::fs::write(file, &text)) {
             warn!("could not keep the settings: {error}");
         }
-    }
     *kept = Some(text);
 }
 

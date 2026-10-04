@@ -139,7 +139,7 @@ impl<'a> Library<'a> {
         let mut pixels = self.texture(material)?;
         let info = self.materials.get(material)?;
         let tint = [info.diffuse[0], info.diffuse[1], info.diffuse[2], info.alpha.unwrap_or(255)];
-        for pixel in pixels.rgba.chunks_exact_mut(4) {
+        for pixel in pixels.rgba.as_chunks_mut::<4>().0 {
             for (value, scale) in pixel.iter_mut().zip(tint) {
                 *value = (*value as u16 * scale as u16 / 255) as u8;
             }

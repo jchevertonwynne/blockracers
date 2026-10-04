@@ -157,6 +157,7 @@ impl Collision {
     }
 
     /// Says that the triangles were mirrored on their way in.
+    #[cfg(test)]
     pub fn set_mirrored(&mut self, mirrored: bool) {
         self.mirrored = mirrored;
     }

@@ -88,6 +88,8 @@ const AIM_RACER: (f32, f32, f32) = (10.0 * UNIT, 400.0 * UNIT, 0.9);
 const AIM_POINT: (f32, f32, f32) = (10.0 * UNIT, 400.0 * UNIT, 0.95);
 const HOOK_FAR: (f32, f32, f32) = (10.0 * UNIT, 250.0 * UNIT, 0.93);
 const HOOK_WIDE: (f32, f32, f32) = (10.0 * UNIT, 400.0 * UNIT, 0.6);
+// The original's cosine is 0.7071 as written, not the square root itself.
+#[allow(clippy::approx_constant)]
 const MISSILE_AIM: (f32, f32, f32) = (10.0 * UNIT, 400.0 * UNIT, 0.7071);
 
 const LAUNCH_HEIGHT: f32 = 5.0 * UNIT;
@@ -1013,7 +1015,7 @@ pub fn actions(
     // Explosions are collected and set off once every action has had its turn.
     let mut blasts: Vec<(Vec3, f32, Entity)> = Vec::new();
     let touching = |k: &Kart, at: Vec3, radius: f32| (k.pos + Vec3::Y * 0.6).distance_squared(at) < radius * radius;
-    let cars = seen(karts.iter().map(|(e, k)| (e, &*k)));
+    let cars = seen(karts.iter());
     let car = |entity: Entity| cars.iter().find(|car| car.entity == entity).copied();
 
     for (entity, mut action, mut tf) in &mut actions {
@@ -1094,11 +1096,10 @@ pub fn actions(
                                 (missed, hooked, done) = (false, true, false);
                             }
                         }
-                        if hooked {
-                            if let Ok((_, mut k)) = karts.get_mut(*owner) {
+                        if hooked
+                            && let Ok((_, mut k)) = karts.get_mut(*owner) {
                                 k.cues.reaction = Some(true);
                             }
-                        }
                         if missed {
                             // The line snaps back.
                             sfx.play_at(id::HOOK_MISS, at);
@@ -1180,11 +1181,10 @@ pub fn actions(
                         (*shocked, struck) = (Some((victim.entity, 0.0)), true);
                     }
                 }
-                if struck {
-                    if let Ok((_, mut k)) = karts.get_mut(*owner) {
+                if struck
+                    && let Ok((_, mut k)) = karts.get_mut(*owner) {
                         k.cues.reaction = Some(true);
                     }
-                }
             }
             // `HomingMissileAction` and `HomingProjectile`.
             Action::Missile { owner, target, at, heading, speed, dash, waypoint, gate, looked, spiral, time } => {
@@ -1219,7 +1219,7 @@ pub fn actions(
                 if let Some(aim) = aim {
                     *heading = aim - *at;
                 }
-                let mut next = *at;
+                let mut next;
                 let mut reached = false;
                 match aim {
                     Some(aim) if aim.distance(*at) < MISSILE_SNAP_DISTANCE => {

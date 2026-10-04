@@ -250,11 +250,10 @@ pub fn change(
     for (mesh, mut visibility) in &mut dome {
         // With the dome hidden nothing is drawn at all, and the sky world goes with it.
         visibility.set_if_neq(shown(showing.dome));
-        if showing.shown != Some(rings) {
-            if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
+        if showing.shown != Some(rings)
+            && let Some(mut mesh) = meshes.get_mut(&mesh.0) {
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours(rings));
             }
-        }
     }
     for mut visibility in &mut backdrop {
         visibility.set_if_neq(shown(showing.dome && showing.world));

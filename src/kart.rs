@@ -241,7 +241,7 @@ impl Kart {
             }
             _ => {
                 let s = -8.0 - (slot / 2) as f32 * 6.0;
-                let lat = track.road * if slot % 2 == 0 { -0.375 } else { 0.375 };
+                let lat = track.road * if slot.is_multiple_of(2) { -0.375 } else { 0.375 };
                 (track.surface_point(s, lat), track.sample(s).2.cross(Vec3::NEG_Y).normalize())
             }
         };
@@ -351,6 +351,7 @@ impl Kart {
     }
 
     /// Sets the kart down on the road at rest, pointing along the racing line.
+    #[cfg(test)]
     pub(crate) fn place(&mut self, track: &Track, s: f32, lat: f32) {
         let dir = track.sample(s).1.with_y(0.0).normalize();
         self.pos = track.surface_point(s, lat) + Vec3::Y * 0.2;
@@ -459,11 +460,10 @@ impl Kart {
         let course = &track.course;
         let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
         let travel = self.pos - from;
-        if let Some(hit) = course.gates.any(from + lift, self.pos + lift) {
-            if let Some(gate) = course.checkpoints.get(hit.tag) {
+        if let Some(hit) = course.gates.any(from + lift, self.pos + lift)
+            && let Some(gate) = course.checkpoints.get(hit.tag) {
                 self.cross_checkpoint(hit.tag, gate, travel.dot(gate.normal) < 0.0);
             }
-        }
         for &(centre, radius, zone) in &course.zones {
             if centre.distance_squared(self.pos) < radius * radius {
                 self.enter_zone(zone);

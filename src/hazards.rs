@@ -799,7 +799,7 @@ pub fn hazards(
                 }
                 let up = (*time / (*period / 4.0) * TAU).cos() * sweep[1] + sweep[2];
                 let forward = to_world(Vec3::new(across.cos(), across.sin(), up)).normalize();
-                let from = match name.as_deref().and_then(|n| prop(n)).and_then(|e| props.get(e).ok()) {
+                let from = match name.as_deref().and_then(&prop).and_then(|e| props.get(e).ok()) {
                     Some((model, ..)) => to_world(model.position - Vec3::Z * 17.0),
                     None => to_world(*source),
                 };
@@ -881,17 +881,16 @@ pub fn code_lights(
     let Some((code, opened)) = puzzle else { return };
     for (step, name) in CODE_LIGHTS.iter().enumerate() {
         // With the doors open the lights flicker; otherwise they give the answer.
-        let first = if opened { (time.elapsed_secs() * CODE_FLICKER[step]) as u32 % 2 == 0 } else { code[step] };
+        let first = if opened { ((time.elapsed_secs() * CODE_FLICKER[step]) as u32).is_multiple_of(2) } else { code[step] };
         let Some(picture) = swatches.0.get(SWATCHES[if first { 0 } else { 1 }]) else { continue };
         let Some((light, code)) = scenery.0.get(*name).and_then(|&e| props.get(e).ok()) else { continue };
         // Only the part of the light its track is bound to changes (`MabMaterialTrack`).
         let changing = light.materials.iter().zip(&light.indices).filter(|(_, index)| code.0.contains(index));
         for (handle, _) in changing {
-            if materials.get(handle).is_some_and(|m| m.base_color_texture.as_ref() != Some(picture)) {
-                if let Some(mut material) = materials.get_mut(handle) {
+            if materials.get(handle).is_some_and(|m| m.base_color_texture.as_ref() != Some(picture))
+                && let Some(mut material) = materials.get_mut(handle) {
                     material.base_color_texture = Some(picture.clone());
                 }
-            }
         }
     }
 }

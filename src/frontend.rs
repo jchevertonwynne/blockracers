@@ -471,7 +471,7 @@ fn hit(item: &Item, art: &Art, at: Vec2) -> Option<i32> {
         }
         Widget::Selector { area, .. } | Widget::Slider { area, .. } => {
             let end = if matches!(item.widget, Widget::Slider { .. }) { 64.0 } else { ICON };
-            area.contains(at).then(|| {
+            area.contains(at).then_some({
                 if at.x < area.min.x + end {
                     -1
                 } else if at.x > area.max.x - end {

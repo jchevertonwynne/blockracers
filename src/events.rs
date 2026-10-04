@@ -303,11 +303,10 @@ pub fn effects(
                         let at = fired.at.filter(|_| particles.at_event).unwrap_or(particles.position);
                         let place = Transform::from_translation(at).with_rotation(particles.rotation);
                         particles.going = emitters.as_ref().and_then(|e| e.spawn(&mut commands, &particles.emitter, place));
-                    } else if particles.when.ends(fired.event, fired.start) {
-                        if let Some(entity) = particles.going.take() {
+                    } else if particles.when.ends(fired.event, fired.start)
+                        && let Some(entity) = particles.going.take() {
                             commands.entity(entity).try_despawn();
                         }
-                    }
                 }
                 for model in &events.models {
                     let on = if model.when.begins(fired.event, fired.start) {

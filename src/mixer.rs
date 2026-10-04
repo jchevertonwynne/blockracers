@@ -96,7 +96,7 @@ impl Voice {
             let index = if stereo { frame * 2 + channel } else { frame };
             self.clip.samples[index] as f32 / 32768.0
         };
-        for (i, frame) in out.chunks_exact_mut(2).enumerate() {
+        for (i, frame) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             if self.at >= frames as f64 {
                 if !self.looped {
                     return false;

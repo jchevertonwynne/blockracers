@@ -193,7 +193,7 @@ fn arrow() -> Pixels {
         (0.0..=1.0).contains(&along) && at.y.abs() <= half * (1.0 - along)
     };
     let mut rgba = vec![0; SIZE * SIZE * 4];
-    for (i, pixel) in rgba.chunks_exact_mut(4).enumerate() {
+    for (i, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let at = (Vec2::new((i % SIZE) as f32, (i / SIZE) as f32) + 0.5) / per_unit - ARROW_SPAN / 2.0;
         if inside(at, [8.0, 5.0, 4.0]) {
             pixel.copy_from_slice(&[0, 255, 0, 255]);

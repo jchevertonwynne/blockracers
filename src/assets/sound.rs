@@ -59,7 +59,7 @@ pub fn decode(data: &[u8], default_rate: u32) -> Sound {
     } else {
         // Bytes alternate between the left and right channels.
         let (mut left, mut right) = (Channel::default(), Channel::default());
-        for pair in data.chunks_exact(2) {
+        for pair in data.as_chunks::<2>().0 {
             let (l, r) = (left.byte(pair[0]), right.byte(pair[1]));
             samples.extend([l[0], r[0], l[1], r[1]]);
         }

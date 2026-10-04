@@ -6,6 +6,11 @@ edition = "2024"
 [dependencies]
 bevy = { version = "0.19.1", features = ["wav"] }
 
+# Bevy systems take a parameter per thing they touch, and their queries are long types.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 # Small optimisations for our code, full optimisations for dependencies
 [profile.dev]
 opt-level = 1
