@@ -3,7 +3,8 @@
 //! the plain shapes `items` spawns are left as they are.
 
 use crate::items::Action;
-use crate::kart::{Kart, Shield};
+use crate::items::WARP_START;
+use crate::kart::{Kart, Player, Shield};
 use crate::particles::{Emitter, Emitters};
 use crate::physics::UNIT;
 use crate::scenery::{Animated, Models, Motion};
@@ -32,6 +33,8 @@ const TURBO_FADE: f32 = 0.7;
 /// A magnet hangs this far above the road, and a curse this far.
 const MAGNET_HEIGHT: f32 = 30.0 * UNIT;
 const CURSE_HEIGHT: f32 = 13.0 * UNIT;
+/// A warp's hole opens this far above the car.
+const PORTAL_HEIGHT: f32 = 6.0 * UNIT;
 /// Blasts bigger than this are the spiked kind.
 const SPIKED_BLAST: f32 = 7.5 * UNIT;
 /// The missile's own animation is its launch from a car; it is held at the start of
@@ -113,6 +116,9 @@ pub struct Worn {
     /// The turbo is burning down.
     fading: bool,
     smoke: Option<Entity>,
+    /// The hole a warp opens over the car, and the tunnel it then goes down.
+    portal: Option<Entity>,
+    tunnel: Vec<Entity>,
 }
 
 pub fn dress_karts(
@@ -121,8 +127,9 @@ pub fn dress_karts(
     emitters: Option<Res<Emitters>>,
     bare: Query<Entity, (With<Kart>, Without<Worn>)>,
     stand_ins: Query<Entity, With<Shield>>,
-    mut karts: Query<(Entity, &Kart, &mut Worn)>,
+    mut karts: Query<(Entity, &Kart, &mut Worn, Has<Player>)>,
     mut smoke: Query<(&mut Emitter, &mut Transform)>,
+    mut placed: Query<&mut Transform, Without<Emitter>>,
     mut seen: Query<&mut Visibility>,
     children: Query<&Children>,
     mut animated: Query<&mut Animated>,
@@ -136,7 +143,7 @@ pub fn dress_karts(
             commands.entity(sphere).despawn();
         }
     }
-    for (entity, k, mut worn) in &mut karts {
+    for (entity, k, mut worn, is_player) in &mut karts {
         // Puts on, changes or takes off a set of models as the level they show changes.
         let mut wear = |slot: &mut Option<(u8, Vec<Entity>)>, level: Option<u8>, at: Transform, motion: Motion, names: &dyn Fn(u8) -> Vec<String>| {
             if slot.as_ref().map(|s| s.0) == level {
@@ -174,6 +181,42 @@ pub fn dress_karts(
         for &part in worn.shield.iter().flat_map(|s| &s.1) {
             if let Ok(mut visibility) = seen.get_mut(part) {
                 visibility.set_if_neq(if on { Visibility::Inherited } else { Visibility::Hidden });
+            }
+        }
+
+        // A warp: a hole opens over the car and closes on it, and then whoever is
+        // watching from behind it sees the tunnel it goes down.
+        match (k.warp_start > 0.0, worn.portal) {
+            (true, None) => {
+                let above = Transform::from_translation(k.pos + k.rot * Vec3::Y * PORTAL_HEIGHT).with_rotation(k.rot);
+                worn.portal = models.spawn(&mut commands, "warpprt", above.with_scale(Vec3::splat(0.001)), Motion::Loop);
+            }
+            (true, Some(portal)) => {
+                if let Ok(mut transform) = placed.get_mut(portal) {
+                    // Swelling and shrinking away again over the time it takes.
+                    let size = (std::f32::consts::PI * (1.0 - k.warp_start / WARP_START)).sin();
+                    transform.translation = k.pos + k.rot * Vec3::Y * PORTAL_HEIGHT * (k.warp_start / WARP_START);
+                    transform.scale = Vec3::splat(size.max(0.001));
+                }
+            }
+            (false, Some(portal)) => {
+                commands.entity(portal).try_despawn();
+                worn.portal = None;
+            }
+            (false, None) => {}
+        }
+        let tunnelled = is_player && k.warp > 0.0;
+        if tunnelled && worn.tunnel.is_empty() {
+            // The tunnel's own forward is the game's -Y; the car's is ours.
+            let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+            for name in ["dtube", "dbricks"] {
+                let place = Transform::from_translation(turn * models.placed(name)).with_rotation(turn);
+                worn.tunnel.extend(models.spawn(&mut commands, name, place, Motion::Loop));
+            }
+            commands.entity(entity).add_children(&worn.tunnel);
+        } else if !tunnelled {
+            for part in worn.tunnel.drain(..) {
+                commands.entity(part).despawn();
             }
         }
 

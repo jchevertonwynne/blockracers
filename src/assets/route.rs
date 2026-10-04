@@ -2,44 +2,108 @@
 
 use super::tokens::{Reader, Token};
 
-pub struct Route {
-    /// Absolute positions (game coordinates, Z up) of one closed lap.
-    pub lap: Vec<[f32; 3]>,
+/// A recorded drive round a circuit, as `RaceRouteRecord`: where the car was, which
+/// way it faced and how much room it had either side, at points a known time apart.
+/// It runs from the grid into a lap that repeats.
+pub struct Record {
+    pub points: Vec<Point>,
+    /// The point playback goes back to after the last, and the time it is reached at.
+    pub loop_index: usize,
+    pub loop_time: f32,
 }
 
-impl Route {
-    pub fn parse(data: &[u8]) -> Option<Route> {
+/// Positions are in game coordinates (Z up), times in milliseconds from the start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub position: [f32; 3],
+    /// Quaternion as x, y, z, w.
+    pub rotation: [f32; 4],
+    /// Room to the left and right of the line.
+    pub width: [f32; 2],
+    pub kind: u8,
+    pub time: f32,
+}
+
+/// Stored positions are steps from the point before, in these units.
+const STEP_XY: f32 = 1.0 / 256.0;
+const STEP_Z: f32 = 1.0 / 16.0;
+const ROTATION: f32 = 1.0 / 127.0;
+const WIDTH: f32 = 0.125;
+/// The low six bits of a point's last byte are its segment's length in these.
+const LENGTH_MS: f32 = 32.0;
+
+impl Record {
+    pub fn parse(data: &[u8], mirror: bool) -> Option<Record> {
         let mut r = Reader::new(data);
-        let mut start = [0.0f32; 3];
-        let mut loop_index = 0;
-        let mut deltas = Vec::new();
+        let flip = if mirror { -1.0 } else { 1.0 };
+        let (mut start, mut start_rotation) = ([0.0f32; 3], [0.0, 0.0, 0.0, 1.0]);
+        let (mut loop_index, mut loop_time) = (0, 0.0);
+        let mut steps = Vec::new();
         while let Some(token) = r.next() {
             match token {
                 Token::Key(0x27) => {
                     for _ in 0..r.list_header()? {
-                        let (x, y, z) = (r.int()? as i16, r.int()? as i16, r.int()? as i8);
-                        // Rotation quaternion, corridor widths, segment type and duration.
-                        for _ in 0..7 {
-                            r.int()?;
+                        let mut v = [0i32; 10];
+                        for value in &mut v {
+                            *value = r.int()?;
                         }
-                        deltas.push([x as f32 / 256.0, y as f32 / 256.0, z as f32 / 16.0]);
+                        // Two 16-bit steps, then signed bytes.
+                        let n = |i: usize| if i < 2 { v[i] as i16 as f32 } else { v[i] as i8 as f32 };
+                        let width = if mirror { [n(8), n(7)] } else { [n(7), n(8)] };
+                        steps.push(Point {
+                            position: [n(0) * STEP_XY, n(1) * STEP_XY * flip, n(2) * STEP_Z],
+                            rotation: [n(3) * ROTATION, n(4) * ROTATION * flip, n(5) * ROTATION, n(6) * ROTATION * flip],
+                            width: width.map(|w| w * WIDTH),
+                            kind: (v[9] as u8 >> 6).min(3),
+                            time: (v[9] as u8 & 0x3f) as f32 * LENGTH_MS,
+                        });
                     }
                     r.expect(Token::RCurly)?;
                 }
+                Token::Key(0x28) => start_rotation = r.floats()?,
                 Token::Key(0x29) => start = r.floats()?,
+                Token::Key(0x2c) => loop_time = r.int()? as f32,
                 Token::Key(0x2d) => loop_index = r.int()? as usize,
                 _ => {}
             }
         }
-        // Point 0 sits at the start position; each later point is an offset from the
-        // one before. Playback wraps from the last point back to the loop point.
-        let mut pos = start;
-        let mut points = vec![pos];
-        for d in deltas.iter().skip(1) {
-            pos = [pos[0] + d[0], pos[1] + d[1], pos[2] + d[2]];
-            points.push(pos);
+        if mirror {
+            start[1] = -start[1];
+            (start_rotation[1], start_rotation[3]) = (-start_rotation[1], -start_rotation[3]);
         }
-        Some(Route { lap: points.get(loop_index..)?.to_vec() })
+        // The car sits at the start until time nothing; each point is then a step on
+        // from the one before, and its segment's length later.
+        let mut points = vec![Point { position: start, rotation: start_rotation, width: [0.0; 2], kind: 3, time: 0.0 }];
+        for step in steps {
+            let last = points[points.len() - 1];
+            let position = [0, 1, 2].map(|i| last.position[i] + step.position[i]);
+            points.push(Point { position, time: last.time + step.time, ..step });
+        }
+        // Stored indices don't count the start.
+        let loop_index = loop_index + 1;
+        (loop_index + 1 < points.len()).then_some(Record { points, loop_index, loop_time })
+    }
+
+    /// The time on the record that `time` played comes to, going round the lap again
+    /// once past the end.
+    pub fn wrap(&self, time: f32) -> f32 {
+        let end = self.points[self.points.len() - 1].time;
+        let lap = end - self.loop_time;
+        if time <= end || lap <= 0.0 { time.max(0.0) } else { self.loop_time + (time - self.loop_time).rem_euclid(lap) }
+    }
+
+    /// Where the car is `time` into the record (already wrapped): the points either
+    /// side of it and how far between them it has come.
+    pub fn at(&self, time: f32) -> (Point, Point, f32) {
+        let next = self.points.partition_point(|p| p.time <= time).clamp(1, self.points.len() - 1);
+        let (from, to) = (self.points[next - 1], self.points[next]);
+        let span = to.time - from.time;
+        (from, to, if span > 0.0 { ((time - from.time) / span).clamp(0.0, 1.0) } else { 1.0 })
+    }
+
+    /// The positions of one lap.
+    pub fn lap(&self) -> Vec<[f32; 3]> {
+        self.points[self.loop_index..].iter().map(|p| p.position).collect()
     }
 }
 
@@ -266,12 +330,24 @@ mod tests {
             println!("  {name}: tex {tex} {px:?} key {:?} tga {} test {} blend {}", t.color_key, t.tga, m.alpha_test, m.blend);
         }
 
-        let route = Route::parse(jam.get(&format!("{dir}/R1_F_0.RRB")).unwrap()).unwrap();
-        let n = route.lap.len();
+        let route = Record::parse(jam.get(&format!("{dir}/R1_F_0.RRB")).unwrap(), false).unwrap();
+        let lap = route.lap();
+        let n = lap.len();
         let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
-        let length: f32 = (0..n).map(|i| dist(route.lap[i], route.lap[(i + 1) % n])).sum();
-        println!("route: {n} points, lap length {length}, first {:?}, last {:?}", route.lap[0], route.lap[n - 1]);
-        assert!(dist(route.lap[0], route.lap[n - 1]) < 60.0);
+        let length: f32 = (0..n).map(|i| dist(lap[i], lap[(i + 1) % n])).sum();
+        println!("route: {n} points, lap length {length}, first {:?}, last {:?}", lap[0], lap[n - 1]);
+        assert!(dist(lap[0], lap[n - 1]) < 60.0);
+        // The lap closes on itself in time as well as place, and takes about a minute.
+        let (first, last) = (route.points[route.loop_index], route.points[route.points.len() - 1]);
+        assert!((first.time - route.loop_time).abs() < 1.0, "{} {}", first.time, route.loop_time);
+        let lap_time = last.time - route.loop_time;
+        assert!((30_000.0..120_000.0).contains(&lap_time), "{lap_time}");
+        assert_eq!(route.wrap(last.time + 500.0), route.loop_time + 500.0);
+        let (from, to, along) = route.at(route.wrap(last.time + 500.0));
+        assert!(from.time <= route.loop_time + 500.0 && to.time >= route.loop_time + 500.0 && (0.0..=1.0).contains(&along));
+        // Mirrored, it is the same drive on the other hand.
+        let mirrored = Record::parse(jam.get(&format!("{dir}/R1_F_0.RRB")).unwrap(), true).unwrap();
+        assert_eq!(mirrored.points[40].position[1], -route.points[40].position[1]);
 
         let bricks = parse_powerups(jam.get(&format!("{dir}/POWERUP.PWB")).unwrap());
         println!("{} bricks, e.g. {:?}", bricks.len(), &bricks[..3]);

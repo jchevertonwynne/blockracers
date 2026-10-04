@@ -6,6 +6,7 @@
 //! Colours and the make-up of each widget follow the styles in `GSTYLES.MSB`. The
 //! spinning models the original shows on these screens are not drawn.
 
+use crate::championship::Championship;
 use crate::assets::{
     Jam,
     font::{Font, load_fonts, load_strings},
@@ -63,6 +64,9 @@ mod text {
 
 /// The pictures on the circuit selector, by which of the game's circuits a race is
 /// in; the last is for the port's own brick circuit.
+/// The pictures for the seven circuits of the circuit race: the three sets of four
+/// races, the same three mirrored, and Rocket Racer's.
+const SERIES_ICONS: [&str; 7] = ["pirate", "islander", "magical", "pirate", "islander", "magical", "rr"];
 const CIRCUIT_ICONS: [&str; 5] = ["pirate", "islander", "magical", "rr", "bricks"];
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -70,6 +74,8 @@ enum Page {
     #[default]
     Main,
     SingleRace,
+    CircuitRace,
+    TimeRace,
     Options,
     GameOptions,
     AudioOptions,
@@ -84,6 +90,11 @@ enum Action {
     Nothing,
     Circuit,
     RaceChoice,
+    /// Which circuit to race for, and the go-ahead.
+    Series,
+    StartSeries,
+    /// Off against the clock.
+    TimeRace,
     Opponents,
     Laps,
     Difficulty,
@@ -243,7 +254,7 @@ fn group(circuits: &Circuits, index: usize) -> usize {
 }
 
 /// The widgets of a page that can be chosen or changed, top to bottom.
-fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings) -> Vec<Item> {
+fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings, championship: &Championship) -> Vec<Item> {
     let button = |screen: &str, name: &str, label: usize, action: Action, icon: Option<&'static str>| Item {
         widget: Widget::Button { at: art.place(screen, name).min, label: art.string(label), icon },
         action,
@@ -258,20 +269,39 @@ fn items(page: Page, art: &Art, circuits: &Circuits, settings: &Settings) -> Vec
     match page {
         Page::Main => vec![
             button("main", "garage", text::BUILD, Action::Nothing, None),
-            button("main", "circuit", text::CIRCUIT_RACE, Action::Nothing, None),
+            button("main", "circuit", text::CIRCUIT_RACE, Action::Go(Page::CircuitRace), None),
             button("main", "single", text::SINGLE_RACE, Action::Go(Page::SingleRace), None),
             button("main", "vs", text::VERSUS_RACE, Action::Nothing, None),
-            button("main", "time", text::TIME_RACE, Action::Nothing, None),
+            button("main", "time", text::TIME_RACE, Action::Go(Page::TimeRace), None),
             button("main", "options", text::OPTIONS, Action::Go(Page::Options), None),
             button("main", "quit", text::QUIT, Action::Quit, None),
         ],
-        Page::SingleRace => {
+        Page::SingleRace | Page::TimeRace => {
+            let go = if page == Page::TimeRace { Action::TimeRace } else { Action::Race };
             let icon = CIRCUIT_ICONS[group(circuits, settings.circuit)].to_string();
             let name = circuits.0[settings.circuit].name.clone();
             vec![
                 selector(art.place("race", "selector"), Some(icon), String::new(), Action::Circuit),
                 selector(art.place("race", "racesel"), None, name, Action::RaceChoice),
-                button("race", "gonext", text::OK, Action::Race, Some("chck")),
+                button("race", "gonext", text::OK, go, Some("chck")),
+                back("race", Page::Main),
+            ]
+        }
+        Page::CircuitRace => {
+            // The single race page's widgets: the circuit's picture, and whose it is.
+            let chosen = championship.chosen.min(championship.series.len().saturating_sub(1));
+            let icon = SERIES_ICONS[chosen % SERIES_ICONS.len()].to_string();
+            let words = match championship.series.get(chosen) {
+                Some(series) if chosen < championship.unlocked => format!("{}: {}", chosen + 1, series.champion),
+                Some(_) => format!("{}: LOCKED", chosen + 1),
+                None => String::new(),
+            };
+            let mut start = button("race", "gonext", text::OK, Action::StartSeries, Some("chck"));
+            start.enabled = chosen < championship.unlocked;
+            vec![
+                selector(art.place("race", "selector"), Some(icon), String::new(), Action::Series),
+                selector(art.place("race", "racesel"), None, words, Action::Series),
+                start,
                 back("race", Page::Main),
             ]
         }
@@ -312,6 +342,8 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
     match page {
         Page::Main => Vec::new(),
         Page::SingleRace => vec![banner(text::SINGLE_RACE)],
+        Page::CircuitRace => vec![banner(text::CIRCUIT_RACE)],
+        Page::TimeRace => vec![banner(text::TIME_RACE)],
         Page::Options => vec![banner(text::OPTIONS_BANNER)],
         Page::GameOptions => {
             let (first, second) = (art.place("options", "chmptext"), art.place("options", "laptext"));
@@ -337,6 +369,8 @@ fn enter(mut menu: ResMut<Menu>) {
     // `BRICK_MENU=race` (or options, game, audio) opens on that page, for screenshots.
     let page = match std::env::var("BRICK_MENU").as_deref() {
         Ok("race") => Page::SingleRace,
+        Ok("circuit") => Page::CircuitRace,
+        Ok("time") => Page::TimeRace,
         Ok("options") => Page::Options,
         Ok("game") => Page::GameOptions,
         Ok("audio") => Page::AudioOptions,
@@ -394,8 +428,9 @@ fn input(
     mut sfx: ResMut<Sfx>,
     mut exit: MessageWriter<AppExit>,
     mut pointed: Local<Option<Vec2>>,
+    mut championship: ResMut<Championship>,
 ) {
-    let items = items(menu.page, &art, &circuits, &settings);
+    let items = items(menu.page, &art, &circuits, &settings, &championship);
     let pressed = |codes: &[KeyCode]| keys.any_just_pressed(codes.iter().copied());
     let focus = menu.focus.min(items.len() - 1);
     let step = |by: usize| {
@@ -453,7 +488,7 @@ fn input(
     if pressed(&[KeyCode::Escape]) {
         let back = match menu.page {
             Page::Main => None,
-            Page::SingleRace | Page::Options => Some(Page::Main),
+            Page::SingleRace | Page::CircuitRace | Page::TimeRace | Page::Options => Some(Page::Main),
             Page::GameOptions | Page::AudioOptions => Some(Page::Options),
         };
         if let Some(back) = back {
@@ -482,6 +517,7 @@ fn input(
                     }
                 }
             }
+            Action::Series => championship.chosen = turn(championship.chosen, championship.series.len().max(1)),
             Action::RaceChoice => {
                 let within: Vec<usize> = races.into_iter().filter(|&r| group(&circuits, r) == here).collect();
                 let at = within.iter().position(|&r| r == settings.circuit).unwrap_or(0);
@@ -494,7 +530,7 @@ fn input(
             Action::Sound => settings.sound = (settings.sound as i32 + change).clamp(0, MAX_VOLUME as i32) as usize,
             _ => {}
         }
-        if !matches!(action, Action::Go(_) | Action::Race | Action::Quit | Action::Nothing) {
+        if !matches!(action, Action::Go(_) | Action::Race | Action::TimeRace | Action::StartSeries | Action::Quit | Action::Nothing) {
             sfx.play(if matches!(action, Action::Music | Action::Sound) { id::MENU_SLIDER } else { id::MENU_SELECT });
             menu.drawn = false;
         }
@@ -506,10 +542,22 @@ fn input(
                 sfx.play(if forward { id::MENU_CONFIRM } else { id::MENU_BACK });
                 go(&mut menu, page, if page == Page::Main { 2 } else { 0 });
             }
-            Action::Race => {
+            Action::Race | Action::TimeRace => {
                 sfx.play(id::MENU_CONFIRM);
+                (settings.time_race, settings.championship) = (action == Action::TimeRace, None);
                 next.set(Screen::Race);
             }
+            Action::StartSeries => match championship.begin() {
+                // A circuit is three laps a race against a full field.
+                Some((code, folder)) => {
+                    sfx.play(id::MENU_CONFIRM);
+                    settings.championship = Some(code);
+                    settings.circuit = circuits.0.iter().position(|c| c.race.as_deref() == Some(folder.as_str())).unwrap_or(0);
+                    (settings.lap_choice, settings.opponents, settings.time_race) = (1, MAX_OPPONENTS, false);
+                    next.set(Screen::Race);
+                }
+                None => sfx.play(id::MENU_REFUSE),
+            },
             Action::Quit => {
                 exit.write(AppExit::Success);
             }
@@ -526,6 +574,7 @@ fn draw(
     mut scale: ResMut<UiScale>,
     circuits: Res<Circuits>,
     settings: Res<Settings>,
+    championship: Res<Championship>,
     window: Single<&Window, With<PrimaryWindow>>,
     roots: Query<Entity, With<Root>>,
 ) {
@@ -542,7 +591,7 @@ fn draw(
         commands.entity(root).despawn();
     }
     let art = &mut *art;
-    let items = items(menu.page, art, &circuits, &settings);
+    let items = items(menu.page, art, &circuits, &settings, &championship);
     let labels = labels(menu.page, art);
     let focus = menu.focus.min(items.len() - 1);
 
@@ -572,7 +621,7 @@ fn draw(
     if menu.page == Page::Main {
         picture!("racers", art.place("main", "racers").min, Color::WHITE);
     }
-    if menu.page == Page::SingleRace {
+    if matches!(menu.page, Page::SingleRace | Page::CircuitRace | Page::TimeRace) {
         // The frame the original shows the circuit in; here it holds the race's settings.
         let frame = art.place("race", "brickbox");
         fills.push((frame, BOX_FILL));
@@ -592,13 +641,22 @@ fn draw(
                 pieces.push((handle, Rect::from_corners(at, at + size), Color::WHITE, true));
             }
         }
-        let summary = format!(
-            "{}\n\nLAPS {}\n\nOPPONENTS {}\n\n{}",
-            circuits.0[settings.circuit].name,
-            settings.laps(),
-            settings.opponents,
-            DIFFICULTIES[settings.difficulty].0
-        );
+        let summary = if menu.page == Page::CircuitRace {
+            // The races the circuit is made of.
+            let name = |folder: &String| circuits.0.iter().find(|c| c.race.as_ref() == Some(folder)).map_or(folder.clone(), |c| c.name.clone());
+            let rounds = championship.series.get(championship.chosen).map(|s| s.rounds.iter().map(name).collect::<Vec<_>>());
+            rounds.unwrap_or_default().join("\n\n")
+        } else if menu.page == Page::TimeRace {
+            format!("{}\n\nLAPS {}", circuits.0[settings.circuit].name, crate::time_race::LAPS)
+        } else {
+            format!(
+                "{}\n\nLAPS {}\n\nOPPONENTS {}\n\n{}",
+                circuits.0[settings.circuit].name,
+                settings.laps(),
+                settings.opponents,
+                DIFFICULTIES[settings.difficulty].0
+            )
+        };
         words!("font_ths", &summary, frame, LABEL, true);
     }
     for (area, text, font) in &labels {

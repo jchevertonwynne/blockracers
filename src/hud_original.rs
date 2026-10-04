@@ -29,6 +29,9 @@ const HEIGHT: f32 = 480.0;
 /// Text sits this far from the top.
 const TOP: f32 = 7.0;
 const MAP_SIZE: f32 = 128.0;
+/// A warp's wash of blue comes and goes over this long, and is this blue.
+const WARP_WASH: f32 = 0.2;
+const WARP_BLUE: f32 = 100.0 / 255.0;
 /// The map and the speedometer keep this far from the corner.
 const MAP_INSET: f32 = HEIGHT / 32.0;
 const MARKER: f32 = 16.0;
@@ -63,6 +66,10 @@ mod text {
     pub const LAP: usize = 39;
     pub const FINISH: usize = 40;
     pub const GO: usize = 41;
+    pub const CONTINUE: usize = 14;
+    /// Each a pair of lines.
+    pub const RECORD_STANDS: usize = 21;
+    pub const RECORD_BEATEN: usize = 23;
     pub const RESTART: usize = 15;
     pub const EXIT: usize = 17;
 }
@@ -101,6 +108,8 @@ pub struct State {
     speed: f32,
     /// 0 the map, 1 the speedometer, 2 neither.
     gadget: u8,
+    /// How much of a warp's blue is over the screen.
+    wash: f32,
 }
 
 #[derive(Component)]
@@ -276,6 +285,8 @@ pub fn draw(
     karts: Query<(&Kart, Has<Player>)>,
     roots: Query<Entity, With<Root>>,
     pause: Res<crate::Pause>,
+    championship: Res<crate::championship::Championship>,
+    time_race: Res<crate::time_race::TimeRace>,
 ) {
     for root in &roots {
         commands.entity(root).despawn();
@@ -446,23 +457,84 @@ pub fn draw(
         _ => {}
     }
 
-    // The finishing order, and what to press next.
-    if race.phase == Phase::Finished {
-        let mut rows: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
-        rows.sort_by_key(|k| k.place);
+    // The finishing order, and what to press next. In a circuit the points go beside
+    // it, and after the last race the order is the circuit's.
+    if race.phase == Phase::Finished && settings.time_race {
+        // Against the clock: the laps, what they come to, the time to beat, and how it went.
+        let mut rows: Vec<(String, String, Color)> = time_race
+            .run
+            .laps
+            .iter()
+            .enumerate()
+            .map(|(lap, &seconds)| (format!("{} {}", string(text::LAP), lap + 1), clock(seconds), white))
+            .collect();
+        rows.push(("TOTAL".into(), clock(time_race.run.total()), yellow));
+        if let Some(record) = &time_race.record {
+            rows.push((string(text::BEST), clock(record.total()), white));
+        }
         let top = HEIGHT * 0.3;
+        for (row, (label, value, colour)) in rows.iter().enumerate() {
+            let y = top + row as f32 * line * 7.0 / 8.0;
+            frame.write("font_ths", label, Vec2::new(width / 2.0 - 150.0, y), 1.0, *colour);
+            frame.write("font_ths", value, Vec2::new(width / 2.0 + 150.0 - frame.width("font_ths", value, 1.0), y), 1.0, *colour);
+        }
+        let verdict = if time_race.result == Some(true) { text::RECORD_BEATEN } else { text::RECORD_STANDS };
+        for (row, words) in [string(verdict), string(verdict + 1)].iter().enumerate() {
+            let y = top + (rows.len() as f32 + 0.6 + row as f32 * 0.8) * line * 7.0 / 8.0;
+            frame.write("font_ths", words, Vec2::new((width - frame.width("font_ths", words, 0.75)) / 2.0, y), 0.75, yellow);
+        }
+        let prompt = format!("ENTER: {}   ESC: {}", string(text::RESTART), string(text::EXIT));
+        let at = Vec2::new((width - frame.width("font_ths", &prompt, 0.75)) / 2.0, HEIGHT * 0.3 + 7.5 * line);
+        frame.write("font_ths", &prompt, at, 0.75, white);
+    } else if race.phase == Phase::Finished {
+        let run = championship.run.as_ref();
+        let over = championship.over();
+        let mut rows: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
+        rows.sort_by_key(|k| if over { championship.standing(k.slot) } else { k.place });
+        let top = HEIGHT * 0.3;
+        let right = |frame: &mut Frame, words: &str, x: f32, y: f32, colour: Color| {
+            let at = Vec2::new(x - frame.width("font_ths", words, 1.0), y);
+            frame.write("font_ths", words, at, 1.0, colour);
+        };
         for (row, kart) in rows.iter().enumerate() {
             let y = top + row as f32 * line * 7.0 / 8.0;
             let colour = if std::ptr::eq(*kart, player) { yellow } else { white };
-            let place = format!("{}{}", kart.place, string(text::PLACES + (kart.place - 1).min(3)));
+            let position = if over { championship.standing(kart.slot) } else { kart.place };
+            let place = format!("{}{}", position, string(text::PLACES + (position - 1).min(3)));
             frame.write("font_ths", &place, Vec2::new(width / 2.0 - 230.0, y), 1.0, colour);
             frame.write("font_ths", kart.name, Vec2::new(width / 2.0 - 160.0, y), 1.0, colour);
-            let time = kart.finished.map_or("-".into(), clock);
-            frame.write("font_ths", &time, Vec2::new(width / 2.0 + 230.0 - frame.width("font_ths", &time, 1.0), y), 1.0, colour);
+            match run {
+                Some(run) => {
+                    if !over {
+                        right(&mut frame, &format!("+{}", run.round_points[kart.slot]), width / 2.0 + 160.0, y, colour);
+                    }
+                    right(&mut frame, &run.points[kart.slot].to_string(), width / 2.0 + 230.0, y, colour);
+                }
+                None => right(&mut frame, &kart.finished.map_or("-".into(), clock), width / 2.0 + 230.0, y, colour),
+            }
         }
-        let prompt = format!("ENTER: {}   ESC: {}", string(text::RESTART), string(text::EXIT));
+        let prompt = match run {
+            Some(_) => format!("ENTER: {}", string(text::CONTINUE)),
+            None => format!("ENTER: {}   ESC: {}", string(text::RESTART), string(text::EXIT)),
+        };
         let at = Vec2::new((width - frame.width("font_ths", &prompt, 0.75)) / 2.0, HEIGHT * 0.3 + 6.5 * line);
         frame.write("font_ths", &prompt, at, 0.75, white);
+    }
+
+    // A warp washes the screen blue as the car goes into the tunnel and comes out of it.
+    let wash = if player.warp_start > 0.0 {
+        1.0 - player.warp_start / WARP_WASH
+    } else if player.warp > 0.0 {
+        let through = crate::items::WARP_TIME - player.warp;
+        (1.0 - through / WARP_WASH).max(1.0 - player.warp / WARP_WASH)
+    } else {
+        state.wash - dt / WARP_WASH
+    };
+    state.wash = wash.clamp(0.0, 1.0);
+    if state.wash > 0.0 {
+        let colour = Color::srgba(0.0, 0.0, WARP_BLUE, state.wash);
+        let node = ImageNode { image: art.white.clone(), color: colour, image_mode: NodeImageMode::Stretch, ..default() };
+        frame.nodes.insert(0, (place(Vec2::ZERO, Vec2::new(width, HEIGHT)), node, UiTransform::IDENTITY));
     }
 
     // Paused: everything else gives way to a darkened screen and the menu.

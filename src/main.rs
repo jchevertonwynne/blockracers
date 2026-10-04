@@ -1,5 +1,7 @@
 mod assets;
 mod audio;
+mod camera;
+mod championship;
 mod collision;
 mod events;
 mod frontend;
@@ -12,10 +14,13 @@ mod kart_effects;
 mod menu;
 mod meshgen;
 mod mixer;
+mod opponent;
 mod particles;
 mod physics;
 mod racer_sounds;
+mod roster;
 mod scenery;
+mod time_race;
 mod track;
 mod world;
 
@@ -96,9 +101,6 @@ impl Dialog {
     }
 }
 
-/// The chase camera's heading, which trails the kart's.
-#[derive(Resource, Default)]
-struct ChaseYaw(Option<f32>);
 
 /// `BRICK_DEMO=<seconds>:<png path>` goes straight into a race in attract mode, saves a
 /// screenshot and quits. Add `:menu` to photograph the menu instead, or `:cycle` to
@@ -182,6 +184,22 @@ fn main() {
         settings.lap_choice = choice;
     }
 
+    // Demos are for looking at, and run silent.
+    if demo.is_some() {
+        (settings.music, settings.sound) = (0, 0);
+    }
+    // `BRICK_TIME=1`: a demo's race is against the clock.
+    settings.time_race = std::env::var("BRICK_TIME").is_ok();
+    // `BRICK_SERIES=0`: a demo races this circuit's races rather than one on its own.
+    let mut championship = championship::Championship::load();
+    if let Some(series) = std::env::var("BRICK_SERIES").ok().and_then(|s| s.parse().ok()) {
+        (championship.chosen, championship.unlocked) = (series, championship.series.len());
+        if let Some((code, folder)) = championship.begin() {
+            settings.championship = Some(code);
+            settings.circuit = circuits.0.iter().position(|c| c.race.as_deref() == Some(folder.as_str())).unwrap_or(0);
+        }
+    }
+
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window { title: "Brick Racers".into(), ..default() }),
@@ -201,8 +219,11 @@ fn main() {
         .insert_resource(GlobalAmbientLight { brightness: 500.0, ..default() })
         .insert_resource(circuits)
         .insert_resource(settings)
-        .init_resource::<ChaseYaw>()
+        .init_resource::<camera::Rig>()
         .init_resource::<Pause>()
+        .init_resource::<time_race::TimeRace>()
+        .insert_resource(championship)
+        .add_systems(OnEnter(Screen::Loading), |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race))
         .add_plugins((menu::plugin, frontend::plugin, audio::plugin))
         .add_systems(Startup, setup_scene)
         .add_systems(
@@ -213,6 +234,7 @@ fn main() {
                 scenery::spawn_scenery.run_if(resource_exists::<LoadedWorld>),
                 setup_brick_world.run_if(not(resource_exists::<LoadedWorld>)),
                 kart::spawn_karts,
+                time_race::spawn_ghosts,
                 items::setup_items,
                 hud::original::load,
                 hud::setup_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
@@ -229,7 +251,7 @@ fn main() {
                 items::actions,
                 kart::kart_physics,
                 kart::kart_collisions,
-                kart::update_places,
+                (kart::update_places, time_race::time_race).chain(),
                 items::pickups,
                 racer_sounds::racer_sounds,
                 events::track_events,
@@ -242,6 +264,7 @@ fn main() {
                     scenery::cycle,
                     scenery::scroll,
                     kart_effects::kart_effects,
+                    kart_effects::shadows,
                     particles::emit,
                 )
                     .chain(),
@@ -278,9 +301,10 @@ fn load_race(
     circuits: Res<Circuits>,
     settings: Res<Settings>,
     demo: Option<Res<DemoShot>>,
+    mut rig: ResMut<camera::Rig>,
 ) {
     let circuit = &circuits.0[settings.circuit];
-    match circuit.race.as_deref().and_then(world::load) {
+    match circuit.race.as_deref().and_then(|race| world::load_in(race, settings.championship.as_deref())) {
         Some((track, loaded)) => {
             commands.insert_resource(track);
             commands.insert_resource(loaded);
@@ -302,7 +326,7 @@ fn load_race(
         None => commands.remove_resource::<hazards::Hazards>(),
     }
     commands.insert_resource(Rng(0x1EC0_1999));
-    commands.insert_resource(ChaseYaw::default());
+    rig.reset();
     commands.insert_resource(Race {
         phase: Phase::Intro,
         intro: INTRO,
@@ -427,6 +451,9 @@ fn race_flow(
     mut pause: ResMut<Pause>,
     mut clock: ResMut<Time<Virtual>>,
     art: Option<Res<hud::original::Art>>,
+    mut championship: ResMut<championship::Championship>,
+    circuits: Res<Circuits>,
+    mut settings: ResMut<Settings>,
 ) {
     let mut restart = false;
     if let Some(dialog) = &mut pause.0 {
@@ -453,6 +480,8 @@ fn race_flow(
             (Some(Pending::Exit), 0) => {
                 clock.unpause();
                 pause.0 = None;
+                // Leaving gives up any circuit being raced.
+                (championship.run, settings.championship) = (None, None);
                 next.set(Screen::Menu);
                 return;
             }
@@ -472,11 +501,28 @@ fn race_flow(
         sfx.play(audio::id::MENU_BACK);
         // Without the game's own lettering there is no menu to show: just leave.
         if art.is_none() || race.phase == Phase::Finished {
+            (championship.run, settings.championship) = (None, None);
             next.set(Screen::Menu);
         } else {
             pause.0 = Some(Dialog::paused());
             clock.pause();
             debug!("paused");
+        }
+        return;
+    }
+    // After a race of a circuit comes the next, or the way out.
+    if race.phase == Phase::Finished && keys.just_pressed(KeyCode::Enter) && championship.run.is_some() && !restart {
+        let player = karts.iter().find(|k| k.1).map_or(0, |k| k.0.slot);
+        sfx.play(audio::id::MENU_CONFIRM);
+        match championship.advance(player) {
+            Some(folder) => {
+                settings.circuit = circuits.0.iter().position(|c| c.race.as_deref() == Some(folder.as_str())).unwrap_or(settings.circuit);
+                next.set(Screen::Loading);
+            }
+            None => {
+                settings.championship = None;
+                next.set(Screen::Menu);
+            }
         }
         return;
     }
@@ -510,6 +556,8 @@ fn race_flow(
             race.time += time.delta_secs();
             if karts.iter().any(|(k, player)| player && k.finished.is_some()) {
                 race.phase = Phase::Finished;
+                let places: Vec<(usize, usize)> = karts.iter().map(|(k, _)| (k.slot, k.place)).collect();
+                championship.score(&places);
             }
         }
         Phase::Finished => {}
@@ -519,10 +567,11 @@ fn race_flow(
 fn chase_camera(
     time: Res<Time>,
     race: Res<Race>,
+    keys: Res<ButtonInput<KeyCode>>,
     demo: Option<Res<DemoShot>>,
     player: Single<&Kart, With<Player>>,
     camera: Single<(&mut Transform, &mut Projection), With<Camera3d>>,
-    mut cam_yaw: ResMut<ChaseYaw>,
+    mut rig: ResMut<camera::Rig>,
 ) {
     let (mut t, mut projection) = camera.into_inner();
     if let Some((from, to)) = demo.as_ref().and_then(|d| d.camera) {
@@ -535,22 +584,37 @@ fn chase_camera(
         t.look_at(player.pos + Vec3::Y * 0.5, Vec3::Y);
         return;
     }
-    let ease = |rate: f32| 1.0 - (-rate * time.delta_secs()).exp();
-
-    // The camera's heading lags the kart's, so powerslides show the kart side-on.
-    let yaw = cam_yaw.0.get_or_insert(player.yaw);
-    let delta = (player.yaw - *yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-        - std::f32::consts::PI;
-    *yaw += delta * ease(6.0);
-    let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    // C goes round the views; V looks behind for as long as it is held.
+    if keys.just_pressed(KeyCode::KeyC) {
+        rig.view = (rig.view + 1) % 4;
+    }
+    rig.look_back = keys.pressed(KeyCode::KeyV);
+    let (position, rotation) = rig.follow(&player, time.delta_secs());
 
     // During the intro the camera drops in from high behind the grid.
     let sweep = if race.phase == Phase::Intro { (race.intro / INTRO).clamp(0.0, 1.0).powi(2) } else { 0.0 };
-    t.translation = player.pos - forward * (9.0 + 14.0 * sweep) + Vec3::Y * (4.0 + 10.0 * sweep);
-    t.look_at(player.pos + forward * 5.0 + Vec3::Y, Vec3::Y);
+    let back = rotation * Vec3::Z;
+    t.translation = position + (back * 14.0 + Vec3::Y * 10.0) * sweep;
+    if player.warp > 0.0 {
+        t.translation += kart::TUNNEL;
+    }
+    t.rotation = rotation;
 
     if let Projection::Perspective(p) = &mut *projection {
-        let fov = if player.boost > 0.0 { 78.0f32 } else { 62.0 }.to_radians();
-        p.fov += (fov - p.fov) * ease(5.0);
+        if player.warp > 0.0 {
+            // Down the tunnel the view opens right out and closes again.
+            let through = 1.0 - player.warp / items::WARP_TIME;
+            p.fov = (62.0 + 45.0 * (std::f32::consts::PI * through).sin()).to_radians();
+        } else {
+            // A turbo widens it, and a warp opening widens it more.
+            let fov = if player.warp_start > 0.0 {
+                92.0f32
+            } else if player.boost > 0.0 {
+                78.0
+            } else {
+                62.0
+            };
+            p.fov += (fov.to_radians() - p.fov) * (1.0 - (-5.0 * time.delta_secs()).exp());
+        }
     }
 }

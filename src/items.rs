@@ -61,8 +61,10 @@ const BRICK_SCALE: f32 = 0.8;
 const SHIELD_TIMES: [f32; 4] = [4.0, 6.0, 8.0, 10.0];
 /// Shields of this level and up send cannon balls back where they came from.
 const DEFLECTING_SHIELD: u8 = 2;
-const TURBO_TIMES: [f32; 3] = [1.0, 1.5, 5.0];
-const WARP_TIME: f32 = 1.5;
+pub const TURBO_TIMES: [f32; 3] = [1.0, 1.5, 5.0];
+pub const WARP_TIME: f32 = 1.5;
+/// The warp takes this long to open before it carries the kart off.
+pub const WARP_START: f32 = 0.5;
 
 // Aiming: the nearest racer inside a cone ahead, between these distances.
 const AIM_MIN: f32 = 10.0 * UNIT;
@@ -389,7 +391,7 @@ pub fn use_items(
         if !std::mem::take(&mut c.use_item) {
             continue;
         }
-        if k.spin > 0.0 || k.spin_out > 0.0 || k.magnet > 0.0 || k.warp > 0.0 {
+        if k.spin > 0.0 || k.spin_out > 0.0 || k.magnet > 0.0 || k.warp > 0.0 || k.warp_start > 0.0 {
             continue;
         }
         // With nothing to fire, the button sounds the horn.
@@ -468,7 +470,7 @@ pub fn use_items(
                 // A shield lifts a curse.
                 k.cursed = 0.0;
             }
-            (Power::Green, 3) => k.warp = WARP_TIME,
+            (Power::Green, 3) => k.warp_start = WARP_START,
             (Power::Green, level) => {
                 k.boost = TURBO_TIMES[level as usize];
                 k.boost_level = level;
@@ -950,7 +952,7 @@ mod tests {
         let (mut world, owner, _) = arena(100.0);
         let start = kart(&world, owner).s;
         fire(&mut world, owner, Power::Green, 3);
-        ever(&mut world, WARP_TIME + 0.2, |_| false);
+        ever(&mut world, WARP_START + WARP_TIME + 0.2, |_| false);
         let k = kart(&world, owner);
         assert!(k.s - start > 200.0, "warped {}", k.s - start);
         assert!(k.vel.length() > crate::physics::MAX_SPEED);

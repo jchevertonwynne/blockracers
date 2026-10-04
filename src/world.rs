@@ -11,6 +11,7 @@ use crate::assets::{
 };
 use crate::items::Power;
 use crate::particles;
+use crate::roster::{self, Driver};
 use crate::scenery;
 use crate::physics::UNIT;
 use crate::track::{Checkpoint, Track};
@@ -21,6 +22,7 @@ use bevy::{
     render::render_resource::{Extent3d, PrimitiveTopology, TextureDimension, TextureFormat},
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const DEFAULT_JAM: &str = "Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM";
 /// Half-width of the band around the recorded racing line that the AI may use.
@@ -71,6 +73,13 @@ pub struct LoadedWorld {
     pub bricks: Vec<(Option<Power>, Vec3)>,
     /// One per grid slot, in the order of the driver roster.
     pub karts: Vec<KartModel>,
+    /// Who is in each of those slots; the player is the last.
+    pub field: Vec<Driver>,
+    /// The drives the computer's cars play back, one per slot.
+    pub routes: Vec<Arc<route::Record>>,
+    /// The record run of a time race, and cars for it and the player's best to be shown as.
+    pub ghost: Option<crate::time_race::Run>,
+    pub ghost_models: Vec<KartModel>,
     /// Scenery and animated models around the track.
     pub props: Vec<scenery::PropDef>,
     /// The models power-ups are made of.
@@ -210,7 +219,8 @@ const COMMON: &str = "/GAMEDATA/COMMON";
 /// A bone's rotation and position in model space.
 fn bone_pose(bones: &[Bone], index: usize) -> (Quat, Vec3) {
     let bone = &bones[index];
-    let (rotation, position) = (Quat::from_array(bone.rotation), Vec3::from(bone.position));
+    // Stored for vectors multiplied from the other side, as every rotation of the game's is.
+    let (rotation, position) = (crate::assets::adb::turn(bone.rotation), Vec3::from(bone.position));
     match bone.parent {
         Some(parent) => {
             let (parent_rotation, parent_position) = bone_pose(bones, parent);
@@ -221,9 +231,10 @@ fn bone_pose(bones: &[Bone], index: usize) -> (Quat, Vec3) {
 }
 
 /// Loads the car of the champion whose files start with `prefix` ("rr" for Rocket Racer).
-fn load_kart(jam: &Jam, prefix: &str) -> Option<KartModel> {
-    let part = |suffix: &str| {
-        let file = |ext: &str| format!("{COMMON}/{prefix}{suffix}.{ext}");
+fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
+    let prefix = &driver.car;
+    let part = |name: &str| {
+        let file = |ext: &str| format!("{COMMON}/{name}.{ext}");
         let model = Model::parse(jam.get(&file("GDB"))?)?;
         let library = Library::new(jam, [file("MDB"), file("TDB")].iter().map(String::as_str), &[COMMON]);
         Some((model, library))
@@ -235,10 +246,10 @@ fn load_kart(jam: &Jam, prefix: &str) -> Option<KartModel> {
         bones
     };
 
-    let (body, library) = part("CM")?;
+    let (body, library) = part(&format!("{prefix}CM"))?;
     let body_surfaces = library.surfaces(&body, |_| true, Vec3::from);
 
-    let (wheels, library) = part("JMW")?;
+    let (wheels, library) = part(&format!("{prefix}JMW"))?;
     let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/{prefix}JMW.SDB"))?)?;
     let mut axles = Vec::new();
     for bone in bones_used(&wheels) {
@@ -255,13 +266,13 @@ fn load_kart(jam: &Jam, prefix: &str) -> Option<KartModel> {
     }
 
     // Every minifigure shares one skeleton; bake the figure into its rest pose.
-    let (driver, library) = part("PELVIS")?;
+    let (figure, library) = part(&driver.figure)?;
     let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/PELVIS.SDB"))?)?;
     let mut driver_surfaces = Vec::new();
-    for bone in bones_used(&driver) {
+    for bone in bones_used(&figure) {
         let (rotation, position) = bone_pose(&skeleton, bone);
         let place = |p: [f32; 3]| position + rotation * Vec3::from(p);
-        driver_surfaces.extend(library.surfaces(&driver, |b| b.bone == Some(bone), place));
+        driver_surfaces.extend(library.surfaces(&figure, |b| b.bone == Some(bone), place));
     }
 
     // The car's outline, from the body and the wheels at the ends of each axle.
@@ -286,8 +297,8 @@ fn load_kart(jam: &Jam, prefix: &str) -> Option<KartModel> {
         axles,
         wheel_scale: wheels.scale,
         driver: driver_surfaces,
-        driver_scale: driver.scale,
-        chassis: chassis(jam, prefix)?,
+        driver_scale: figure.scale,
+        chassis: chassis(jam, &driver.chassis)?,
     })
 }
 
@@ -305,11 +316,9 @@ pub struct Chassis {
     pub engine_pitch: f32,
 }
 
-fn chassis(jam: &Jam, prefix: &str) -> Option<Chassis> {
+fn chassis(jam: &Jam, name: &str) -> Option<Chassis> {
     let tokens = tokenize(jam.get(&format!("{COMMON}/CHASSIS.CMB"))?);
-    let start = tokens.iter().position(
-        |t| matches!(t, Token::Str(name) if name.starts_with(prefix) && name[prefix.len()..].starts_with("cha")),
-    )?;
+    let start = tokens.iter().position(|t| matches!(t, Token::Str(entry) if entry.eq_ignore_ascii_case(name)))?;
     // The entry runs up to the next chassis.
     let end = tokens[start + 1..]
         .iter()
@@ -338,9 +347,6 @@ fn chassis(jam: &Jam, prefix: &str) -> Option<Chassis> {
         engine_pitch: numbers(0x2f, 0, 1).map_or(1.0, |v| v[0]),
     })
 }
-
-/// Champions whose cars the six racers drive, in roster order.
-pub const KART_PREFIXES: [&str; 6] = ["rr", "cr", "kk", "bb", "jt", "vv"];
 
 fn open_jam() -> Option<Jam> {
     Jam::open(std::env::var("LEGO_JAM").unwrap_or(DEFAULT_JAM.into()))
@@ -376,7 +382,13 @@ pub fn circuits() -> Vec<(String, String)> {
 
 /// Loads a race (a folder name such as `RACEC0R0`) from the archive at `$LEGO_JAM`.
 /// `None` if the game data isn't there or doesn't hold what we need.
+#[cfg(test)]
 pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
+    load_in(race, None)
+}
+
+/// As `load`, with the field of a given circuit rather than the race's own.
+pub fn load_in(race: &str, circuit: Option<&str>) -> Option<(Track, LoadedWorld)> {
     let jam = open_jam()?;
     let dir = format!("/GAMEDATA/{race}");
     let mut files: Vec<&str> = jam.list(&dir).collect();
@@ -390,7 +402,7 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
     let surfaces = library.surfaces(&model, |_| true, to_world);
 
     let route_file = with_ext(".RRB").next()?;
-    let lap = route::Route::parse(jam.get(route_file)?)?.lap;
+    let lap = route::Record::parse(jam.get(route_file)?, false)?.lap();
     let line: Vec<Vec3> = lap.into_iter().map(to_world).collect();
     let mut track = Track::from_loop(&line, LANE);
 
@@ -514,10 +526,26 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
 
     info!("loaded {race}: {model_file}, {route_file}, lap {:.0}", track.length);
     // Karts are optional: without them the brick-built stand-ins are used.
-    let karts: Vec<KartModel> = KART_PREFIXES.iter().map_while(|p| load_kart(&jam, p)).collect();
-    if karts.len() != KART_PREFIXES.len() {
+    let circuit = circuit.map(str::to_string).or_else(|| roster::circuit_of(&jam, race)).unwrap_or("c0".into());
+    let field = roster::field(&jam, &circuit);
+    let karts: Vec<KartModel> = field.iter().map_while(|driver| load_kart(&jam, driver)).collect();
+    if karts.len() != field.len() || karts.is_empty() {
         warn!("could not load the original kart models");
     }
+    let ghost = jam.get(&format!("{dir}/GHOST.GHB")).and_then(crate::time_race::Run::parse);
+    let record_holder = roster::driver(&jam, roster::PLAYER);
+    let ghost_models: Vec<KartModel> = (0..2).filter_map(|_| load_kart(&jam, record_holder.as_ref()?)).collect();
+    // Each of the computer's cars plays one of the drives recorded for its place on
+    // the grid, picked by chance.
+    let pick = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.subsec_nanos() as usize);
+    let routes = (1..=5)
+        .filter_map(|slot| {
+            let prefix = format!("{dir}/R{slot}_");
+            let recorded: Vec<&str> = with_ext(".RRB").filter(|f| f.starts_with(&prefix)).collect();
+            let file = recorded.get((pick / slot) % recorded.len().max(1))?;
+            Some(Arc::new(route::Record::parse(jam.get(file)?, false)?))
+        })
+        .collect();
     let track_model = model_file.rsplit('/').next().unwrap_or_default().trim_end_matches(".GDB").to_lowercase();
     let props = scenery::load(&jam, &dir, &library, &track_model);
     let powerups = ["POWERUP", "DTURBO0", "DTURBO1", "DTURBO2", "CURSE", "BARREL", "WARPHOLE", "CGREEN", "GRAPPLE", "DBRICKS", "DTUBE"];
@@ -567,7 +595,7 @@ pub fn load(race: &str) -> Option<(Track, LoadedWorld)> {
         .filter_map(|material| picture(&library, material))
         .chain(crate::item_models::PICTURES.iter().filter_map(|material| picture(&powerups, material)))
         .collect();
-    Some((track, LoadedWorld { surfaces, bricks, karts, props, models, emitters, swatches }))
+    Some((track, LoadedWorld { surfaces, bricks, karts, field, routes, ghost, ghost_models, props, models, emitters, swatches }))
 }
 
 /// Render components for one surface.

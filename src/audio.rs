@@ -264,6 +264,7 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Mixer>()
         .init_resource::<Library>()
         .init_resource::<Playing>()
+        .init_resource::<VoicePlaces>()
         // Before the first screen is entered, which wants its music.
         .add_systems(PreStartup, (load_banks, start_mixer))
         .add_systems(OnEnter(Screen::Menu), menu_music)
@@ -297,15 +298,18 @@ fn load_bank(jam: &Jam, path: &str, dir: &str) -> Bank {
 
 /// Each racer's twelve remarks, found in whichever voice bank lists them, and the
 /// racer's place in that bank (which settles their horn).
-fn load_voices(jam: &Jam) -> (Bank, Vec<usize>) {
+fn load_voices(jam: &Jam, racers: &[[String; 2]]) -> (Bank, Vec<usize>) {
     const DIR: &str = "/GAMEDATA/VOICES";
     let mut banks: Vec<&str> = jam.list(DIR).filter(|f| f.ends_with(".SBK")).collect();
     // The circuits' banks first: they hold six racers each.
     banks.sort_by_key(|f| (!f.contains("VOICEC"), f.to_string()));
     let banks: Vec<Vec<String>> = banks.iter().map(|path| bank_names(jam, path)).collect();
     let (mut voices, mut places) = (Bank::new(), Vec::new());
-    for prefix in crate::world::KART_PREFIXES {
-        let own = |name: &String| name.to_lowercase().starts_with(&format!("{prefix}_"));
+    for names in racers {
+        // By the figure's name, or failing that the car's.
+        let listed = |prefix: &String| banks.iter().any(|bank| bank.iter().any(|name| name.to_lowercase().starts_with(&format!("{}_", prefix.to_lowercase()))));
+        let prefix = names.iter().find(|prefix| listed(prefix)).unwrap_or(&names[0]);
+        let own = |name: &String| name.to_lowercase().starts_with(&format!("{}_", prefix.to_lowercase()));
         let found = banks.iter().find_map(|names| Some((names, names.iter().position(own)?)));
         let (names, start) = found.map_or((&[][..], 0), |(names, start)| (&names[..], start));
         for n in 0..id::VOICES_EACH {
@@ -321,17 +325,15 @@ fn load_voices(jam: &Jam) -> (Bank, Vec<usize>) {
 #[derive(Resource, Default)]
 pub struct VoicePlaces(pub Vec<usize>);
 
-fn load_banks(mut commands: Commands, mut library: ResMut<Library>) {
+fn load_banks(mut library: ResMut<Library>) {
     let Some(jam) = Jam::open(jam_path()) else { return };
     library.music_dir = jam_path().parent().map(PathBuf::from);
     library.general = load_bank(&jam, "/GAMEDATA/COMMON/GENERAL.SBK", "/GAMEDATA/COMMON");
     library.menu = load_bank(&jam, "/MENUDATA/GENC0R0.SBK", "/MENUDATA/SOUNDS");
-    let (voices, places) = load_voices(&jam);
-    library.voices = voices;
-    commands.insert_resource(VoicePlaces(places));
 }
 
 fn load_circuit_bank(
+    mut places_out: ResMut<VoicePlaces>,
     mut library: ResMut<Library>,
     mut playing: ResMut<Playing>,
     circuits: Res<Circuits>,
@@ -341,6 +343,12 @@ fn load_circuit_bank(
     library.ambient = Bank::new();
     let Some(race) = circuits.0[settings.circuit].race.as_deref() else { return };
     let Some(jam) = Jam::open(jam_path()) else { return };
+    // The voices of whoever is racing here.
+    let circuit = settings.championship.clone().or_else(|| crate::roster::circuit_of(&jam, race)).unwrap_or("c0".into());
+    let racers: Vec<[String; 2]> = crate::roster::field(&jam, &circuit).iter().map(crate::roster::Driver::voices).collect();
+    let (voices, places) = load_voices(&jam, &racers);
+    library.voices = voices;
+    places_out.0 = places;
     let dir = format!("/GAMEDATA/{race}");
     if let Some(bank) = jam.list(&dir).find(|f| f.ends_with(".SBK")) {
         library.ambient = load_bank(&jam, bank, &dir);
@@ -590,11 +598,15 @@ mod tests {
     #[test]
     fn every_racer_has_a_voice() {
         let Some(jam) = Jam::open(jam_path()) else { return };
-        let (voices, places) = load_voices(&jam);
-        assert_eq!(voices.len(), crate::world::KART_PREFIXES.len() * id::VOICES_EACH);
-        let missing: Vec<usize> = voices.iter().enumerate().filter(|v| v.1.is_none()).map(|v| v.0).collect();
-        assert!(missing.is_empty(), "no voice for {missing:?}");
-        assert!(places.iter().all(|&p| p < 6), "{places:?}");
+        // Every circuit's field, by the names their figures' files go by.
+        for (circuit, _) in crate::roster::circuits(&jam) {
+            let racers: Vec<[String; 2]> = crate::roster::field(&jam, &circuit).iter().map(crate::roster::Driver::voices).collect();
+            let (voices, places) = load_voices(&jam, &racers);
+            assert_eq!(voices.len(), racers.len() * id::VOICES_EACH);
+            let missing: Vec<&[String; 2]> = racers.iter().enumerate().filter(|r| voices[r.0 * id::VOICES_EACH].is_none()).map(|r| r.1).collect();
+            assert!(missing.is_empty(), "{circuit}: no voice for {missing:?}");
+            assert!(places.iter().all(|&p| p < 6), "{places:?}");
+        }
     }
 
     #[test]

@@ -305,6 +305,8 @@ struct Template {
     /// materials each is.
     parts: Vec<(Option<usize>, Vec<(Handle<Mesh>, Handle<StandardMaterial>, usize)>)>,
     cycles: Vec<(usize, usize, Arc<Vec<Reel>>)>,
+    /// Where its file puts it, in the game's coordinates.
+    position: Vec3,
     rig: Option<Rig>,
     scale: f32,
     scroll: Vec2,
@@ -339,7 +341,7 @@ impl Template {
                 (material, start, Arc::new(reels.iter().map(reel).collect()))
             })
             .collect();
-        Template { parts, cycles, rig: def.rig.clone(), scale: def.scale, scroll: def.scroll }
+        Template { parts, cycles, position: def.position, rig: def.rig.clone(), scale: def.scale, scroll: def.scroll }
     }
 
     /// Hangs the model's bones and meshes on `root`, which wants a `Transform` in the
@@ -429,6 +431,12 @@ impl Models {
         Some(commands.spawn((at, Visibility::default())).add_child(model).id())
     }
 
+    /// Where a model's file places it, in the frame `spawn` puts models in.
+    pub fn placed(&self, name: &str) -> Vec3 {
+        let axes = Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y);
+        self.0.get(name).map_or(Vec3::ZERO, |template| axes * template.position * UNIT)
+    }
+
     /// Adds a copy of a model that is drawn with another picture.
     pub fn repaint(&mut self, name: &str, copy: &str, picture: &Handle<Image>, materials: &mut Assets<StandardMaterial>) {
         let Some(template) = self.0.get(name) else { return };
@@ -441,7 +449,7 @@ impl Models {
             .parts
             .iter()
             .map(|(bone, surfaces)| (*bone, surfaces.iter().map(|(mesh, material, index)| (mesh.clone(), repaint(material), *index)).collect()));
-        let copied = Template { parts: parts.collect(), cycles: Vec::new(), rig: template.rig.clone(), scale: template.scale, scroll: template.scroll };
+        let copied = Template { parts: parts.collect(), cycles: Vec::new(), position: template.position, rig: template.rig.clone(), scale: template.scale, scroll: template.scroll };
         self.0.insert(copy.to_string(), copied);
     }
 

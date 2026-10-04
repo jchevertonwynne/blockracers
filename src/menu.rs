@@ -10,6 +10,8 @@ pub enum Screen {
     #[default]
     Menu,
     Race,
+    /// Between two races of a circuit: straight on to the next.
+    Loading,
 }
 
 pub struct Circuit {
@@ -41,6 +43,10 @@ pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("H
 pub struct Settings {
     pub circuit: usize,
     pub lap_choice: usize,
+    /// The circuit (`c0` and so on) being raced for, when the race is one of a series.
+    pub championship: Option<String>,
+    /// Racing the clock, alone but for the ghosts.
+    pub time_race: bool,
     pub opponents: usize,
     pub difficulty: usize,
     /// Steps of the original's volume sliders, 0 to 20.
@@ -53,10 +59,18 @@ impl Settings {
     pub fn new(circuits: &Circuits) -> Self {
         let wanted = std::env::var("LEGO_RACE").ok();
         let circuit = circuits.0.iter().position(|c| c.race.is_some() && c.race == wanted);
-        Settings { circuit: circuit.unwrap_or(0), lap_choice: 1, opponents: MAX_OPPONENTS, difficulty: 1, music: 14, sound: MAX_VOLUME }
+        Settings { circuit: circuit.unwrap_or(0), lap_choice: 1, championship: None, time_race: false, opponents: MAX_OPPONENTS, difficulty: 1, music: 14, sound: MAX_VOLUME }
+    }
+
+    /// How many of the computer's cars race: none against the clock.
+    pub fn field(&self) -> usize {
+        if self.time_race { 0 } else { self.opponents }
     }
 
     pub fn laps(&self) -> i32 {
+        if self.time_race {
+            return crate::time_race::LAPS as i32;
+        }
         LAP_CHOICES[self.lap_choice]
     }
 
