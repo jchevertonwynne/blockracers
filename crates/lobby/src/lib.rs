@@ -13,6 +13,8 @@
 //! Nothing is kept across a restart: a host whose session has gone is told so by its
 //! next beat (404) and lists it again.
 
+pub mod tracing;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -69,6 +71,7 @@ pub fn app() -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .route_layer(axum::middleware::from_fn(tracing::trace))
         .with_state(Shared::default())
 }
 

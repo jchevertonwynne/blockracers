@@ -5,11 +5,15 @@ edition = "2024"
 
 [dependencies]
 lobby-api = { path = "../lobby-api" }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
-tokio = { version = "1", features = ["rt", "macros", "net", "signal", "time"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 getrandom = "0.4"
 anyhow = "1"
+# Traces, sent to the cluster's collector over gRPC as its other apps send theirs.
+opentelemetry = "0.33"
+opentelemetry_sdk = "0.33"
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "grpc-tonic"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
