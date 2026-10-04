@@ -18,7 +18,7 @@ use super::{Role, Session, Wire};
 use crate::menu::{Circuits, Screen, Settings};
 
 /// Where the lobby is, unless `BRICK_LOBBY` says otherwise.
-const LOBBY: &str = "https://lego.jchevertonwynne.uk";
+const LOBBY: &str = "https://racers.jchevertonwynne.uk";
 
 #[derive(thiserror::Error, Debug)]
 enum LobbyError {
