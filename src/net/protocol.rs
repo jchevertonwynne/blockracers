@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::room::Voter;
+use super::scene::{EventNote, Scene};
 use super::state::{Standing, State};
 use crate::kart::Controls;
 use crate::menu::{Circuits, LAP_CHOICES, Settings};
@@ -179,7 +180,7 @@ pub enum ToHost {
     Ready(bool),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum ToPlayer {
     Welcome { you: Peer },
     Refused(Refusal),
@@ -190,6 +191,10 @@ pub enum ToPlayer {
     Room { voters: Vec<Voter>, closing: Option<f32>, last: Option<Rules>, results: Vec<String> },
     /// The race is run, and everyone is back in the room.
     Over,
+    /// What has become of the bricks and the power-ups, and the circuit's events
+    /// that have started and ended (`scene`).
+    Scene(Scene),
+    Events(Vec<EventNote>),
 }
 
 #[cfg(test)]

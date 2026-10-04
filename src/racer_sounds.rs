@@ -66,7 +66,7 @@ mod slot {
 const ENGINE_NOTES: [usize; 3] = [id::ENGINE_IDLE, id::ENGINE, id::ENGINE_COAST];
 
 /// Things that happen to a racer elsewhere in the game and want a sound.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Cues {
     /// A remark: happy or not.
     pub reaction: Option<bool>,

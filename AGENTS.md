@@ -16,7 +16,9 @@ behave, sound and look like the original; the decompilation is the reference for
 - **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
   games drive their own car ahead of the host's word and are shown the rest. Online
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
-  pause, photo mode and replays are off.
+  pause, photo mode and replays are off. Bricks, power-ups and the circuit's events
+  are run only on the host, which tells the others what came of them (`net::scene`);
+  a joiner's `TrackEvents` is `following` and starts nothing by itself.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 

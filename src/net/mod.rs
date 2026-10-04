@@ -19,6 +19,7 @@ pub mod link;
 pub mod lobby;
 pub mod protocol;
 pub mod room;
+pub mod scene;
 pub mod state;
 pub mod transport;
 #[cfg(test)]
@@ -76,6 +77,13 @@ pub struct Clock {
 pub struct Pending {
     use_item: bool,
     start_boost: Option<u8>,
+}
+
+impl Pending {
+    /// The power-up button is pressed, by something other than the keys.
+    pub fn use_item(&mut self) {
+        self.use_item = true;
+    }
 }
 
 /// A car shown as the host says it is, and not driven here.
@@ -159,6 +167,8 @@ pub struct Inbox {
     pub to_player: Vec<ToPlayer>,
     pub inputs: Vec<(Peer, Inputs)>,
     pub snapshots: Vec<Snapshot>,
+    pub scenes: Vec<scene::Scene>,
+    pub events: Vec<scene::EventNote>,
 }
 
 /// Reads what the link has brought. A message that can't be read is dropped: it is a
@@ -268,6 +278,8 @@ fn session(
     if *screen.get() != Screen::Race {
         inbox.inputs.clear();
         inbox.snapshots.clear();
+        inbox.scenes.clear();
+        inbox.events.clear();
     }
     for _ in inbox.joined.drain(..) {
         // A player's game has reached its host, and says who it is.
@@ -368,7 +380,7 @@ fn session(
             leave(&mut commands, session, &mut settings, Some("The host has gone"), &mut next);
             return;
         }
-        for message in inbox.to_player.drain(..) {
+        for message in std::mem::take(&mut inbox.to_player) {
             match message {
                 ToPlayer::Welcome { you } => {
                     info!("joined {} as player {you}", session.title);
@@ -400,6 +412,8 @@ fn session(
                     }
                 }
                 ToPlayer::Over => next.set(Screen::Menu),
+                ToPlayer::Scene(scene) => inbox.scenes.push(scene),
+                ToPlayer::Events(notes) => inbox.events.extend(notes),
             }
         }
         // The host is told what the player here wants whenever that changes.
@@ -514,7 +528,16 @@ fn end_tick(mut own: Query<&mut Controls, With<Player>>) {
 }
 
 /// A race online begins from nothing: no steps counted, nothing heard or guessed.
-pub fn enter_race(mut commands: Commands) {
+pub fn enter_race(mut commands: Commands, role: Res<Role>, mut sfx: ResMut<crate::audio::Sfx>, events: Option<ResMut<crate::events::TrackEvents>>) {
+    // The circuit's events are the host's: it logs them and its players follow.
+    if let Some(mut events) = events {
+        (events.logging, events.following) = (*role == Role::Host, *role == Role::Client);
+    }
+    sfx.listening = false;
+    sfx.heard.clear();
+    sfx.looping.clear();
+    commands.insert_resource(scene::Told::default());
+    commands.insert_resource(scene::Shown::default());
     commands.insert_resource(Clock::default());
     commands.insert_resource(Pending::default());
     commands.insert_resource(host::Flow::default());
@@ -531,6 +554,8 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Pending>()
         .init_resource::<host::Flow>()
         .init_resource::<client::Prediction>()
+        .init_resource::<scene::Told>()
+        .init_resource::<scene::Shown>()
         .insert_resource(Time::<Fixed>::from_hz(TICKS))
         .add_systems(PreUpdate, pump)
         // The cars are where the race has them while it is stepped, and between
@@ -543,6 +568,9 @@ pub fn plugin(app: &mut App) {
                 (display::blend, kart::player_input, latch).chain().before(kart::sync_karts).before(crate::racer_sounds::racer_sounds),
                 client::smooth.after(kart::sync_karts).run_if(joined),
                 escape,
+                scene::follow_events.before(crate::events::track_events).run_if(joined),
+                (scene::glide.before(crate::item_models::dress_actions), scene::sound_loops.before(crate::racer_sounds::racer_sounds)).run_if(joined),
+                scene::tell_events.after(crate::hazards::hazards).run_if(hosting),
             )
                 .run_if(in_state(Screen::Race))
                 .run_if(online),
@@ -554,13 +582,13 @@ pub fn plugin(app: &mut App) {
             (
                 begin_tick,
                 client::receive.run_if(joined),
-                (host::receive, host::flow, kart::ai_drive, host::drive_remotes).chain().run_if(hosting),
+                (scene::listen, host::receive, host::flow, kart::ai_drive, host::drive_remotes).chain().run_if(hosting),
                 client::send.run_if(joined),
                 (items::use_items, items::actions).chain().run_if(hosting),
                 kart::kart_physics,
                 (kart::kart_collisions, kart::update_places, rules::elimination, items::pickups).chain().run_if(hosting),
-                client::puppets.run_if(joined),
-                host::send.run_if(hosting),
+                (client::puppets, scene::take, items::show_pickups).chain().run_if(joined),
+                (host::send, scene::tell).chain().run_if(hosting),
                 (end_tick, display::note),
             )
                 .chain()

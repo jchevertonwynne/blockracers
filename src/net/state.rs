@@ -89,6 +89,11 @@ pub struct State {
 }
 
 impl State {
+    /// The white bricks the car carries.
+    pub fn whites(&self) -> u8 {
+        self.whites
+    }
+
     pub fn of(k: &Kart) -> Self {
         State {
             pos: k.pos,

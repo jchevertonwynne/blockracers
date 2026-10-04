@@ -532,10 +532,13 @@ fn demo_shot(
     events: Option<ResMut<events::TrackEvents>>,
     mut sfx: ResMut<audio::Sfx>,
     mut player: Query<(&mut Kart, &mut kart::Controls), With<Player>>,
+    mut pending: ResMut<net::Pending>,
 ) {
     if let Some(&(power, level, _)) = demo.powers.get(*used).filter(|p| time.elapsed_secs() >= p.2)
         && let Ok((mut kart, mut controls)) = player.single_mut() {
             (kart.held, kart.whites, controls.use_item) = (Some(power), level, true);
+            // Online the press is taken by the next step of the race.
+            pending.use_item();
             *used += 1;
         }
     if let Some(mut events) = events {

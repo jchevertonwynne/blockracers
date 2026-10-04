@@ -60,6 +60,7 @@ pub fn receive(
     mut inbox: ResMut<Inbox>,
     mut race: ResMut<Race>,
     mut p: ResMut<Prediction>,
+    mut sfx: ResMut<crate::audio::Sfx>,
     mut karts: Query<(Entity, &mut Kart, Has<Player>, Has<Puppet>)>,
 ) {
     let dt = time.delta_secs();
@@ -96,6 +97,11 @@ pub fn receive(
             }
         } else {
             kart.place = standing.map_or(kart.place, |standing| standing.place as usize);
+            // A white brick taken sounds as it does where the race is run, a note
+            // higher for each one carried.
+            if snapshot.own.whites() > kart.whites {
+                sfx.play(crate::audio::id::WHITE_BRICK + kart.whites as usize);
+            }
             // Its race run, the car is the host's to drive, and is shown like the rest.
             if snapshot.own.finished.is_some() || snapshot.own.out.is_some() {
                 snapshot.own.put(&mut kart);

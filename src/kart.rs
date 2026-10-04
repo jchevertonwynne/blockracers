@@ -1347,9 +1347,11 @@ impl Kart {
 
 /// `Racer::OnEvent`: cars that meet are parted and bounce off each other; a shield
 /// shoves or spins the car that touches it, and a curse is passed on.
-pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player>)>) {
+pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player>, Has<Remote>)>) {
     let mut pairs = q.iter_combinations_mut();
-    while let Some([(mut a, a_player), (mut b, b_player)]) = pairs.fetch_next() {
+    while let Some([(mut a, a_here, a_elsewhere), (mut b, b_here, b_elsewhere)]) = pairs.fetch_next() {
+        // Online a player elsewhere hears their own bumps by way of the host.
+        let (a_player, b_player) = (a_here || a_elsewhere, b_here || b_elsewhere);
         // Karts on different levels (a bridge, say), in warp or blown into the air
         // pass each other by.
         if (a.pos.y - b.pos.y).abs() > 2.0 || a.warp > 0.0 || b.warp > 0.0 || a.spin_out > 0.0 || b.spin_out > 0.0 {

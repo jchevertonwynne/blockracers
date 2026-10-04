@@ -195,7 +195,7 @@ mod flight {
 }
 
 /// What a brick is doing: `PickupBrick`'s states.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 enum BrickState {
     /// There to be taken.
     Idle,
@@ -208,8 +208,11 @@ enum BrickState {
 }
 
 /// A brick, as the original's `ColorBrick` and `WhiteBrick`.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Pickup {
+    /// Which of the circuit's bricks it is, counted as they are put out: the same on
+    /// every machine racing the circuit, which is how a host says which it means.
+    id: u16,
     /// The colour it is now; `None` is a white brick.
     power: Option<Power>,
     /// The colour it was put on the circuit as, and goes back to.
@@ -231,6 +234,7 @@ pub struct Pickup {
     touched: bool,
     was_touched: bool,
     /// The car carrying a white brick.
+    #[serde(skip)]
     holder: Option<Entity>,
     /// How long a white brick has lain where it was dropped.
     dropped: Option<f32>,
@@ -243,6 +247,8 @@ pub struct Pickup {
 impl Pickup {
     fn new(power: Option<Power>, pos: Vec3, lift: f32, modelled: bool) -> Self {
         Pickup {
+            // Counted when it is put out (`ItemAssets::spawn_brick`).
+            id: u16::MAX,
             power,
             home: power,
             next_power: power,
@@ -277,6 +283,23 @@ impl Pickup {
         }
     }
 
+    /// What a brick looks like in its state: seen or not, how big, and where.
+    fn show(&self, tf: &mut Transform, vis: &mut Mut<Visibility>, t: f32) {
+        vis.set_if_neq(if self.state == BrickState::Wait { Visibility::Hidden } else { Visibility::Inherited });
+        tf.scale = Vec3::splat(BRICK_SCALE * self.size()).max(Vec3::splat(0.001));
+        tf.translation = self.pos + Vec3::Y * self.lift;
+        if !self.modelled {
+            tf.rotation = Quat::from_rotation_y(t * 2.0);
+            tf.translation.y += (t * 3.0 + self.pos.x).sin() * 0.15;
+        }
+    }
+
+    /// What of a brick another game needs telling when it changes: what it is, what
+    /// it is doing and becoming, and where.
+    fn mark(&self) -> BrickMark {
+        BrickMark(self.power, self.next_power, self.state, self.next, (self.pos * 100.0).as_ivec3().to_array(), self.going_home)
+    }
+
     /// `DroppableBrick::ReturnHome`: one lying on the road shrinks away first; one
     /// being carried is simply back.
     fn go_home(&mut self) {
@@ -290,14 +313,14 @@ impl Pickup {
 }
 
 /// Something a power-up has put into the world. Its position is its `Transform`.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MagnetState {
     Armed,
     Holding,
     Fade,
 }
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     /// `on_hit` is an event of the circuit's to set off where it lands.
     Cannonball { owner: Entity, shot: Shot, on_hit: Option<i32> },
@@ -350,6 +373,8 @@ pub struct ItemAssets {
     /// The plain brick, and what it is made of: the four colours, then white.
     brick: Handle<Mesh>,
     bricks: [Handle<StandardMaterial>; 5],
+    /// How many bricks have been put out, which numbers the next.
+    put_out: std::sync::atomic::AtomicU16,
 }
 
 const POWERS: [Power; 4] = [Power::Red, Power::Yellow, Power::Blue, Power::Green];
@@ -373,6 +398,9 @@ impl ItemAssets {
             Some(Power::Green) => ["gen-t", "genblen-t"],
             None => ["enh", "enhblen"],
         };
+        if pickup.id == u16::MAX {
+            pickup.id = self.put_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         debug!("brick {:?} at {}", pickup.power, pickup.pos);
         let at = Transform::from_translation(pickup.pos + Vec3::Y * pickup.lift).with_scale(Vec3::splat(BRICK_SCALE * pickup.size()));
         let model = models.and_then(|models| {
@@ -429,6 +457,7 @@ pub fn setup_items(
         bolt: plain(Color::srgb(0.1, 0.25, 0.96), 12.0),
         brick: Handle::default(),
         bricks: default(),
+        put_out: default(),
     };
     let mut assets = assets;
     let mut brick = BrickMesh::default();
@@ -542,7 +571,7 @@ pub fn pickups(
         if !audible && (p.state == BrickState::Wait || (p.power != p.home && !p.random) || p.pos != p.home_pos) {
             // A random brick is put back as the colour it has.
             let colour = if p.random { p.power } else { p.home };
-            let fresh = Pickup { random: p.random, ..Pickup::new(colour, p.home_pos, p.lift, p.modelled) };
+            let fresh = Pickup { random: p.random, id: p.id, ..Pickup::new(colour, p.home_pos, p.lift, p.modelled) };
             if p.power != p.home && !p.random {
                 commands.entity(entity).despawn();
                 assets.spawn_brick(&mut commands, models.as_deref(), fresh);
@@ -586,13 +615,7 @@ pub fn pickups(
             sfx.emit(id::BRICK_RESPAWN, brick_sound(p.pos));
         }
 
-        vis.set_if_neq(if p.state == BrickState::Wait { Visibility::Hidden } else { Visibility::Inherited });
-        tf.scale = Vec3::splat(BRICK_SCALE * p.size()).max(Vec3::splat(0.001));
-        tf.translation = p.pos + Vec3::Y * p.lift;
-        if !p.modelled {
-            tf.rotation = Quat::from_rotation_y(t * 2.0);
-            tf.translation.y += (t * 3.0 + p.pos.x).sin() * 0.15;
-        }
+        p.show(&mut tf, &mut vis, t);
 
         // `PickupBrick::OnEvent`: a car on the brick takes it if it is there to be
         // taken, but one already holding a colour only as it first comes onto it.
@@ -634,6 +657,81 @@ pub fn pickups(
             }
             (p.state, p.timer) = (BrickState::Shrink, 0.0);
         }
+    }
+}
+
+/// What a brick was when its host last told of it.
+#[derive(Clone, PartialEq)]
+pub struct BrickMark(Option<Power>, Option<Power>, BrickState, BrickState, [i32; 3], bool);
+
+/// Racing online, a host's bricks that have changed since `told` was last brought up
+/// to date, for telling its players of. The port's own.
+pub fn bricks_changed(picks: &Query<&Pickup>, told: &mut std::collections::HashMap<u16, BrickMark>) -> Vec<Pickup> {
+    let mut changed = Vec::new();
+    for pickup in picks {
+        let now = pickup.mark();
+        if told.get(&pickup.id) != Some(&now) {
+            told.insert(pickup.id, now);
+            changed.push(pickup.clone());
+        }
+    }
+    changed
+}
+
+/// A player's game makes its bricks what its host says they are. A brick of another
+/// colour is another model, as it is where the race is run.
+pub fn bricks_told(commands: &mut Commands, assets: &ItemAssets, models: Option<&Models>, told: Vec<Pickup>, picks: &mut Query<(Entity, &mut Pickup, &mut Transform, &mut Visibility)>) {
+    for brick in told {
+        let Some((entity, mut pickup, ..)) = picks.iter_mut().find(|(_, pickup, ..)| pickup.id == brick.id) else { continue };
+        let recoloured = pickup.power != brick.power;
+        let modelled = pickup.modelled;
+        *pickup = Pickup { modelled, ..brick };
+        if recoloured && modelled {
+            commands.entity(entity).despawn();
+            assets.spawn_brick(commands, models, pickup.clone());
+        } else if recoloured {
+            commands.entity(entity).insert(MeshMaterial3d(assets.brick_material(pickup.power)));
+        }
+    }
+}
+
+/// A player's game shows its bricks as they were last said to be, growing and
+/// shrinking as time passes; taking them is the host's business.
+pub fn show_pickups(time: Res<Time>, mut picks: Query<(&mut Pickup, &mut Transform, &mut Visibility)>) {
+    for (mut pickup, mut tf, mut vis) in &mut picks {
+        pickup.timer += time.delta_secs();
+        pickup.show(&mut tf, &mut vis, time.elapsed_secs());
+    }
+}
+
+impl ItemAssets {
+    /// What stands for something a power-up has put into the world, as `use_items`
+    /// and `actions` give it when they put it there.
+    pub fn look(&self, action: &Action) -> (Handle<Mesh>, Handle<StandardMaterial>) {
+        let (mesh, material) = match action {
+            Action::Cannonball { .. } => (&self.sphere, &self.black),
+            Action::Hook { .. } => (&self.cube, &self.grey),
+            Action::Lightning { .. } => (&self.cube, &self.bolt),
+            Action::Missile { .. } => (&self.sphere, &self.red),
+            Action::OilSlick { .. } => (&self.disc, &self.oil),
+            Action::Dynamite { .. } => (&self.stick, &self.red),
+            Action::Magnet { .. } => (&self.disc, &self.magnet),
+            Action::Curse { .. } => (&self.disc, &self.curse),
+            Action::Explosion { .. } => (&self.sphere, &self.fire),
+        };
+        (mesh.clone(), material.clone())
+    }
+}
+
+#[cfg(test)]
+impl Pickup {
+    /// Where it is, and whether it is there to be taken.
+    pub fn at(&self) -> (Vec3, bool) {
+        (self.pos, self.state == BrickState::Idle)
+    }
+
+    pub fn number(&self) -> u16 {
+        self.id
     }
 }
 
@@ -701,7 +799,7 @@ impl Targets {
 
 /// Something thrown or fired, on its way: `PowerupProjectile`. Where it is follows
 /// from where it began and how long it has been going.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Shot {
     from: Vec3,
     vel: Vec3,
@@ -1472,6 +1570,7 @@ mod tests {
             bolt: material(),
             brick: handle(),
             bricks: default(),
+            put_out: default(),
         });
         let spawn = |world: &mut World, slot: usize, s: f32| {
             let mut kart = Kart::new(&track, slot);

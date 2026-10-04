@@ -68,8 +68,9 @@ next one run: the circuit, laps, computer cars, and the port's own ways of racin
 everyone is ready, or half a minute after the first is, the circuit is drawn from those
 asked for and the rest goes to the majority, the host settling a tie.
 
-Online play is still being built: cars and their collisions are shared, but a joining
-player doesn't yet see bricks being taken or power-ups in flight.
+The host's game runs the race, and everyone else is shown it: the cars, the bricks,
+the power-ups and what the circuit does. Your own car answers at once and is put right
+by the host when the two disagree, which you may feel as a nudge when cars touch.
 
 ## For people working on it
 

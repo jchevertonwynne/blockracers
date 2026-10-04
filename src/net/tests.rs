@@ -51,6 +51,9 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
         .insert_resource(Room { voters: vec![Voter { peer: HOST, name: "Me".into(), ready: false, ballot: None }], ..default() })
         .insert_resource(Lineup { seats: Lineup::seat(&players, opponents), you })
         .add_systems(Startup, (kart::spawn_karts, items::setup_items).chain());
+    // With no renderer there is nothing to say that what has a mesh can be seen or
+    // hidden, which is how a brick comes and goes.
+    app.register_required_components::<items::Pickup, Visibility>();
     app
 }
 
@@ -179,11 +182,19 @@ fn a_cannonball_fired_on_the_host_hits_the_players_car() {
     assert!(car(&mut pair.guest, GUESTS).pos.distance(car(&mut pair.host, GUESTS).pos) < 0.5, "the player's game should have its car where the host put it");
     (car_mut(&mut pair.host, HOSTS).held, car_mut(&mut pair.host, HOSTS).whites) = (Some(Power::Red), 0);
     press(&mut pair.host, KeyCode::Space, true);
-    let (mut struck_there, mut struck_here) = (false, false);
+    let (mut struck_there, mut struck_here, mut seen_flying, mut whooshed) = (false, false, false, false);
+    let mut path: Vec<Vec3> = Vec::new();
     let before = car(&mut pair.guest, GUESTS).pos;
+    let flying = |app: &mut App| app.world_mut().query::<&crate::items::Action>().iter(app.world()).filter(|action| matches!(action, crate::items::Action::Cannonball { .. })).count();
     for _ in 0..180 {
         pair.step();
         press(&mut pair.host, KeyCode::Space, false);
+        seen_flying |= flying(&mut pair.guest) == 1;
+        // Where the player's game shows the cannonball, each frame it is there, and
+        // the flight loop the host says is sounding.
+        let shown = pair.guest.world_mut().query::<(&crate::items::Action, &Transform)>().iter(pair.guest.world()).find(|(action, _)| matches!(action, crate::items::Action::Cannonball { .. })).map(|(_, at)| at.translation);
+        path.extend(shown);
+        whooshed |= !pair.guest.world().resource::<scene::Shown>().loops().is_empty();
         let knocked = |k: &Kart| k.spin > 0.0 || k.spin_out > 0.0 || k.contacts == 0 || k.vel.length() > 3.0;
         struck_there |= knocked(car(&mut pair.host, GUESTS));
         struck_here |= knocked(car(&mut pair.guest, GUESTS));
@@ -191,6 +202,16 @@ fn a_cannonball_fired_on_the_host_hits_the_players_car() {
     assert!(car(&mut pair.host, HOSTS).held.is_none(), "the host should have fired");
     assert!(struck_there, "the cannonball should have hit the car on the host");
     assert!(struck_here, "and the player's game should have seen it");
+    // The cannonball itself was there to be seen on its way, and is gone now.
+    assert!(seen_flying, "the player's game should have shown the cannonball in flight");
+    assert_eq!(flying(&mut pair.guest), 0);
+    // It moved every frame, though the host tells of it only every other step, and
+    // its flight was heard.
+    let still = path.windows(2).skip(2).filter(|pair| pair[0] == pair[1]).count();
+    assert!(path.len() > 6 && still == 0, "the cannonball stood still {still} frames of {}", path.len());
+    assert!(whooshed, "the cannonball's flight should have been heard");
+    // And the driver it hit is owed a grumble on the player's game as on the host.
+    assert_eq!(car(&mut pair.guest, GUESTS).cues.reaction, Some(false));
     assert!(car(&mut pair.guest, GUESTS).pos.distance(before) > 0.2);
     assert!(car(&mut pair.guest, GUESTS).pos.distance(car(&mut pair.host, GUESTS).pos) < 0.5);
 }
@@ -347,4 +368,47 @@ fn the_wrong_password_is_turned_away() {
     assert_eq!(pair.guest.world().resource::<Session>().notice.as_deref(), Some("Wrong password"));
     assert!(pair.guest.world().get_resource::<Wire>().is_none());
     assert!(pair.host.world().resource::<Session>().members.is_empty());
+}
+
+/// A brick taken on the host is taken on a player's screen too, and heard there, and
+/// comes back when the host has it back.
+#[test]
+fn a_brick_taken_on_the_host_goes_from_the_players_screen() {
+    use crate::items::Pickup;
+    let mut pair = Pair::new(0, 0.0);
+    for _ in 0..90 {
+        pair.step();
+    }
+    let bricks = |app: &mut App| app.world_mut().query::<&Pickup>().iter(app.world()).map(|brick| (brick.number(), brick.at())).collect::<Vec<_>>();
+    let (theirs, ours) = (bricks(&mut pair.host), bricks(&mut pair.guest));
+    assert!(!theirs.is_empty(), "the circuit should have bricks");
+    // The same bricks, numbered alike, on both.
+    assert_eq!(theirs.iter().map(|b| (b.0, b.1.0)).collect::<Vec<_>>(), ours.iter().map(|b| (b.0, b.1.0)).collect::<Vec<_>>());
+    let idle = theirs.iter().filter(|brick| brick.1.1).count();
+    let &(number, (at, _)) = theirs.iter().find(|brick| brick.1.1).unwrap_or_else(|| panic!("a brick should be there to be taken, of {}", theirs.len()));
+    assert!(idle > 1);
+    let there = |app: &mut App| bricks(app).iter().find(|brick| brick.0 == number).map(|brick| brick.1.1);
+    assert_eq!(there(&mut pair.guest), Some(true));
+
+    // The host's car is put on the brick. The player's game is listened to.
+    pair.guest.world_mut().resource_mut::<crate::audio::Sfx>().listening = true;
+    (car_mut(&mut pair.host, HOSTS).pos, car_mut(&mut pair.host, HOSTS).vel) = (at, Vec3::ZERO);
+    for _ in 0..40 {
+        pair.step();
+    }
+    assert!(car(&mut pair.host, HOSTS).held.is_some() || car(&mut pair.host, HOSTS).whites > 0, "the host's car should have taken the brick");
+    assert_eq!(there(&mut pair.host), Some(false));
+    assert_eq!(there(&mut pair.guest), Some(false), "the brick should be gone from the player's screen");
+    let heard = pair.guest.world().resource::<crate::audio::Sfx>().heard.clone();
+    assert!(heard.iter().any(|(_, emitter)| emitter.pos.distance(at) < 3.0), "the player should have heard the brick taken");
+    // The car is shown holding what it took.
+    assert_eq!(car(&mut pair.guest, HOSTS).held, car(&mut pair.host, HOSTS).held);
+
+    // Moved off it, the brick comes back, on both.
+    car_mut(&mut pair.host, HOSTS).pos = at + Vec3::X * 30.0;
+    for _ in 0..400 {
+        pair.step();
+        car_mut(&mut pair.host, HOSTS).vel = Vec3::ZERO;
+    }
+    assert_eq!((there(&mut pair.host), there(&mut pair.guest)), (Some(true), Some(true)));
 }

@@ -110,7 +110,7 @@ pub mod id {
 }
 
 /// Where a sound comes from and how far it carries.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Emitter {
     pub pos: Vec3,
     pub vel: Vec3,
@@ -167,11 +167,25 @@ pub struct Sfx {
     /// emitter and how near (in the original's units) it has to be.
     nearest: Vec<(u16, usize, Emitter, f32)>,
     seed: u32,
+    /// Racing online as host: while the race is being stepped (`listening`), the
+    /// sounds made somewhere on the circuit and the loops asked for are kept, to be
+    /// passed on to the other players (`net::scene`).
+    pub listening: bool,
+    pub heard: Vec<(usize, Emitter)>,
+    pub looping: Vec<Looped>,
+}
+
+/// A loop that was asked for: by something of its own, or as whichever such source
+/// is nearest the player.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum Looped {
+    Owned(u64, u16, u32, Emitter),
+    Nearest(u16, u32, Emitter, f32),
 }
 
 impl Default for Sfx {
     fn default() -> Self {
-        Sfx { shots: Vec::new(), loops: Vec::new(), nearest: Vec::new(), seed: 0x2545_f491 }
+        Sfx { shots: Vec::new(), loops: Vec::new(), nearest: Vec::new(), seed: 0x2545_f491, listening: false, heard: Vec::new(), looping: Vec::new() }
     }
 }
 
@@ -187,10 +201,16 @@ impl Sfx {
     }
 
     pub fn emit(&mut self, sound: usize, emitter: Emitter) {
+        if self.listening {
+            self.heard.push((sound, emitter));
+        }
         self.shots.push(Shot::Placed(sound, emitter));
     }
 
     pub fn sustain(&mut self, owner: Entity, slot: u16, sound: usize, emitter: Emitter) {
+        if self.listening {
+            self.looping.push(Looped::Owned(owner.to_bits(), slot, sound as u32, emitter));
+        }
         self.loops.push(((owner.to_bits(), slot), sound, emitter));
     }
 
@@ -200,7 +220,18 @@ impl Sfx {
     }
 
     /// Offers a source for a loop that follows whichever source is nearest the player.
+    /// Asks again for a loop that was asked for somewhere else.
+    pub fn again(&mut self, looped: Looped) {
+        match looped {
+            Looped::Owned(owner, slot, sound, emitter) => self.loops.push(((owner, slot), sound as usize, emitter)),
+            Looped::Nearest(slot, sound, emitter, within) => self.nearest.push((slot, sound as usize, emitter, within)),
+        }
+    }
+
     pub fn sustain_nearest(&mut self, slot: u16, sound: usize, emitter: Emitter, within: f32) {
+        if self.listening {
+            self.looping.push(Looped::Nearest(slot, sound as u32, emitter, within));
+        }
         self.nearest.push((slot, sound, emitter, within));
     }
 

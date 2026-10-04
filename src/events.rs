@@ -53,6 +53,7 @@ struct Trigger {
 }
 
 /// An event starting or ending, for the hazards and animations that hang on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fired {
     pub event: i32,
     pub start: bool,
@@ -124,6 +125,20 @@ pub struct TrackEvents {
     particles: Vec<EventParticles>,
     tints: Vec<EventTint>,
     models: Vec<EventModel>,
+    /// Racing online, the host's events are the events: the host keeps a `log` of
+    /// every one that starts or ends, and a game that follows the host starts and ends
+    /// nothing by itself, only what the log says (`follow`). The port's own.
+    pub logging: bool,
+    pub following: bool,
+    pub log: Vec<Logged>,
+}
+
+/// An entry of the host's log: an event started or ended for everything that hangs
+/// on it (`whole`), or only noted as some racer's doing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Logged {
+    pub fired: Fired,
+    pub whole: bool,
 }
 
 /// When one of the things an event does is done: as it starts or as it ends, and
@@ -618,13 +633,53 @@ impl TrackEvents {
 
     /// `RaceEventTable::StartEventsAt`.
     pub fn start(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+        if !self.following {
+            self.begin(event, at, sfx, true);
+        }
+    }
+
+    /// `RaceEventTable::EndEventsAt`.
+    pub fn end(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+        if !self.following {
+            self.finish(event, at, sfx, true);
+        }
+    }
+
+    /// Notes an event as one racer's doing, for the hazards that mind whose it was.
+    fn note(&mut self, fired: Fired) {
+        if self.following {
+            return;
+        }
+        if self.logging {
+            self.log.push(Logged { fired, whole: false });
+        }
+        self.fired.push(fired);
+    }
+
+    /// Does what the host's log says was done. The events an event holds open are in
+    /// the log themselves, so nothing is held here.
+    pub fn follow(&mut self, logged: Logged, sfx: &mut Sfx) {
+        let Fired { event, start, at, .. } = logged.fired;
+        match (logged.whole, start) {
+            (true, true) => self.begin(event, at, sfx, false),
+            (true, false) => self.finish(event, at, sfx, false),
+            (false, _) => self.fired.push(logged.fired),
+        }
+    }
+
+    fn begin(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx, hold: bool) {
         debug!("event {event} starts");
+        if self.logging {
+            self.log.push(Logged { fired: Fired { event, start: true, at, racer: None }, whole: true });
+        }
         self.fired.push(Fired { event, start: true, at, racer: None });
         if !self.started.contains(&event) {
             self.started.push(event);
         }
         self.sky.extend(self.skies.iter().filter(|s| s.event == event && !s.on_end).cloned());
-        self.hold(event, false, sfx);
+        if hold {
+            self.hold(event, false, sfx);
+        }
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if !sound.on_end && !sound.active {
                 Self::start_sound(sound, at, sfx);
@@ -632,12 +687,16 @@ impl TrackEvents {
         }
     }
 
-    /// `RaceEventTable::EndEventsAt`.
-    pub fn end(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx) {
+    fn finish(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx, hold: bool) {
         debug!("event {event} ends");
+        if self.logging {
+            self.log.push(Logged { fired: Fired { event, start: false, at, racer: None }, whole: true });
+        }
         self.fired.push(Fired { event, start: false, at, racer: None });
         self.sky.extend(self.skies.iter().filter(|s| s.event == event && s.on_end).cloned());
-        self.hold(event, true, sfx);
+        if hold {
+            self.hold(event, true, sfx);
+        }
         for sound in self.sounds.iter_mut().filter(|s| s.event == event) {
             if sound.on_end && !sound.active {
                 Self::start_sound(sound, at, sfx);
@@ -654,7 +713,7 @@ pub fn track_events(
     race: Res<Race>,
     events: Option<ResMut<TrackEvents>>,
     mut sfx: ResMut<Sfx>,
-    mut karts: Query<(Entity, &mut Kart, Has<crate::kart::Player>)>,
+    mut karts: Query<(Entity, &mut Kart, Has<crate::kart::Player>, Has<crate::net::Remote>)>,
 ) {
     let Some(mut events) = events else { return };
     let events = &mut *events;
@@ -677,8 +736,11 @@ pub fn track_events(
         events.surfaces.clear();
     }
 
+    // A game that follows a host online takes its events from the host's log; what
+    // sets them off is looked for only where the race is run.
+    let alone = !events.following;
     // Trigger spheres: their events run for as long as any racer is inside.
-    for i in 0..events.triggers.len() {
+    for i in 0..events.triggers.len() * alone as usize {
         let trigger = &events.triggers[i];
         let (centre, radius, event, active) = (trigger.centre, trigger.radius, trigger.event, trigger.active);
         let (players_only, lap) = (trigger.players_only, trigger.lap);
@@ -688,8 +750,9 @@ pub fn track_events(
         let inside: Vec<Entity> = karts
             .iter()
             // `RacerTriggerList::Entry::OnEvent`: a lap's trigger is for racers on that lap.
-            .filter(|(_, k, player)| (*player || !players_only) && lap.is_none_or(|lap| k.lap - 1 == lap))
-            .filter(|(_, k, _)| k.pos.distance_squared(centre) < radius * radius)
+            // A player is a player whichever game they are at.
+            .filter(|(_, k, here, elsewhere)| (*here || *elsewhere || !players_only) && lap.is_none_or(|lap| k.lap - 1 == lap))
+            .filter(|(_, k, ..)| k.pos.distance_squared(centre) < radius * radius)
             .map(|(e, ..)| e)
             .collect();
         let touched = !inside.is_empty();
@@ -699,10 +762,10 @@ pub fn track_events(
         let before = std::mem::replace(&mut events.inside[i], inside.clone());
         let at = Some(centre);
         for &racer in inside.iter().filter(|e| !before.contains(e)) {
-            events.fired.push(Fired { event, start: true, at, racer: Some(racer) });
+            events.note(Fired { event, start: true, at, racer: Some(racer) });
         }
         for &racer in before.iter().filter(|e| !inside.contains(e)) {
-            events.fired.push(Fired { event, start: false, at, racer: Some(racer) });
+            events.note(Fired { event, start: false, at, racer: Some(racer) });
         }
         match (touched, active) {
             (true, false) => events.start(event, Some(centre), &mut sfx),
@@ -712,13 +775,16 @@ pub fn track_events(
     }
 
     // Surfaces that set off events as racers drive on and off them.
-    for (entity, mut k, _) in &mut karts {
+    for (entity, mut k, ..) in &mut karts {
         // Driving through a surface that isn't solid, or sounding the horn, are events too.
         let horn = std::mem::take(&mut k.honked).then_some(999);
         for event in [k.touched.take(), horn].into_iter().flatten() {
-            events.fired.push(Fired { event, start: true, at: Some(k.pos), racer: Some(entity) });
+            events.note(Fired { event, start: true, at: Some(k.pos), racer: Some(entity) });
             events.fire(event, Some(k.pos), &mut sfx);
-            events.fired.push(Fired { event, start: false, at: Some(k.pos), racer: Some(entity) });
+            events.note(Fired { event, start: false, at: Some(k.pos), racer: Some(entity) });
+        }
+        if !alone {
+            continue;
         }
         let now = [k.surface.enter_event, k.surface.leave_event, k.surface.touch_event];
         let before = events.surfaces.insert(entity, now).unwrap_or_default();
@@ -733,7 +799,7 @@ pub fn track_events(
     }
 
     // Timers: on for a while, off for a while.
-    for i in 0..events.timers.len() {
+    for i in 0..events.timers.len() * alone as usize {
         let timer = &mut events.timers[i];
         let Some(remaining) = &mut timer.remaining else {
             timer.delay -= dt;
@@ -757,7 +823,7 @@ pub fn track_events(
     }
 
     // Events held open for a while come to their end.
-    for i in 0..events.delays.len() {
+    for i in 0..events.delays.len() * alone as usize {
         let delay = &mut events.delays[i];
         let Some(remaining) = &mut delay.remaining else { continue };
         *remaining -= dt;
@@ -790,6 +856,37 @@ pub fn track_events(
 mod tests {
     use super::*;
     use crate::audio::{NEAR, id};
+
+    /// A game following a host starts nothing by itself, and by the host's log ends
+    /// up with everything the host started, held events and all.
+    #[test]
+    fn a_follower_does_what_the_hosts_log_says_and_nothing_else() {
+        let mut sfx = Sfx::default();
+        let held = || vec![Delay { event: 5, on_end: false, seconds: 2.0, then: Some(6), remaining: None }];
+        let mut host = TrackEvents { delays: held(), logging: true, ..default() };
+        let mut follower = TrackEvents { delays: held(), following: true, ..default() };
+        let racer = Entity::from_raw_u32(7).unwrap();
+        host.start(5, Some(Vec3::X), &mut sfx);
+        host.note(Fired { event: 5, start: true, at: None, racer: Some(racer) });
+        host.end(5, None, &mut sfx);
+        // Starting 5 starts 6 with it, and all of it is in the log.
+        assert_eq!(host.started, [5, 6]);
+        assert_eq!(host.log.len(), 4);
+
+        // Left to itself the follower does nothing.
+        follower.start(5, None, &mut sfx);
+        follower.fire(9, None, &mut sfx);
+        follower.note(Fired { event: 5, start: true, at: None, racer: Some(racer) });
+        assert!(follower.started.is_empty() && follower.fired.is_empty() && follower.log.is_empty());
+
+        // By the log it does just what the host did, and holds nothing open itself.
+        for logged in host.log.clone() {
+            follower.follow(logged, &mut sfx);
+        }
+        assert_eq!(follower.started, host.started);
+        assert_eq!(follower.fired, host.fired);
+        assert!(follower.delays.iter().all(|delay| delay.remaining.is_none()));
+    }
 
     /// Needs the original game data; silently passes without it.
     #[test]
