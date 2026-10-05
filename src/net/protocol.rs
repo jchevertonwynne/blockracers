@@ -5,6 +5,7 @@
 //! out of date a moment later go as `Inputs` and `Snapshot`, sixty and thirty times a
 //! second, and a lost one is simply made up for by the next.
 
+use crate::assets::lrs::{self, Racer};
 use bevy::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -130,7 +131,9 @@ pub struct Rules {
     pub difficulty: u8,
 }
 
-fn key(circuit: &crate::menu::Circuit) -> &str {
+/// What a circuit is known by between games: its folder in the game's data, or
+/// for one of the port's own its name.
+pub fn key(circuit: &crate::menu::Circuit) -> &str {
     circuit.race.as_deref().unwrap_or(circuit.layout.key())
 }
 
@@ -170,15 +173,43 @@ impl Rules {
     }
 }
 
+/// What a player races as.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub enum Ride {
+    /// Whoever the circuit puts in their grid slot.
+    #[default]
+    Slot,
+    /// One of the game's drivers, by its code for them (`roster::NAMES`).
+    Driver(String),
+    /// A racer they built, which every game in the session makes the car of afresh.
+    Built(Racer),
+}
+
+impl Ride {
+    /// The ride as a host will have it from someone else's game: nothing of it
+    /// longer than the game itself would make it.
+    pub fn checked(self) -> Ride {
+        match self {
+            Ride::Slot => Ride::Slot,
+            Ride::Driver(code) => Ride::Driver(code.chars().take(8).collect()),
+            Ride::Built(mut racer) => {
+                racer.name = racer.name.chars().take(lrs::NAME_LENGTH).collect();
+                racer.chassis = racer.chassis.chars().take(8).collect();
+                racer.car.truncate(2 + crate::build::MOST * 8);
+                Ride::Built(racer)
+            }
+        }
+    }
+}
+
 /// A place on the grid and who has it: a player, or one of the computer's drivers.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Seat {
     pub slot: u8,
     pub peer: Option<Peer>,
     pub name: String,
-    /// The driver a player races as, by the game's code for them; empty for
-    /// whoever the circuit puts in the slot.
-    pub car: String,
+    /// What a player races as.
+    pub car: Ride,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -197,7 +228,7 @@ pub enum ToHost {
         protocol: u32,
         name: String,
         password: String,
-        car: String,
+        car: Ride,
     },
     /// The race asked for is loaded and its cars are on the grid.
     Loaded,
@@ -212,6 +243,8 @@ pub enum ToHost {
     Enter,
     /// Something said to the room.
     Say(String),
+    /// What the player races as from now on, changed in the room.
+    Ride(Ride),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -244,6 +277,8 @@ pub enum ToPlayer {
     Events(Vec<EventNote>),
     /// What someone in the room has said, their name before it.
     Said(String),
+    /// What everyone in the room races as, told when any of it changes.
+    Rides(Vec<(Peer, Ride)>),
 }
 
 #[cfg(test)]
@@ -270,7 +305,7 @@ mod tests {
             protocol: 1,
             name: "Rocket".into(),
             password: "bricks".into(),
-            car: "RR".into(),
+            car: Ride::Driver("RR".into()),
         };
         assert_eq!(decode::<ToHost>(&encode(&hello)).unwrap(), hello);
         assert!(decode::<ToPlayer>(&[0xff, 0xff, 0xff]).is_err());

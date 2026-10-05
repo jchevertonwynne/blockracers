@@ -16,6 +16,7 @@ use crate::world::{Library, LoadedWorld, Surface, surface_bundle};
 use bevy::{
     asset::RenderAssetUsages,
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor},
+    mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
@@ -476,11 +477,11 @@ pub fn load_files(
                 .map(|bone| {
                     (
                         bone,
-                        library.surfaces(
-                            &model,
-                            |b| b.bone.filter(|_| rig.is_some()) == bone,
-                            Vec3::from,
-                        ),
+                        if rig.is_some() {
+                            library.surfaces_rigged(&model, |b| b.bone == bone)
+                        } else {
+                            library.surfaces(&model, |_| true, Vec3::from)
+                        },
                     )
                 })
                 .collect();
@@ -508,12 +509,16 @@ pub fn load_files(
 
 /// A model ready to be put into the world any number of times.
 struct Template {
-    /// Meshes and their materials by the bone they hang from, and which of the model's
-    /// materials each is.
+    /// Meshes and their materials by the bone they hang from, which of the model's
+    /// materials each is, and whether its vertices are moved each by a bone of its
+    /// own and not all by the one it hangs from.
     parts: Vec<(
         Option<usize>,
-        Vec<(Handle<Mesh>, Handle<StandardMaterial>, usize)>,
+        Vec<(Handle<Mesh>, Handle<StandardMaterial>, usize, bool)>,
     )>,
+    /// For the meshes moved by their vertices' own bones: each bone's as it is, the
+    /// vertices being in their bones' own space already.
+    binds: Handle<SkinnedMeshInverseBindposes>,
     cycles: Vec<(usize, usize, Arc<Vec<Reel>>)>,
     /// Where its file puts it, in the game's coordinates.
     position: Vec3,
@@ -528,14 +533,15 @@ impl Template {
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
         images: &mut Assets<Image>,
+        binds: &mut Assets<SkinnedMeshInverseBindposes>,
     ) -> Self {
         let parts = std::mem::take(&mut def.surfaces)
             .into_iter()
             .map(|(bone, surfaces)| {
                 let surfaces = surfaces.into_iter().map(|s| {
-                    let material = s.material;
+                    let (material, skinned) = (s.material, s.skinned);
                     let bundle = surface_bundle(s, meshes, materials, images);
-                    (bundle.0.0, bundle.1.0, material)
+                    (bundle.0.0, bundle.1.0, material, skinned)
                 });
                 (bone, surfaces.collect())
             })
@@ -555,9 +561,11 @@ impl Template {
                 (material, start, Arc::new(reels.iter().map(reel).collect()))
             })
             .collect();
+        let bones = def.rig.as_ref().map_or(0, |rig| rig.bones.len());
         Template {
             parts,
             cycles,
+            binds: binds.add(vec![Mat4::IDENTITY; bones]),
             position: def.position,
             rig: def.rig.clone(),
             scale: def.scale,
@@ -590,12 +598,23 @@ impl Template {
         let mut scrolling = Scrolling::default();
         for (bone, surfaces) in &self.parts {
             let parent = bone.and_then(|b| joints.get(b)).copied().unwrap_or(root);
-            for (mesh, material, index) in surfaces {
+            for (mesh, material, index, skinned) in surfaces {
                 scrolling.materials.push(material.clone());
                 scrolling.indices.push(*index);
                 let mesh = commands
                     .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())))
                     .id();
+                // Stretched between its bones, it is wherever they are, which is not
+                // where its own corners say.
+                if *skinned {
+                    commands.entity(mesh).insert((
+                        SkinnedMesh {
+                            inverse_bindposes: self.binds.clone(),
+                            joints: joints.clone(),
+                        },
+                        bevy::camera::visibility::NoFrustumCulling,
+                    ));
+                }
                 commands.entity(parent).add_child(mesh);
                 if let Some((_, start, reels)) = self
                     .cycles
@@ -732,12 +751,15 @@ impl Models {
                 *bone,
                 surfaces
                     .iter()
-                    .map(|(mesh, material, index)| (mesh.clone(), repaint(material), *index))
+                    .map(|(mesh, material, index, skinned)| {
+                        (mesh.clone(), repaint(material), *index, *skinned)
+                    })
                     .collect(),
             )
         });
         let copied = Template {
             parts: parts.collect(),
+            binds: template.binds.clone(),
             cycles: Vec::new(),
             position: template.position,
             rig: template.rig.clone(),
@@ -771,6 +793,7 @@ pub fn spawn_scenery(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut binds: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
     let mut scenery = Scenery::default();
     for mut def in std::mem::take(&mut world.props) {
@@ -816,16 +839,25 @@ pub fn spawn_scenery(
         if let Some(light) = code_light {
             commands.entity(root).insert(light);
         }
-        Template::new(&mut def, &mut meshes, &mut materials, &mut images).build(
-            &mut commands,
-            root,
-            prop,
-        );
+        Template::new(
+            &mut def,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &mut binds,
+        )
+        .build(&mut commands, root, prop);
         scenery.0.insert(def.name, root);
     }
     let mut models = Models::default();
     for mut def in std::mem::take(&mut world.models) {
-        let template = Template::new(&mut def, &mut meshes, &mut materials, &mut images);
+        let template = Template::new(
+            &mut def,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &mut binds,
+        );
         models.0.insert(def.name, template);
     }
     commands.insert_resource(scenery);

@@ -1,10 +1,12 @@
 mod assets;
 mod audio;
+mod build;
 mod camera;
 mod championship;
 mod collision;
 mod events;
 mod frontend;
+mod garage;
 mod gauntlet;
 mod hazards;
 mod hud;
@@ -219,6 +221,9 @@ fn main() {
                 "W" => KeyCode::KeyW,
                 "E" => KeyCode::KeyE,
                 "T" => KeyCode::KeyT,
+                "Back" => KeyCode::Backspace,
+                "Comma" => KeyCode::Comma,
+                "Period" => KeyCode::Period,
                 _ => return None,
             };
             let (at, held) = at.split_once('+').unwrap_or((at, "0"));
@@ -298,6 +303,15 @@ fn main() {
     {
         settings.opponents = opponents.min(menu::MAX_OPPONENTS);
     }
+    // `BRICK_RACER=3`: which of the garage's racers the player races as.
+    let garage = garage::Garage::open(demo.is_some(), world::jam().as_ref());
+    if let Some(racer) = std::env::var("BRICK_RACER")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+    {
+        settings.racer = racer;
+    }
+    settings.racer = settings.racer.min(garage.racers.len());
     // `BRICK_TIME=1`: a demo's race is against the clock.
     settings.time_race = std::env::var("BRICK_TIME").is_ok();
     // `BRICK_SERIES=0`: a demo races this circuit's races rather than one on its own.
@@ -355,6 +369,7 @@ fn main() {
         })
         .insert_resource(circuits)
         .insert_resource(settings)
+        .insert_resource(garage)
         .init_resource::<camera::Rig>()
         .init_resource::<Pause>()
         .init_resource::<variant::Variant>()
@@ -503,6 +518,7 @@ fn load_race(
     mut rig: ResMut<camera::Rig>,
     role: Res<net::Role>,
     lineup: Option<Res<net::Lineup>>,
+    garage: Res<garage::Garage>,
 ) {
     let circuit = &circuits.0[settings.circuit];
     let variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
@@ -522,14 +538,26 @@ fn load_race(
             if variant.reverse {
                 track.reverse();
             }
+            // A player alone races as the racer they built, if they have built one.
+            if *role == net::Role::Offline
+                && let Some(racer) = garage.racing(&settings)
+                && !world::rebuild(&mut loaded, kart::PLAYER_SLOT, racer)
+            {
+                warn!("could not build {}'s car", racer.name);
+            }
             // Online, players race as whoever they chose to.
-            for (slot, code) in lineup
+            for (slot, ride) in lineup
                 .iter()
                 .filter(|_| *role != net::Role::Offline)
                 .flat_map(|lineup| lineup.cast())
             {
-                if !world::recast(&mut loaded, slot, code) {
-                    warn!("nobody to race as {code}");
+                let cast = match ride {
+                    net::protocol::Ride::Slot => true,
+                    net::protocol::Ride::Driver(code) => world::recast(&mut loaded, slot, code),
+                    net::protocol::Ride::Built(racer) => world::rebuild(&mut loaded, slot, racer),
+                };
+                if !cast {
+                    warn!("nothing for the player in slot {slot} to race as");
                 }
             }
             commands.insert_resource(track);

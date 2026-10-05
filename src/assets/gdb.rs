@@ -29,6 +29,10 @@ pub struct Batch {
     pub bone: Option<usize>,
     /// Vertex indices of a triangle list.
     pub indices: Vec<u32>,
+    /// The bone each of those vertices was loaded under, where they are not all
+    /// under `bone`: a triangle may join vertices of different bones, and is then
+    /// stretched between them as they move. Empty when every vertex is `bone`'s.
+    pub joints: Vec<usize>,
 }
 
 pub struct Model {
@@ -37,6 +41,9 @@ pub struct Model {
     pub batches: Vec<Batch>,
     /// Multiplier from stored positions to game units.
     pub scale: f32,
+    /// A normal to each vertex, for the models that are lit when they are loaded
+    /// and not by their vertices' colours; empty for the rest.
+    pub normals: Vec<[f32; 3]>,
 }
 
 /// One bone of a `.SDB` skeleton, placed relative to its parent.
@@ -80,12 +87,22 @@ pub fn parse_skeleton(data: &[u8]) -> Option<Vec<Bone>> {
 
 impl Model {
     pub fn parse(data: &[u8]) -> Option<Model> {
+        Model::read(data, false)
+    }
+
+    /// As `parse`, keeping the normals of a model that has them.
+    pub fn parse_lit(data: &[u8]) -> Option<Model> {
+        Model::read(data, true)
+    }
+
+    fn read(data: &[u8], lit: bool) -> Option<Model> {
         let mut r = Reader::new(data);
         let mut model = Model {
             materials: Vec::new(),
             vertices: Vec::new(),
             batches: Vec::new(),
             scale: 1.0,
+            normals: Vec::new(),
         };
         let mut triangles: Vec<[u8; 3]> = Vec::new();
         while let Some(token) = r.next() {
@@ -104,7 +121,10 @@ impl Model {
                         let mut color = [255; 4];
                         match key {
                             VERTICES_NORMAL => {
-                                r.floats::<3>()?;
+                                let normal = r.floats::<3>()?;
+                                if lit {
+                                    model.normals.push(normal);
+                                }
                             }
                             VERTICES_COLOR => {
                                 for c in &mut color {
@@ -125,6 +145,8 @@ impl Model {
                 }
                 GROUPS => {
                     let mut cache = [0u32; 64];
+                    // The bone that was set when each of the cache's vertices was loaded.
+                    let mut loaded_under: [Option<usize>; 64] = [None; 64];
                     let mut material = 0;
                     let mut bones: Vec<usize> = Vec::new();
                     for _ in 0..r.list_header()? {
@@ -141,25 +163,33 @@ impl Model {
                                 {
                                     *entry = first + i as u32;
                                 }
+                                loaded_under[slot..slot + count].fill(bones.last().copied());
                             }
                             INDICES => {
                                 let first = r.int()? as usize;
                                 let count = r.int()? as usize;
                                 let bone = bones.last().copied();
-                                if model
-                                    .batches
-                                    .last()
-                                    .is_none_or(|b| b.material != material || b.bone != bone)
-                                {
+                                let run = triangles.get(first..first + count)?;
+                                let slots = || run.iter().flatten().map(|&i| i as usize & 63);
+                                let joined = slots().any(|slot| loaded_under[slot] != bone);
+                                if model.batches.last().is_none_or(|b| {
+                                    b.material != material
+                                        || b.bone != bone
+                                        || b.joints.is_empty() == joined
+                                }) {
                                     model.batches.push(Batch {
                                         material,
                                         bone,
                                         indices: Vec::new(),
+                                        joints: Vec::new(),
                                     });
                                 }
-                                let batch = &mut model.batches.last_mut()?.indices;
-                                for tri in triangles.get(first..first + count)? {
-                                    batch.extend(tri.iter().map(|&i| cache[i as usize & 63]));
+                                let batch = model.batches.last_mut()?;
+                                batch.indices.extend(slots().map(|slot| cache[slot]));
+                                if let (true, Some(bone)) = (joined, bone) {
+                                    batch.joints.extend(
+                                        slots().map(|slot| loaded_under[slot].unwrap_or(bone)),
+                                    );
                                 }
                             }
                             MATERIALS => material = r.int()? as usize,

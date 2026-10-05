@@ -5,10 +5,14 @@ use crate::assets::{
     Jam,
     bvb::Volume,
     gdb::{Batch, Bone, Model, Vertex, parse_skeleton},
-    image, mab, materials, route,
+    image, leb,
+    lrs::{Cosmetics, Racer},
+    mab, materials, route,
     tokens::{Token, tokenize},
 };
+use crate::build;
 use crate::items::Power;
+use crate::net::protocol::Ride;
 use crate::particles;
 use crate::physics::UNIT;
 use crate::roster::{self, Driver};
@@ -40,6 +44,8 @@ pub struct Surface {
     additive: bool,
     /// Which of the model's materials this is.
     pub material: usize,
+    /// Its vertices each say which bone they move with, and are in that bone's space.
+    pub skinned: bool,
 }
 
 /// A pair of wheels: the game rigs each axle as one bone of the wheel model.
@@ -76,6 +82,8 @@ pub struct LoadedWorld {
     pub karts: Vec<KartModel>,
     /// Who is in each of those slots; the player is the last.
     pub field: Vec<Driver>,
+    /// The names of the racers people have built that are in slots, by slot.
+    pub called: Vec<(usize, String)>,
     /// The drives the computer's cars play back, one per slot.
     pub routes: Vec<Arc<route::Record>>,
     /// The record run of a time race, and cars for it and the player's best to be shown as.
@@ -102,7 +110,7 @@ pub struct Library<'a> {
 }
 
 impl<'a> Library<'a> {
-    fn new<'f>(jam: &'a Jam, files: impl Iterator<Item = &'f str>, dirs: &[&str]) -> Self {
+    pub fn new<'f>(jam: &'a Jam, files: impl Iterator<Item = &'f str>, dirs: &[&str]) -> Self {
         let mut library = Library {
             jam,
             dirs: dirs.iter().map(|d| d.to_string()).collect(),
@@ -176,12 +184,39 @@ impl<'a> Library<'a> {
         keep: impl Fn(&Batch) -> bool,
         place: impl Fn([f32; 3]) -> Vec3,
     ) -> Vec<Surface> {
+        self.meshes(model, keep, place, false)
+    }
+
+    /// As `surfaces`, for a model whose bones will be there to move it: where the
+    /// batches kept have triangles that join the vertices of different bones, every
+    /// vertex is marked with its bone, to be moved by it.
+    pub fn surfaces_rigged(&self, model: &Model, keep: impl Fn(&Batch) -> bool) -> Vec<Surface> {
+        let joined = model
+            .batches
+            .iter()
+            .any(|batch| keep(batch) && !batch.joints.is_empty());
+        self.meshes(model, keep, Vec3::from, joined)
+    }
+
+    fn meshes(
+        &self,
+        model: &Model,
+        keep: impl Fn(&Batch) -> bool,
+        place: impl Fn([f32; 3]) -> Vec3,
+        skinned: bool,
+    ) -> Vec<Surface> {
         let mut by_material: HashMap<usize, Vec<u32>> = HashMap::new();
+        let mut joints: HashMap<usize, Vec<[u16; 4]>> = HashMap::new();
         for batch in model.batches.iter().filter(|b| keep(b)) {
             by_material
                 .entry(batch.material)
                 .or_default()
                 .extend(&batch.indices);
+            let own = batch.bone.unwrap_or(0);
+            joints.entry(batch.material).or_default().extend(
+                (0..batch.indices.len())
+                    .map(|at| [*batch.joints.get(at).unwrap_or(&own) as u16, 0, 0, 0]),
+            );
         }
         let mut surfaces = Vec::new();
         for (material, indices) in &by_material {
@@ -214,6 +249,20 @@ impl<'a> Library<'a> {
                     v.color[3] as f32 / 255.0,
                 ]
             };
+            // A model with normals is one the game lights once, when it is made, and
+            // keeps the colours of: the material's own, under `MenuManager`'s light.
+            let diffuse = info.map_or([255; 4], |m| m.diffuse);
+            let lit = |&i: &u32| {
+                let shade = model
+                    .normals
+                    .get(i as usize)
+                    .map_or(1.0, |&normal| built_light(Vec3::from(normal)));
+                let mut vertex = vertex(&i);
+                for (value, own) in vertex.color.iter_mut().zip(diffuse).take(3) {
+                    *value = (own as f32 * shade).min(255.0) as u8;
+                }
+                colour(vertex)
+            };
             let mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
@@ -233,12 +282,33 @@ impl<'a> Library<'a> {
                 Mesh::ATTRIBUTE_COLOR,
                 indices
                     .iter()
-                    .map(|i| colour(vertex(i)))
+                    .map(|i| {
+                        if model.normals.is_empty() {
+                            colour(vertex(i))
+                        } else {
+                            lit(i)
+                        }
+                    })
                     .collect::<Vec<_>>(),
             )
             .with_computed_flat_normals();
+            let mesh = if skinned {
+                mesh.with_inserted_attribute(
+                    Mesh::ATTRIBUTE_JOINT_INDEX,
+                    bevy::mesh::VertexAttributeValues::Uint16x4(
+                        joints.remove(material).unwrap_or_default(),
+                    ),
+                )
+                .with_inserted_attribute(
+                    Mesh::ATTRIBUTE_JOINT_WEIGHT,
+                    vec![[1.0f32, 0.0, 0.0, 0.0]; indices.len()],
+                )
+            } else {
+                mesh
+            };
             surfaces.push(Surface {
                 mesh,
+                skinned,
                 texture,
                 cutout: definition.color_key.is_some() || info.is_some_and(|m| m.alpha_test),
                 blend: definition.tga || info.is_some_and(|m| m.blend),
@@ -251,6 +321,15 @@ impl<'a> Library<'a> {
 }
 
 const COMMON: &str = "/GAMEDATA/COMMON";
+
+/// How brightly a face of a built car or its driver is lit, by which way it faces:
+/// half from all round and the rest from a light ahead of the car and above it
+/// (`MenuManager::BuildPlayerModels`).
+fn built_light(normal: Vec3) -> f32 {
+    const AMBIENT: f32 = 128.0 / 255.0;
+    let towards = Vec3::new(1.0, 0.0, 1.0).normalize();
+    AMBIENT + normal.normalize_or_zero().dot(towards).max(0.0)
+}
 
 /// A bone's rotation and position in model space.
 fn bone_pose(bones: &[Bone], index: usize) -> (Quat, Vec3) {
@@ -285,18 +364,57 @@ fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
         );
         Some((model, library))
     };
-    let bones_used = |model: &Model| {
-        let mut bones: Vec<usize> = model.batches.iter().filter_map(|b| b.bone).collect();
-        bones.sort();
-        bones.dedup();
-        bones
-    };
-
     let (body, library) = part(&format!("{prefix}CM"))?;
     let body_surfaces = library.surfaces(&body, |_| true, Vec3::from);
+    let (axles, wheel_scale, reach) = load_wheels(jam, &format!("{prefix}JMW"))?;
 
-    let (wheels, library) = part(&format!("{prefix}JMW"))?;
-    let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/{prefix}JMW.SDB"))?)?;
+    // Every minifigure shares one skeleton; bake the figure into its rest pose.
+    let (figure, library) = part(&driver.figure)?;
+    let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/PELVIS.SDB"))?)?;
+    let driver_surfaces = posed(&figure, &library, &skeleton);
+
+    Some(KartModel {
+        outline: outline(&body, &axles, wheel_scale, reach),
+        body: body_surfaces,
+        body_scale: body.scale,
+        axles,
+        wheel_scale,
+        driver: driver_surfaces,
+        driver_scale: figure.scale,
+        chassis: chassis(jam, &driver.chassis)?,
+    })
+}
+
+/// The bones a model's faces hang on.
+fn bones_used(model: &Model) -> Vec<usize> {
+    let mut bones: Vec<usize> = model.batches.iter().filter_map(|b| b.bone).collect();
+    bones.sort();
+    bones.dedup();
+    bones
+}
+
+/// A rigged model's faces where its skeleton has them at rest.
+fn posed(model: &Model, library: &Library, skeleton: &[Bone]) -> Vec<Surface> {
+    let mut surfaces = Vec::new();
+    for bone in bones_used(model) {
+        let (rotation, position) = bone_pose(skeleton, bone);
+        let place = |p: [f32; 3]| position + rotation * Vec3::from(p);
+        surfaces.extend(library.surfaces(model, |b| b.bone == Some(bone), place));
+    }
+    surfaces
+}
+
+/// The wheels of the model called `name`, an axle to each bone of it, with the
+/// model's scale and how far out its wheels reach.
+fn load_wheels(jam: &Jam, name: &str) -> Option<(Vec<Axle>, f32, f32)> {
+    let file = |ext: &str| format!("{COMMON}/{name}.{ext}");
+    let wheels = Model::parse(jam.get(&file("GDB"))?)?;
+    let library = Library::new(
+        jam,
+        [file("MDB"), file("TDB")].iter().map(String::as_str),
+        &[COMMON],
+    );
+    let skeleton = parse_skeleton(jam.get(&file("SDB"))?)?;
     let mut axles = Vec::new();
     for bone in bones_used(&wheels) {
         let (rotation, position) = bone_pose(&skeleton, bone);
@@ -315,18 +433,16 @@ fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
             radius,
         });
     }
+    let reach = wheels
+        .vertices
+        .iter()
+        .map(|v| v.pos[0].abs())
+        .fold(0.0, f32::max);
+    Some((axles, wheels.scale, reach))
+}
 
-    // Every minifigure shares one skeleton; bake the figure into its rest pose.
-    let (figure, library) = part(&driver.figure)?;
-    let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/PELVIS.SDB"))?)?;
-    let mut driver_surfaces = Vec::new();
-    for bone in bones_used(&figure) {
-        let (rotation, position) = bone_pose(&skeleton, bone);
-        let place = |p: [f32; 3]| position + rotation * Vec3::from(p);
-        driver_surfaces.extend(library.surfaces(&figure, |b| b.bone == Some(bone), place));
-    }
-
-    // The car's outline, from the body and the wheels at the ends of each axle.
+/// A car's outline, from its body and the wheels at the ends of each axle.
+fn outline(body: &Model, axles: &[Axle], wheel_scale: f32, reach: f32) -> [f32; 3] {
     let mut outline = [0.0f32; 3];
     let mut cover = |x: f32, y: f32| {
         outline = [
@@ -338,27 +454,90 @@ fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
     for v in &body.vertices {
         cover(v.pos[0] * body.scale, v.pos[1] * body.scale);
     }
-    for axle in &axles {
-        let reach = wheels
-            .vertices
-            .iter()
-            .map(|v| v.pos[0].abs())
-            .fold(0.0, f32::max);
+    for axle in axles {
         for x in [-axle.radius, axle.radius] {
-            cover((axle.position.x + x) * wheels.scale, reach * wheels.scale);
+            cover((axle.position.x + x) * wheel_scale, reach * wheel_scale);
         }
     }
+    outline
+}
 
+/// The car and minifigure of a racer someone has built, as a race shows them: the
+/// car of the plain bricks (the garage shows the `detailed` ones), on the wheels of
+/// its chassis, and the figure sitting
+/// (`MenuManager::BuildPlayerCarModel`, `BuildPlayerDriverModel` and the half of
+/// `RaceState::CreateRacer` that is for them).
+pub fn load_built(jam: &Jam, racer: &Racer, detailed: bool) -> Option<KartModel> {
+    let bricks = leb::Library::open(jam, detailed)?;
+    let palette = build::Palette::open(jam, detailed)?;
+    let car = build::Car::read(&bricks, &racer.car);
+    let body = car.model(&bricks, &palette);
+    let files = build::Palette::files(detailed);
+    let library = Library::new(jam, files.iter().map(String::as_str), &[leb::DIR]);
+    let body_surfaces = library.surfaces(&body, |_| true, Vec3::from);
+
+    let (chassis, wheels) = chassis_entry(jam, &racer.chassis)?;
+    let (axles, wheel_scale, reach) = load_wheels(jam, &wheels)?;
+
+    let (driver, driver_scale) = built_figure(jam, racer.cosmetics)?;
     Some(KartModel {
-        outline,
+        outline: outline(&body, &axles, wheel_scale, reach),
         body: body_surfaces,
         body_scale: body.scale,
         axles,
-        wheel_scale: wheels.scale,
-        driver: driver_surfaces,
-        driver_scale: figure.scale,
-        chassis: chassis(jam, &driver.chassis)?,
+        wheel_scale,
+        driver,
+        driver_scale,
+        chassis,
     })
+}
+
+/// A minifigure made of the parts given, sitting as it does in a car, and its scale.
+fn built_figure(jam: &Jam, cosmetics: Cosmetics) -> Option<(Vec<Surface>, f32)> {
+    let catalogue = build::Catalogue::open(jam)?;
+    let figure = build::figure(jam, &catalogue, cosmetics)?;
+    let (files, folders) = build::Catalogue::files();
+    let library = Library::new(jam, files.iter().map(String::as_str), &folders);
+    let skeleton = parse_skeleton(build::skeleton(jam)?)?;
+    Some((posed(&figure, &library, &skeleton), figure.scale))
+}
+
+/// The minifigure of what a player races as, and its scale: the one they built, the
+/// game's driver's, or for whoever the circuit will put in their slot a plain one.
+/// The port's own, for showing who is in a session.
+pub fn load_figure(jam: &Jam, ride: &Ride) -> Option<(Vec<Surface>, f32)> {
+    match ride {
+        Ride::Built(racer) => built_figure(jam, racer.cosmetics),
+        Ride::Slot => built_figure(jam, Cosmetics::default()),
+        Ride::Driver(code) => {
+            let name = roster::driver(jam, code)?.figure;
+            let file = |ext: &str| format!("{COMMON}/{name}.{ext}");
+            let figure = Model::parse(jam.get(&file("GDB"))?)?;
+            let library = Library::new(
+                jam,
+                [file("MDB"), file("TDB")].iter().map(String::as_str),
+                &[COMMON],
+            );
+            let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/PELVIS.SDB"))?)?;
+            Some((posed(&figure, &library, &skeleton), figure.scale))
+        }
+    }
+}
+
+/// Puts a racer someone has built in a grid slot, in the car they built. The driver
+/// the game has in the slot stays for what is heard of them. False if the car won't
+/// load.
+pub fn rebuild(loaded: &mut LoadedWorld, slot: usize, racer: &Racer) -> bool {
+    let built = open_jam().and_then(|jam| load_built(&jam, racer, false));
+    match (built, loaded.karts.get_mut(slot)) {
+        (Some(kart), Some(car)) => {
+            *car = kart;
+            loaded.called.retain(|named| named.0 != slot);
+            loaded.called.push((slot, racer.name.clone()));
+            true
+        }
+        _ => false,
+    }
 }
 
 /// What the chassis table (`CHASSIS.CMB`) says about one car, in game units and axes.
@@ -376,6 +555,11 @@ pub struct Chassis {
 }
 
 fn chassis(jam: &Jam, name: &str) -> Option<Chassis> {
+    Some(chassis_entry(jam, name)?.0)
+}
+
+/// A chassis, and the name of the model of its wheels.
+fn chassis_entry(jam: &Jam, name: &str) -> Option<(Chassis, String)> {
     let tokens = tokenize(jam.get(&format!("{COMMON}/CHASSIS.CMB"))?);
     let start = tokens
         .iter()
@@ -406,7 +590,12 @@ fn chassis(jam: &Jam, name: &str) -> Option<Chassis> {
     // right, rear left (Y is left).
     let contacts = numbers(0x30, 2, 12)?;
     let footprint = numbers(0x2e, 0, 2)?;
-    Some(Chassis {
+    // The first of the models the entry names is the wheels at their most detailed.
+    let wheels = entry.iter().find_map(|t| match t {
+        Token::Str(model) if !model.eq_ignore_ascii_case(name) => Some(model.to_uppercase()),
+        _ => None,
+    })?;
+    let chassis = Chassis {
         mount: vec3(&numbers(0x2b, 0, 3)?),
         wheels: [
             vec3(&contacts[3..6]),
@@ -421,7 +610,8 @@ fn chassis(jam: &Jam, name: &str) -> Option<Chassis> {
             numbers(0x3c, 0, 1)?[0],
         ],
         engine_pitch: numbers(0x2f, 0, 1).map_or(1.0, |v| v[0]),
-    })
+    };
+    Some((chassis, wheels))
 }
 
 /// Puts another of the game's drivers, with their car, in a grid slot: `code` is the
@@ -439,6 +629,11 @@ pub fn recast(loaded: &mut LoadedWorld, slot: usize, code: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// The original game's data, if it is there.
+pub fn jam() -> Option<Jam> {
+    open_jam()
 }
 
 fn open_jam() -> Option<Jam> {
@@ -863,6 +1058,7 @@ fn shared(
         targets: Vec::new(),
         karts,
         field,
+        called: Vec::new(),
         routes: Vec::new(),
         ghost: None,
         ghost_models,
@@ -980,6 +1176,22 @@ mod tests {
     use super::*;
 
     /// Needs the original game data; silently passes without it.
+    #[test]
+    fn every_racer_of_the_game_s_own_is_a_car_on_wheels_with_a_driver() {
+        let Some(jam) = open_jam() else { return };
+        for racer in crate::garage::stock(&jam) {
+            let kart =
+                load_built(&jam, &racer, false).unwrap_or_else(|| panic!("{}", racer.chassis));
+            assert_eq!(kart.axles.len(), 2, "{}", racer.chassis);
+            assert!(kart.axles.iter().all(|axle| axle.radius > 0.0));
+            assert!(!kart.body.is_empty() && !kart.driver.is_empty());
+            // About as long and as wide as the grid it was built on.
+            let [half, ahead, behind] = kart.outline;
+            assert!((2.5..5.0).contains(&half), "{} {half}", racer.chassis);
+            assert!((8.0..18.0).contains(&(ahead + behind)), "{}", racer.chassis);
+        }
+    }
+
     #[test]
     fn a_race_has_its_own_bricks_and_a_time_race_has_others() {
         for (race, name) in circuits() {

@@ -27,14 +27,14 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
     let circuits = Circuits::find();
     let settings = Settings::new(&circuits);
     let players = [
-        (HOST, "Host".to_string(), String::new()),
-        (1, "Guest".to_string(), "RR".to_string()),
+        (HOST, "Host".to_string(), Ride::Slot),
+        (1, "Guest".to_string(), Ride::Driver("RR".into())),
     ];
     let members = if role == Role::Host {
         vec![Member {
             peer: 1,
             name: "Guest".into(),
-            car: "RR".into(),
+            car: Ride::Driver("RR".into()),
             loaded: true,
         }]
     } else {
@@ -407,15 +407,15 @@ fn a_car_whose_player_has_gone_is_the_computers() {
 
 #[test]
 fn players_take_the_grid_from_the_back() {
-    let players: Vec<(Peer, String, String)> = (0..3)
+    let players: Vec<(Peer, String, Ride)> = (0..3)
         .map(|peer| {
             (
                 peer,
                 format!("P{peer}"),
                 if peer == 1 {
-                    "RR".to_string()
+                    Ride::Driver("RR".into())
                 } else {
-                    String::new()
+                    Ride::Slot
                 },
             )
         })
@@ -436,7 +436,10 @@ fn players_take_the_grid_from_the_back() {
     assert_eq!(seats.len(), 6);
     let lineup = Lineup { seats, you: 1 };
     // Only the player who chose who to race as is cast as anyone.
-    assert_eq!(lineup.cast().collect::<Vec<_>>(), [(4, "RR")]);
+    assert_eq!(
+        lineup.cast().collect::<Vec<_>>(),
+        [(4, &Ride::Driver("RR".into()))]
+    );
     assert_eq!(lineup.driver(4), Some((Who::Local, Some("P1".into()))));
     assert_eq!(lineup.driver(5), Some((Who::Remote(0), Some("P0".into()))));
     assert_eq!(lineup.driver(0), Some((Who::Computer, None)));
@@ -591,7 +594,7 @@ fn a_room_votes_and_its_race_begins_for_everyone() {
         ]
     );
 
-    // The player votes and is ready: the host hears, and the clock starts for both.
+    // The player votes and is ready: the host hears, and nobody is hurried by it.
     (
         pair.guest.world_mut().resource_mut::<Room>().ballot,
         pair.guest.world_mut().resource_mut::<Room>().ready,
@@ -602,8 +605,8 @@ fn a_room_votes_and_its_race_begins_for_everyone() {
     let heard = pair.host.world().resource::<Room>().voters[1].clone();
     assert_eq!((heard.ballot.as_ref(), heard.ready), (Some(&guests), true));
     assert!(
-        pair.guest.world().resource::<Room>().closing.is_some(),
-        "the player should see the vote closing"
+        pair.guest.world().resource::<Room>().closing.is_none(),
+        "one of two being ready should start no clock"
     );
     assert_eq!(
         (state(&pair.host), state(&pair.guest)),
@@ -626,7 +629,8 @@ fn a_room_votes_and_its_race_begins_for_everyone() {
         .last
         .clone()
         .expect("a race decided on");
-    // One of the two circuits asked for, and on a tie the host's wishes for the rest.
+    // One of the two circuits voted for, they being level, and the host's wishes for
+    // the rest.
     assert!(raced.circuit == hosts.circuit || raced.circuit == guests.circuit);
     assert_eq!((raced.lap_choice, raced.opponents), (0, 1));
     for app in [&pair.host, &pair.guest] {
@@ -1070,7 +1074,7 @@ fn a_player_who_gave_the_race_up_may_go_back_to_it() {
 fn someone_with_no_car_in_the_race_watches_it() {
     let mut pair = Pair::new(1, 0.0);
     // The race is the host's and two of the computer's cars: the player isn't in it.
-    let alone = Lineup::seat(&[(HOST, "Host".to_string(), String::new())], 2);
+    let alone = Lineup::seat(&[(HOST, "Host".to_string(), Ride::Slot)], 2);
     pair.host.insert_resource(Lineup {
         seats: alone.clone(),
         you: HOST,
@@ -1212,5 +1216,51 @@ fn a_player_who_comes_back_has_what_they_had() {
             .find(|seat| seat.name == "Guest")
             .and_then(|seat| seat.peer),
         Some(2)
+    );
+}
+
+/// A racer someone built goes to the host and comes back in the lineup whole, and
+/// nothing a host is sent of one is longer than the game would make it.
+#[test]
+fn a_built_racer_goes_over_the_wire_whole() {
+    use crate::assets::lrs::{Cosmetics, Racer};
+    let racer = Racer {
+        name: "Brickbeard".into(),
+        cosmetics: Cosmetics {
+            hat: 4,
+            face: 5,
+            torso: 25,
+            legs: 3,
+            expression: 0,
+        },
+        chassis: "crchas0".into(),
+        car: vec![0, 1, 0, 15, 0, 0, 0, 3, 0, 0],
+        stock: false,
+    };
+    let hello = ToHost::Hello {
+        protocol: lobby_api::PROTOCOL,
+        name: "P1".into(),
+        password: String::new(),
+        car: Ride::Built(racer.clone()),
+    };
+    assert_eq!(decode::<ToHost>(&encode(&hello)).unwrap(), hello);
+    let seats = Lineup::seat(&[(1, "P1".to_string(), Ride::Built(racer.clone()))], 0);
+    let lineup = Lineup { seats, you: 1 };
+    assert_eq!(
+        lineup.cast().collect::<Vec<_>>(),
+        [(5, &Ride::Built(racer.clone()))]
+    );
+    let long = Racer {
+        name: "N".repeat(40),
+        chassis: "c".repeat(40),
+        car: vec![0; 4000],
+        ..racer
+    };
+    let Ride::Built(kept) = Ride::Built(long).checked() else {
+        panic!("a built racer is still one once checked");
+    };
+    assert_eq!(
+        (kept.name.len(), kept.chassis.len(), kept.car.len()),
+        (14, 8, 514)
     );
 }

@@ -1,0 +1,933 @@
+//! Cars built of bricks, and the minifigures that drive them. A car is a list of
+//! pieces on a grid ten studs by six: a chassis first, then bricks, each resting on
+//! whatever is under it. The rules of what may go where, the bytes a car is saved
+//! as, and the model made of it follow `CarBuildModel` and its `PieceGrid`,
+//! `PieceList` and `Placement`; the minifigure follows `DriverModelBuilder`.
+//!
+//! The original cuts away the faces one brick hides behind another before it draws
+//! a car (`ResolvePrimitiveIntersections`). That is left out: the faces are drawn
+//! and the depth buffer hides them.
+//!
+//! The original also gives a built car the weight of its bricks and moves its centre
+//! of mass to where they are. The port's cars have no weight to give, so a built
+//! car handles as its chassis does.
+
+use crate::assets::{
+    Jam,
+    gcb::Parts,
+    gdb::{Batch, Model, Vertex},
+    leb::{self, Library, Piece, STUD},
+    lrs::Cosmetics,
+    tokens::{Reader, Token},
+};
+use std::collections::HashMap;
+
+pub const WIDTH: i32 = 10;
+pub const DEPTH: i32 = 6;
+/// The most pieces a car may be made of, its chassis among them.
+pub const MOST: usize = 64;
+/// How high a car may be built, in plates.
+pub const TALLEST: i32 = 15;
+/// A plate's height against a stud's width.
+const PLATE: f32 = 0.4;
+/// How much of the picture on a stud's top goes on each stud.
+const STUD_PICTURE: f32 = 0.25;
+/// The colour a chassis is saved as; it has its own.
+const CHASSIS_COLOUR: u8 = 3;
+
+/// One piece of a car, where it was put.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Placed {
+    /// The piece's number in the library.
+    pub kind: u16,
+    pub x: i32,
+    pub y: i32,
+    /// Quarter turns.
+    pub rotation: i32,
+    pub colour: u8,
+    /// The part set it came out of, by the number of the set's chassis.
+    pub set: u16,
+    /// How far up it rests, in plates.
+    pub height: i32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Square {
+    /// Which piece is uppermost here.
+    piece: Option<usize>,
+    height: i32,
+    /// Whether what is uppermost has a stud on it.
+    studded: bool,
+}
+
+/// Why a piece can't go where it is.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Refusal {
+    /// Off the grid, or over nothing it can sit on.
+    Nowhere,
+    /// Something is in the way.
+    Blocked,
+    TooTall,
+    TooMany,
+}
+
+/// A stud left showing: where, how high, and of which piece.
+struct Stud {
+    x: i32,
+    y: i32,
+    height: i32,
+    colour: u8,
+    /// The material a chassis says its stud here is made of; nought for the colour.
+    material: i32,
+}
+
+#[derive(Clone, Default)]
+pub struct Car {
+    pub pieces: Vec<Placed>,
+    grid: [[Square; DEPTH as usize]; WIDTH as usize],
+}
+
+impl Car {
+    /// A chassis and nothing on it.
+    pub fn new(library: &Library, chassis: &str) -> Car {
+        let mut car = Car::default();
+        if let Some(piece) = library.named(chassis) {
+            car.place(library, piece.kind, 0, 0, 0, CHASSIS_COLOUR, 0);
+        }
+        car
+    }
+
+    fn square(&self, x: i32, y: i32) -> Square {
+        self.grid[x as usize][y as usize]
+    }
+
+    /// How high a piece would rest at a place: `FindPlacementHeight`. A brick rests on
+    /// the studs under its sockets; a chassis, which `on_nothing` is for, on the floor.
+    fn rest(&self, piece: &Piece, x: i32, y: i32, rotation: i32, on_nothing: bool) -> Option<i32> {
+        let (width, depth) = piece.span(rotation);
+        if x < 0 || y < 0 || x + width > WIDTH || y + depth > DEPTH {
+            return None;
+        }
+        let mut height = -1;
+        for i in 0..width {
+            for j in 0..depth {
+                let square = self.square(x + i, y + j);
+                let cell = piece.cell(i, j, rotation);
+                if square.studded {
+                    if cell.socketed() {
+                        height = height.max(square.height - cell.bottom());
+                    }
+                } else if on_nothing && square.height == 0 {
+                    height = height.max(-cell.bottom());
+                }
+            }
+        }
+        (height >= 0).then_some(height)
+    }
+
+    /// How many of a piece's cells would be inside what is already there:
+    /// `HasCollision`.
+    fn clashes(&self, piece: &Piece, x: i32, y: i32, rotation: i32, height: i32) -> usize {
+        let (width, depth) = piece.span(rotation);
+        let mut clashes = 0;
+        for i in 0..width {
+            for j in 0..depth {
+                let square = self.square(x + i, y + j);
+                let cell = piece.cell(i, j, rotation);
+                if !cell.solid() {
+                    continue;
+                }
+                let above = square.height - height;
+                if above > cell.bottom()
+                    || (above == cell.bottom() && square.studded && !cell.resting())
+                {
+                    clashes += 1;
+                }
+            }
+        }
+        clashes
+    }
+
+    /// Marks the grid with a piece: `StampPiece`. With `studs`, notes each stud it
+    /// covers without taking, which is left showing under it.
+    fn stamp(
+        &mut self,
+        library: &Library,
+        index: usize,
+        mut studs: Option<&mut Vec<Stud>>,
+    ) -> Option<()> {
+        let placed = self.pieces[index];
+        let piece = library.piece(placed.kind)?;
+        let (width, depth) = piece.span(placed.rotation);
+        for i in 0..width {
+            for j in 0..depth {
+                let cell = piece.cell(i, j, placed.rotation);
+                if !cell.solid() {
+                    continue;
+                }
+                let (x, y) = (placed.x + i, placed.y + j);
+                let under = self.square(x, y);
+                if let (Some(studs), true) = (studs.as_deref_mut(), under.studded) {
+                    let snug = under.height == placed.height + cell.bottom();
+                    if !snug || cell.overhanging() {
+                        studs.extend(self.stud(library, x, y));
+                    }
+                }
+                self.grid[x as usize][y as usize] = Square {
+                    piece: Some(index),
+                    height: placed.height + cell.top(),
+                    studded: cell.studded(),
+                };
+            }
+        }
+        Some(())
+    }
+
+    /// The stud showing on a square.
+    fn stud(&self, library: &Library, x: i32, y: i32) -> Option<Stud> {
+        let square = self.square(x, y);
+        let owner = self.pieces[square.piece?];
+        let piece = library.piece(owner.kind)?;
+        let material = if piece.is_brick() {
+            0
+        } else {
+            piece
+                .cell(x - owner.x, y - owner.y, owner.rotation)
+                .raised()
+        };
+        Some(Stud {
+            x,
+            y,
+            height: square.height,
+            colour: owner.colour,
+            material,
+        })
+    }
+
+    /// How high the car stands at its highest under a piece so wide and deep.
+    pub fn over(&self, x: i32, y: i32, width: i32, depth: i32) -> i32 {
+        let across = x.max(0)..(x + width).min(WIDTH);
+        across
+            .flat_map(|i| (y.max(0)..(y + depth).min(DEPTH)).map(move |j| (i, j)))
+            .map(|(i, j)| self.square(i, j).height)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether a piece may go at a place, and how high it would rest: `TestPlacement`.
+    pub fn test(
+        &self,
+        library: &Library,
+        kind: u16,
+        x: i32,
+        y: i32,
+        rotation: i32,
+    ) -> Result<i32, Refusal> {
+        let piece = library.piece(kind).ok_or(Refusal::Nowhere)?;
+        let height = self
+            .rest(piece, x, y, rotation, !piece.is_brick())
+            .ok_or(Refusal::Nowhere)?;
+        if self.clashes(piece, x, y, rotation, height) > 0 {
+            Err(Refusal::Blocked)
+        } else if height + piece.height() > TALLEST {
+            Err(Refusal::TooTall)
+        } else if self.pieces.len() >= MOST {
+            Err(Refusal::TooMany)
+        } else {
+            Ok(height)
+        }
+    }
+
+    /// Puts a piece on the car if it may go there: `PlacePiece`.
+    pub fn place(
+        &mut self,
+        library: &Library,
+        kind: u16,
+        x: i32,
+        y: i32,
+        rotation: i32,
+        colour: u8,
+        set: u16,
+    ) -> bool {
+        let Some(piece) = library.piece(kind) else {
+            return false;
+        };
+        self.add(
+            library,
+            piece,
+            x,
+            y,
+            rotation,
+            colour,
+            set,
+            !piece.is_brick(),
+        )
+    }
+
+    /// `PieceGrid::AddPiece`.
+    fn add(
+        &mut self,
+        library: &Library,
+        piece: &Piece,
+        x: i32,
+        y: i32,
+        rotation: i32,
+        colour: u8,
+        set: u16,
+        on_nothing: bool,
+    ) -> bool {
+        let Some(height) = self.rest(piece, x, y, rotation, on_nothing) else {
+            return false;
+        };
+        if self.clashes(piece, x, y, rotation, height) > 0 || self.pieces.len() >= MOST {
+            return false;
+        }
+        self.pieces.push(Placed {
+            kind: piece.kind,
+            x,
+            y,
+            rotation: rotation & 3,
+            colour,
+            set,
+            height,
+        });
+        self.stamp(library, self.pieces.len() - 1, None);
+        true
+    }
+
+    /// Takes the last brick off again, never the chassis: `UndoLastPiece`.
+    pub fn undo(&mut self, library: &Library) -> Option<Placed> {
+        if self.pieces.len() <= 1 {
+            return None;
+        }
+        let last = self.pieces.pop()?;
+        self.restamp(library, None);
+        Some(last)
+    }
+
+    /// Marks the grid afresh with every piece in turn: `PieceList::RebuildGrid`.
+    fn restamp(&mut self, library: &Library, mut studs: Option<&mut Vec<Stud>>) {
+        self.grid = Default::default();
+        for index in 0..self.pieces.len() {
+            self.stamp(library, index, studs.as_deref_mut());
+        }
+    }
+
+    /// A car from the bytes it was saved as: `PieceList::Deserialize`. Pieces the
+    /// library hasn't got, and ones that no longer fit, are left off.
+    pub fn read(library: &Library, bytes: &[u8]) -> Car {
+        let mut car = Car::default();
+        let count = bytes
+            .get(..2)
+            .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]) as usize);
+        if count > MOST {
+            return car;
+        }
+        for record in bytes[2.min(bytes.len())..]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .take(count)
+        {
+            let kind = u16::from_be_bytes([record[0], record[1]]);
+            let (x, y, rotation) = (record[2] as i32, record[3] as i32, record[4] as i32);
+            let set = u16::from_be_bytes([record[6], record[7]]);
+            let Some(piece) = library.piece(kind) else {
+                continue;
+            };
+            if let Some(height) = car.rest(piece, x, y, rotation, false)
+                && height + piece.height() > TALLEST
+            {
+                continue;
+            }
+            if !car.add(library, piece, x, y, rotation, record[5], set, false) {
+                car.add(library, piece, x, y, rotation, record[5], set, true);
+            }
+        }
+        car
+    }
+
+    /// The bytes a car is saved as: `PieceList::Serialize`.
+    pub fn write(&self) -> Vec<u8> {
+        let mut bytes = (self.pieces.len() as u16).to_be_bytes().to_vec();
+        for piece in &self.pieces {
+            bytes.extend(piece.kind.to_be_bytes());
+            bytes.extend([
+                piece.x as u8,
+                piece.y as u8,
+                piece.rotation as u8,
+                piece.colour,
+            ]);
+            bytes.extend(piece.set.to_be_bytes());
+        }
+        bytes
+    }
+
+    /// The chassis table's name for the car's chassis.
+    pub fn chassis<'a>(&self, library: &'a Library) -> Option<&'a str> {
+        let piece = library.piece(self.pieces.first()?.kind)?;
+        (!piece.is_brick()).then_some(piece.name.as_str())
+    }
+
+    /// Where the grid's corner is from the car's middle, which the chassis says:
+    /// `UpdateOffset`.
+    pub fn offset(&self, library: &Library) -> [f32; 3] {
+        let origin = self
+            .pieces
+            .first()
+            .and_then(|first| library.piece(first.kind))
+            .filter(|piece| !piece.is_brick())
+            .and_then(|piece| library.position(piece.origin));
+        match origin {
+            Some([x, y, z]) => [-x, -y, -z * PLATE],
+            None => [-5.0, -3.0, 0.0],
+        }
+    }
+
+    /// The car as a model, in studs from its middle: `RebuildModel`. With the detailed
+    /// library every stud left showing is modelled; with the plain one the tops of
+    /// bricks are given a picture of studs.
+    pub fn model(&self, library: &Library, palette: &Palette) -> Model {
+        let mut shape = Shape::new(palette, library.piece(STUD).is_none());
+        for piece in &self.pieces {
+            if let Some(shape_of) = library.piece(piece.kind) {
+                shape.add(
+                    library,
+                    shape_of,
+                    [piece.x, piece.y, piece.height],
+                    piece.rotation,
+                    piece.colour,
+                );
+            }
+        }
+        if let Some(stud) = library.piece(STUD) {
+            let mut studs: Vec<Stud> = (0..WIDTH)
+                .flat_map(|x| (0..DEPTH).map(move |y| (x, y)))
+                .filter(|&(x, y)| self.square(x, y).studded)
+                .filter_map(|(x, y)| self.stud(library, x, y))
+                .collect();
+            self.clone().restamp(library, Some(&mut studs));
+            for at in studs {
+                let colour = match at.material {
+                    0 => at.colour,
+                    material => palette
+                        .colours
+                        .iter()
+                        .position(|&m| m == material as usize)
+                        .unwrap_or(0) as u8,
+                };
+                shape.add(library, stud, [at.x, at.y, at.height], 0, colour);
+            }
+        }
+        shape.finish(self.offset(library))
+    }
+
+    /// One piece on its own as a model, its middle at the model's: what the builder
+    /// holds over the car. `BuildPieceModel`, after `CenterOnPiece`.
+    pub fn piece_model(library: &Library, palette: &Palette, kind: u16, colour: u8) -> Model {
+        let mut shape = Shape::new(palette, library.piece(STUD).is_none());
+        let Some(piece) = library.piece(kind) else {
+            return shape.finish([0.0; 3]);
+        };
+        shape.add(library, piece, [0; 3], 0, colour);
+        if let Some(stud) = library.piece(STUD) {
+            for x in 0..piece.width {
+                for y in 0..piece.depth {
+                    let cell = piece.cell(x, y, 0);
+                    if cell.studded() {
+                        shape.add(library, stud, [x, y, cell.top()], 0, colour);
+                    }
+                }
+            }
+        }
+        shape.finish([
+            -piece.width as f32 / 2.0,
+            -piece.depth as f32 / 2.0,
+            -piece.height() as f32 * PLATE / 2.0,
+        ])
+    }
+}
+
+/// The materials bricks are made of: the library's, and which each colour is.
+pub struct Palette {
+    pub materials: Vec<String>,
+    /// The material of each colour, by the colour's number.
+    pub colours: Vec<usize>,
+}
+
+impl Palette {
+    pub fn open(jam: &Jam, detailed: bool) -> Option<Palette> {
+        let name = if detailed { "LPIECEHI" } else { "LPIECELO" };
+        let materials = leb::material_names(jam.get(&format!("{}/{name}.MDB", leb::DIR))?);
+        let colours = leb::colours(jam)
+            .iter()
+            .map(|colour| materials.iter().position(|m| m == colour).unwrap_or(0))
+            .collect();
+        Some(Palette { materials, colours })
+    }
+
+    /// The files the materials and their pictures are in.
+    pub fn files(detailed: bool) -> [String; 2] {
+        let name = if detailed { "LPIECEHI" } else { "LPIECELO" };
+        ["MDB", "TDB"].map(|ext| format!("{}/{name}.{ext}", leb::DIR))
+    }
+}
+
+/// A model being put together a face at a time: `EmitPieceGeometry`.
+struct Shape<'a> {
+    palette: &'a Palette,
+    /// Whether tops are given the picture of studs, there being no studs to model.
+    pictured: bool,
+    vertices: Vec<Vertex>,
+    normals: Vec<[f32; 3]>,
+    /// The corners of each material's triangles.
+    by_material: HashMap<usize, Vec<u32>>,
+}
+
+impl<'a> Shape<'a> {
+    fn new(palette: &'a Palette, pictured: bool) -> Self {
+        Shape {
+            palette,
+            pictured,
+            vertices: Vec::new(),
+            normals: Vec::new(),
+            by_material: HashMap::new(),
+        }
+    }
+
+    fn add(&mut self, library: &Library, piece: &Piece, at: [i32; 3], rotation: i32, colour: u8) {
+        /// Undersides, which are never drawn.
+        const BOTTOM: u16 = 1;
+        /// The tops of studs.
+        const TOP: u16 = 2;
+        /// Marks a face of some other material for the picture of studs.
+        const PICTURED: u16 = 0x800;
+        let (width, depth) = (piece.width as f32, piece.depth as f32);
+        let origin = at.map(|v| v as f32);
+        let coloured = self
+            .palette
+            .colours
+            .get(colour as usize)
+            .copied()
+            .unwrap_or(0);
+        for face in library.faces(piece) {
+            if face.flags == BOTTOM {
+                continue;
+            }
+            let pictured = self.pictured && (face.flags == TOP || face.flags & PICTURED != 0);
+            let material = match face.material {
+                3.. if self.pictured && face.flags & PICTURED != 0 => face.material as usize + 1,
+                3.. => face.material as usize,
+                TOP if self.pictured => coloured + 1,
+                _ => coloured,
+            };
+            let corners: Vec<u32> = face
+                .corners
+                .iter()
+                .map(|corner| {
+                    let [sx, sy, sz] = corner.position;
+                    let [nx, ny, nz] = corner.normal.map(|n| n as f32 / 127.0);
+                    let (x, y, normal) = match rotation & 3 {
+                        0 => (sx, sy, [nx, ny, nz]),
+                        1 => (sy, width - sx, [ny, -nx, nz]),
+                        2 => (width - sx, depth - sy, [-nx, -ny, nz]),
+                        _ => (depth - sy, sx, [-ny, nx, nz]),
+                    };
+                    let uv = match corner.uv {
+                        Some(uv) => uv,
+                        None if pictured => [x * STUD_PICTURE, y * STUD_PICTURE],
+                        None => [0.0; 2],
+                    };
+                    self.vertices.push(Vertex {
+                        pos: [x + origin[0], y + origin[1], sz + origin[2]],
+                        uv,
+                        color: [255; 4],
+                    });
+                    self.normals.push(normal);
+                    self.vertices.len() as u32 - 1
+                })
+                .collect();
+            let triangles = self.by_material.entry(material).or_default();
+            triangles.extend(&corners[..3]);
+            if let [_, second, third, fourth] = corners[..] {
+                triangles.extend([third, second, fourth]);
+            }
+        }
+    }
+
+    fn finish(mut self, offset: [f32; 3]) -> Model {
+        for vertex in &mut self.vertices {
+            let [x, y, z] = vertex.pos;
+            vertex.pos = [x + offset[0], y + offset[1], z * PLATE + offset[2]];
+        }
+        let mut materials: Vec<usize> = self.by_material.keys().copied().collect();
+        materials.sort();
+        Model {
+            materials: self.palette.materials.clone(),
+            batches: materials
+                .into_iter()
+                .map(|material| Batch {
+                    material,
+                    bone: None,
+                    indices: self.by_material.remove(&material).unwrap_or_default(),
+                    joints: Vec::new(),
+                })
+                .collect(),
+            vertices: self.vertices,
+            scale: 1.0,
+            normals: self.normals,
+        }
+    }
+}
+
+/// Where the builder holds the piece to be placed: `Placement`. The piece keeps the
+/// corner nearest the edge of the grid where it is when it is turned or changed for
+/// another, so that it is turned about that corner.
+#[derive(Clone, Copy, Default)]
+pub struct Cursor {
+    pub kind: u16,
+    pub colour: u8,
+    pub set: u16,
+    held: bool,
+    size: (i32, i32),
+    /// The corner kept, and which it is: the far one in x with 2, in y with 1.
+    corner: (i32, i32),
+    anchor: u8,
+    pub x: i32,
+    pub y: i32,
+    pub rotation: i32,
+}
+
+impl Cursor {
+    fn span(&self) -> (i32, i32) {
+        if self.rotation & 1 == 1 {
+            (self.size.1, self.size.0)
+        } else {
+            self.size
+        }
+    }
+
+    fn settle(&mut self) {
+        let (width, depth) = self.span();
+        self.x = self.corner.0 - if self.anchor & 2 != 0 { width } else { 0 };
+        self.y = self.corner.1 - if self.anchor & 1 != 0 { depth } else { 0 };
+    }
+
+    fn mark_corner(&mut self) {
+        let (width, depth) = self.span();
+        self.corner = (
+            self.x + if self.anchor & 2 != 0 { width } else { 0 },
+            self.y + if self.anchor & 1 != 0 { depth } else { 0 },
+        );
+    }
+
+    fn clamp(&mut self) {
+        let (width, depth) = self.span();
+        self.x = self.x.min(WIDTH - width).max(0);
+        self.y = self.y.min(DEPTH - depth).max(0);
+    }
+
+    /// Keeps the corner in whichever quarter of the grid the kept one is now in.
+    fn pick_corner(&mut self) {
+        let anchor = ((self.corner.0 >= WIDTH / 2) as u8 * 2) | (self.corner.1 >= DEPTH / 2) as u8;
+        self.anchor = anchor;
+        self.mark_corner();
+    }
+
+    /// Takes up a piece, in the middle of the grid if it is the first: `SetPiece`.
+    pub fn hold(&mut self, piece: &Piece, colour: u8, set: u16) {
+        let (width, depth) = (piece.width, piece.depth);
+        self.size = (width, depth);
+        (self.kind, self.colour, self.set) = (piece.kind, colour, set);
+        if !self.held {
+            (self.anchor, self.rotation) = (0, 0);
+            (self.x, self.y) = ((WIDTH - width) >> 1, (DEPTH - depth) >> 1);
+            if self.x < 0 || self.y < 0 {
+                self.rotation = 1;
+                (self.x, self.y) = ((WIDTH - depth) >> 1, (DEPTH - width) >> 1);
+            }
+        } else {
+            // Turned on if it doesn't fit the way the last piece lay.
+            let (across, along) = self.span();
+            if across > WIDTH || along > DEPTH {
+                self.rotation = (self.rotation + 1) & 3;
+            }
+            self.settle();
+        }
+        self.held = true;
+        self.clamp();
+        self.mark_corner();
+        self.pick_corner();
+    }
+
+    /// A quarter turn, or two where one wouldn't fit: `Rotate`.
+    pub fn turn(&mut self) {
+        let (across, along) = self.span();
+        if along > WIDTH || across > DEPTH {
+            self.rotation += 1;
+        }
+        self.rotation = (self.rotation + 1) & 3;
+        self.settle();
+        self.clamp();
+        self.mark_corner();
+    }
+
+    /// A step along the car or across it; false at the edge. `MoveX`, `MoveY`.
+    pub fn step(&mut self, dx: i32, dy: i32) -> bool {
+        let before = (self.x, self.y);
+        self.x += dx;
+        self.y += dy;
+        self.clamp();
+        self.mark_corner();
+        self.pick_corner();
+        before != (self.x, self.y)
+    }
+
+    /// Back to where a piece was, to hold it again: `SetPlacement`.
+    pub fn put(&mut self, piece: &Piece, placed: &Placed) {
+        (self.corner, self.rotation, self.anchor) = ((placed.x, placed.y), placed.rotation & 3, 0);
+        self.held = true;
+        self.hold(piece, placed.colour, placed.set);
+    }
+}
+
+/// The lists of what a minifigure can be made of (`BODYPART.PCB`), after
+/// `DriverPartCatalog`.
+#[derive(Default)]
+pub struct Catalogue {
+    /// What each hat's head is called in the part library.
+    pub hats: Vec<String>,
+    /// What each face's materials begin with.
+    pub faces: Vec<String>,
+    /// Each torso's material, and each pair of legs'.
+    pub torsos: Vec<String>,
+    pub legs: Vec<String>,
+}
+
+const PARTS: &str = "/MENUDATA/PARTDB";
+/// The directory of what races make a minifigure of.
+const GAME_PARTS: &str = "/MENUDATA/PARTDB/GAMEPART";
+
+impl Catalogue {
+    pub fn open(jam: &Jam) -> Option<Catalogue> {
+        let mut r = Reader::new(jam.get(&format!("{PARTS}/BODYPART.PCB"))?);
+        let mut catalogue = Catalogue::default();
+        while let Some(token) = r.next() {
+            let Token::Key(key) = token else { continue };
+            r.list_header()?;
+            let mut names = Vec::new();
+            loop {
+                match r.next()? {
+                    Token::RCurly => break,
+                    Token::Str(name) => names.push(name.to_lowercase()),
+                    // Which part of the figure a part is for, and what unlocks it.
+                    _ => {}
+                }
+            }
+            match key {
+                // The first names of these are the models the builder shows them on.
+                0x2a => catalogue.faces = names.split_off(1),
+                0x2b => catalogue.torsos = names.split_off(2),
+                0x2c => catalogue.legs = names.split_off(2),
+                0x2d => catalogue.hats = names,
+                _ => {}
+            }
+        }
+        Some(catalogue)
+    }
+
+    /// How many there are of a part to choose between.
+    pub fn count(&self, part: usize) -> usize {
+        [&self.hats, &self.faces, &self.torsos, &self.legs][part].len()
+    }
+
+    /// The files a figure's materials and their pictures are in, and where the
+    /// pictures are.
+    pub fn files() -> ([String; 2], [&'static str; 2]) {
+        (
+            ["MDB", "TDB"].map(|ext| format!("{PARTS}/BODYPART.{ext}")),
+            [PARTS, "/GAMEDATA/COMMON"],
+        )
+    }
+}
+
+/// A minifigure as races show it, sitting: the box of its legs, its chest and arms,
+/// and the head its hat is part of, with the faces of each given the materials the
+/// figure was made with. `DriverModelBuilder::BuildDriverModel`, for the part
+/// resources of the race. The bones are those of `skeleton`.
+pub fn figure(jam: &Jam, catalogue: &Catalogue, cosmetics: Cosmetics) -> Option<Model> {
+    let mut model = Model::parse_lit(jam.get(&format!("{GAME_PARTS}/LEG_BOX.GDB"))?)?;
+    let parts = Parts::parse(jam.get(&format!("{GAME_PARTS}/ICB_CHAR.GCB"))?)?;
+    fn pick(names: &[String], at: u8) -> Option<&String> {
+        names.get(at as usize).or(names.first())
+    }
+    let head = parts.model(pick(&catalogue.hats, cosmetics.hat)?)?;
+    let face = format!("{}dflt", pick(&catalogue.faces, cosmetics.face)?);
+    let torso = pick(&catalogue.torsos, cosmetics.torso)?.clone();
+    let legs = pick(&catalogue.legs, cosmetics.legs)?.clone();
+
+    // The body's own head is a box the head goes in place of, on the same bone.
+    let stand_in = model.materials.iter().position(|m| m == "face")?;
+    let bone = model
+        .batches
+        .iter()
+        .find(|b| b.material == stand_in)
+        .and_then(|b| b.bone);
+    model.batches.retain(|b| b.material != stand_in);
+    let first = model.vertices.len() as u32;
+    model.vertices.extend(&head.vertices);
+    model.normals.extend(&head.normals);
+    for batch in head.batches {
+        let name = &head.materials[batch.material];
+        let material = model
+            .materials
+            .iter()
+            .position(|m| m == name)
+            .unwrap_or_else(|| {
+                model.materials.push(name.clone());
+                model.materials.len() - 1
+            });
+        model.batches.push(Batch {
+            material,
+            bone,
+            indices: batch.indices.iter().map(|i| i + first).collect(),
+            joints: Vec::new(),
+        });
+    }
+    for material in &mut model.materials {
+        match material.as_str() {
+            "face" => *material = face.clone(),
+            "torso" => *material = torso.clone(),
+            "legs" => *material = legs.clone(),
+            _ => {}
+        }
+    }
+    Some(model)
+}
+
+/// The bones of the figure `figure` makes.
+pub fn skeleton(jam: &Jam) -> Option<&[u8]> {
+    jam.get(&format!("{GAME_PARTS}/LEG_BOX.SDB"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::lrs;
+
+    fn jam() -> Option<Jam> {
+        Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM")
+    }
+
+    #[test]
+    fn the_game_s_own_cars_are_read_whole_and_written_back_the_same() {
+        let Some(jam) = jam() else { return };
+        let library = Library::open(&jam, true).unwrap();
+        let palette = Palette::open(&jam, true).unwrap();
+        for file in ["QBUILD", "DEFAULT"] {
+            let racers = lrs::read(jam.get(&format!("/MENUDATA/{file}.LRS")).unwrap());
+            for racer in racers {
+                let car = Car::read(&library, &racer.car);
+                // Nothing of them is left off, and each piece rests where the rules
+                // would now put it.
+                assert_eq!(car.write(), racer.car, "{file} {}", racer.chassis);
+                assert_eq!(car.chassis(&library), Some(racer.chassis.as_str()));
+                assert!(car.pieces.len() > 4);
+                let model = car.model(&library, &palette);
+                assert!(model.vertices.len() > 500);
+                assert_eq!(model.vertices.len(), model.normals.len());
+                // Within the grid, about the car's middle.
+                // About the car's middle, and no bigger than the grid lets it be.
+                for vertex in &model.vertices {
+                    assert!(vertex.pos[0].abs() < 9.0 && vertex.pos[1].abs() < 5.0);
+                    assert!((0.0..9.0).contains(&vertex.pos[2]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bricks_rest_on_studs_and_not_in_one_another() {
+        let Some(jam) = jam() else { return };
+        let library = Library::open(&jam, true).unwrap();
+        let brick = library.named("l300100").unwrap().kind;
+        let mut car = Car::new(&library, "rrchas0");
+        assert_eq!(car.pieces.len(), 1);
+        // The chassis has studs somewhere for a two by four to stand on.
+        let spot = (0..WIDTH)
+            .flat_map(|x| (0..DEPTH).map(move |y| (x, y)))
+            .find_map(|(x, y)| car.test(&library, brick, x, y, 0).ok().map(|h| (x, y, h)));
+        let (x, y, height) = spot.unwrap();
+        assert!(car.place(&library, brick, x, y, 0, 5, 21));
+        // A second goes on top of the first, three plates up, and comes off again.
+        assert_eq!(car.test(&library, brick, x, y, 0), Ok(height + 3));
+        assert!(car.place(&library, brick, x, y, 0, 7, 21));
+        assert_eq!(car.undo(&library).map(|p| p.height), Some(height + 3));
+        assert_eq!(car.test(&library, brick, x, y, 0), Ok(height + 3));
+        // Off the grid there is nowhere, and the chassis is never taken off.
+        assert_eq!(car.test(&library, brick, 9, 5, 0), Err(Refusal::Nowhere));
+        car.undo(&library);
+        assert!(car.undo(&library).is_none());
+        assert_eq!(car.pieces.len(), 1);
+        // Stacked until it is too tall.
+        while car.place(&library, brick, x, y, 0, 5, 21) {
+            if car.test(&library, brick, x, y, 0) == Err(Refusal::TooTall) {
+                break;
+            }
+        }
+        assert_eq!(car.test(&library, brick, x, y, 0), Err(Refusal::TooTall));
+        assert_eq!(Car::read(&library, &car.write()).pieces, car.pieces);
+    }
+
+    #[test]
+    fn the_cursor_stays_on_the_grid() {
+        let Some(jam) = jam() else { return };
+        let library = Library::open(&jam, true).unwrap();
+        let brick = library.named("l300100").unwrap();
+        let mut cursor = Cursor::default();
+        cursor.hold(brick, 5, 21);
+        assert_eq!((cursor.x, cursor.y, cursor.rotation), (4, 1, 0));
+        for _ in 0..12 {
+            cursor.step(1, 1);
+        }
+        assert_eq!((cursor.x, cursor.y), (8, 2));
+        assert!(!cursor.step(1, 0));
+        // Turned about the corner it keeps, it is still against the end of the grid.
+        cursor.turn();
+        assert_eq!((cursor.x, cursor.y, cursor.rotation), (6, 2, 1));
+        // A chassis only lies one way.
+        let chassis = library.named("rrchas0").unwrap();
+        let mut cursor = Cursor::default();
+        cursor.hold(chassis, 3, 0);
+        cursor.turn();
+        assert_eq!((cursor.x, cursor.y, cursor.rotation & 1), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_figure_is_made_of_the_parts_it_was_given() {
+        let Some(jam) = jam() else { return };
+        let catalogue = Catalogue::open(&jam).unwrap();
+        assert_eq!(
+            [0, 1, 2, 3].map(|part| catalogue.count(part)),
+            [36, 30, 29, 20]
+        );
+        let cosmetics = Cosmetics {
+            hat: 1,
+            face: 28,
+            torso: 15,
+            legs: 18,
+            expression: 0,
+        };
+        let model = figure(&jam, &catalogue, cosmetics).unwrap();
+        for material in ["rr_dflt", "rr_chst", "rr_leg", "helmetrr"] {
+            assert!(model.materials.iter().any(|m| m == material), "{material}");
+        }
+        assert_eq!(model.vertices.len(), model.normals.len());
+        assert!(model.batches.iter().all(|b| b.bone.is_some()));
+        // Every figure there could be has its parts.
+        for hat in 0..catalogue.count(0) as u8 {
+            let cosmetics = Cosmetics { hat, ..cosmetics };
+            assert!(figure(&jam, &catalogue, cosmetics).is_some(), "hat {hat}");
+        }
+    }
+}

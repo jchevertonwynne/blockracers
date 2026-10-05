@@ -15,6 +15,15 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   so **`cargo clean` deletes it** — don't run it without re-cloning afterwards.
 - **Code:** `src/assets/` holds the file-format readers; everything else in `src/` is
   the game. Each module's header comment says which part of the original it follows.
+- **Built cars:** `src/build.rs` has the rules of putting bricks on a chassis, the
+  bytes a car is saved as and the model made of one, and a racer's minifigure;
+  `src/assets/leb.rs`, `gcb.rs` and `lrs.rs` read the bricks, the minifigure's heads
+  and saved racers. The build menu's screens are `src/frontend/workshop.rs`, and
+  `src/garage.rs` keeps the racers built. The racer the garage shows is the one the
+  player races as alone; online it is one of the choices of who to race as, and goes
+  to every game in the session whole (`net::protocol::Ride`), each making the car of
+  it afresh. What to race as is chosen in a session's room, which has the garage
+  off it ("build") and shows everyone's minifigure (`src/frontend/portraits.rs`).
 - **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
   games drive their own car ahead of the host's word and are shown the rest. Online
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
@@ -68,13 +77,15 @@ menu instead. These combine with it:
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
 | `BRICK_EVENTS=18@3` | circuit events to set off, and when |
-| `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (`P` is photo mode; `R` at the finish is the replay) |
+| `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (`P` is photo mode; `R` at the finish is the replay; where bricks are placed the arrows move the brick, `R` turns it, `Enter` adds it, `Back` takes one off, `Tab` and `T` are the next brick and set, `Comma` and `Period` turn the car) |
 | `BRICK_SETTINGS=<file>` | where settings are kept (default `~/.brick_racers_settings`; demos neither read nor write it) |
 | `BRICK_START=1` | keep the drop-in and countdown (demos skip them) |
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |
 | `BRICK_TIME=1` | time race |
-| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|online\|host\|join` | menu page to open on |
+| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks` | menu page to open on; the last five are of the build menu, with the racer `BRICK_RACER` names on the bench |
+| `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brick_racers_garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
+| `BRICK_RACER=4` | which of the garage's racers the player races as, counted from one |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |
 | `BRICK_BRICKS=red\|yellow\|blue\|green\|none\|random` | what the circuit's bricks are made |
@@ -84,7 +95,7 @@ menu instead. These combine with it:
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
 | `BRICK_NET=host:2` | host a session and start its race, without a vote, once that many players are in it (the host is one); `host:9` never fills, and leaves the session in its room |
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
-| `BRICK_SESSION`, `BRICK_NAME`, `BRICK_CAR`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, who they race as (a code from `roster::NAMES`, such as `PH`), the password set or given |
+| `BRICK_SESSION`, `BRICK_NAME`, `BRICK_CAR`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, who they race as (a code from `roster::NAMES`, such as `PH`, or a number for that one of the garage's racers), the password set or given |
 | `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
 | `RUST_LOG=blockracers::hazards=debug` | per-module logging |
 
@@ -98,7 +109,11 @@ the room opens on its results, where `Enter` is on "OK". The room's other pages
 (the last race, and the host's page for the password, the player limit and putting
 a player out) are reached with `BRICK_KEYS`. In a race online the question `Escape`
 asks opens on "no": `Escape@13,Up@13.4,Enter@13.8` gives the race up. In the room
-while a race is on, `Down` then `Enter` from "ready" goes to the race.
+while a race is on, `Down` then `Enter` from "ready" goes to the race. `Up` from
+"ready" is what to race as, which `Left` and `Right` change, and `Up` again is
+"next race", the page the next race's circuit is voted for on (`Enter` on a
+circuit votes for it; the rest of how the race is run is the host's, on "rules"); "build", the last of
+the buttons under "ready", opens the garage, and `Escape` there comes back.
 
 ## Being a good guest on the user's machine
 

@@ -1,13 +1,13 @@
 //! The original game's front end, drawn from its own menu data: the screen layouts
 //! (`.MIB`), pictures, bitmap fonts and string tables in `MENUDATA`. Main menu, single
-//! race and options are here; the screens for things the port doesn't have (building,
-//! controls) are shown but can't be chosen. The video options are the port's
+//! race and options are here, and the build menu in `workshop`; the screens for
+//! things the port doesn't have (controls) are shown but can't be chosen. The video options are the port's
 //! own, and so is the extras page: the ways of racing the original doesn't have.
 //!
 //! Racing online is the port's own too, and is reached where the original has its
 //! two-player race: a page to host or join from, the list of sessions the lobby
-//! has, and the room a session waits in, where everyone says how they would have the
-//! next race run (`net::room`). Their widgets are placed by hand; the original has
+//! has, and the room a session waits in, where everyone votes for the next race's
+//! circuit and the host says how the rest of it is run (`net::room`). Their widgets are placed by hand; the original has
 //! no screens to take the places from.
 //!
 //! Colours and the make-up of each widget follow the styles in `GSTYLES.MSB`. The
@@ -21,11 +21,17 @@ use crate::assets::{
 };
 use crate::audio::{Sfx, id};
 use crate::championship::Championship;
+use crate::garage::Garage;
 use crate::menu::{
     Circuits, DIFFICULTIES, Extra, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, NAME_LENGTH, Screen,
     Settings,
 };
-use crate::net::{self, Role, Session, lobby::Lobby, protocol::Rules, room::Room};
+use crate::net::{
+    self, Role, Session,
+    lobby::Lobby,
+    protocol::{Ride, Rules},
+    room::Room,
+};
 use bevy::{
     asset::RenderAssetUsages,
     image::ImageSampler,
@@ -35,6 +41,11 @@ use bevy::{
     window::PrimaryWindow,
 };
 use std::collections::HashMap;
+
+mod portraits;
+mod workshop;
+use portraits::Portraits;
+use workshop::Bench;
 
 /// The original lays its menus out on a screen this size.
 const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
@@ -106,8 +117,23 @@ enum Page {
     Room,
     Results,
     Session,
+    /// Off the room too: the vote for the next race's circuit, and for the host how
+    /// the rest of it is to be run.
+    Wishes,
+    Rules,
     /// Finding a session by the code its host has passed on.
     Code,
+    /// The original's build menu (`workshop`): the garage, the question asked before
+    /// a racer is deleted, what of a racer to change, and the screens its
+    /// minifigure, its name and its car are made on, the last of them where bricks
+    /// are put on the car.
+    Garage,
+    Scrap,
+    Racer,
+    Driver,
+    Licence,
+    Car,
+    Bricks,
 }
 
 /// What can be typed into.
@@ -123,9 +149,11 @@ enum Typed {
     /// Something to say to the room, and the code of a session to find.
     Say,
     Code,
+    /// The name of the racer being built.
+    Racer,
 }
 
-/// The things a room votes on, but for the circuit: the port's own ways of racing
+/// What the host says of a race besides its laps and field: the port's own ways of racing
 /// that are everyone's affair. How a player steers is their own.
 /// How many races a session's series may be of; none is no series.
 const SERIES: [u8; 4] = [0, 3, 5, 7];
@@ -192,6 +220,8 @@ impl Page {
             Page::Main => 2,
             // Past the extras, to the first of the original's own.
             Page::Options => 1,
+            // Past the selectors, to something to choose; and to "no".
+            Page::Garage | Page::Scrap | Page::Car => 1,
             _ => 0,
         }
     }
@@ -274,6 +304,10 @@ enum Action {
     /// Going to the race that is on, and finding the session a code is for.
     Enter,
     Find,
+    /// A vote for one of the circuits, to race it next.
+    Map(usize),
+    /// Something of the garage's.
+    Bench(workshop::Act),
 }
 
 enum Widget {
@@ -333,11 +367,16 @@ pub fn plugin(app: &mut App) {
     }
     app.init_resource::<Menu>()
         .init_resource::<Online>()
+        .init_resource::<Bench>()
+        .init_resource::<Portraits>()
         .add_systems(OnEnter(Screen::Menu), enter)
-        .add_systems(OnExit(Screen::Menu), leave)
+        .add_systems(
+            OnExit(Screen::Menu),
+            (leave, workshop::put_away, portraits::put_away),
+        )
         .add_systems(
             Update,
-            (input, draw)
+            (input, arrive, ride, portraits::keep, draw, workshop::show)
                 .chain()
                 .run_if(in_state(Screen::Menu))
                 .run_if(resource_exists::<Art>),
@@ -386,6 +425,11 @@ fn load_art() -> Option<Art> {
         ("main", "MAINMENU"),
         ("race", "SINGRACE"),
         ("options", "OPTIONS"),
+        ("garage", "GARAGE"),
+        ("editdrvr", "EDITDRVR"),
+        ("drvrlice", "DRVRLICE"),
+        ("editcar", "EDITCAR"),
+        ("carbuild", "CARBUILD"),
     ] {
         layouts.insert(
             screen,
@@ -504,7 +548,13 @@ fn items(
     settings: &Settings,
     championship: &Championship,
     wired: &Wired,
+    garage: &Garage,
+    bench: &Bench,
 ) -> Vec<Item> {
+    if workshop::mine(page) {
+        let online = wired.role != Role::Offline;
+        return workshop::items(page, art, bench, garage, settings, online);
+    }
     let button =
         |screen: &str, name: &str, label: usize, action: Action, icon: Option<&'static str>| Item {
             widget: Widget::Button {
@@ -535,7 +585,13 @@ fn items(
     };
     match page {
         Page::Main => vec![
-            button("main", "garage", text::BUILD, Action::Nothing, None),
+            button(
+                "main",
+                "garage",
+                text::BUILD,
+                Action::Go(Page::Garage),
+                None,
+            ),
             button(
                 "main",
                 "circuit",
@@ -745,7 +801,7 @@ fn items(
             selector(
                 Rect::from_corners(FIELD[1].min - Vec2::X * ICON, FIELD[1].max + Vec2::X * ICON),
                 None,
-                racing_as(settings).to_string(),
+                racing_as(settings, garage),
                 Action::Car,
             ),
             plain(Vec2::new(3.0, 178.0), "HOST A RACE", Action::Go(Page::Host)),
@@ -848,29 +904,59 @@ fn items(
             action: Action::Leave,
             enabled: true,
         }],
-        Page::Room => {
+        Page::Wishes => {
+            // Every circuit there is, to be voted for.
+            let mut items: Vec<Item> = circuits
+                .0
+                .iter()
+                .enumerate()
+                .map(|(n, circuit)| {
+                    plain(
+                        map_place(n, circuits.0.len()),
+                        &circuit.name,
+                        Action::Map(n),
+                    )
+                })
+                .collect();
+            items.push(way_back(art, Page::Room));
+            items
+        }
+        Page::Rules => {
             let wish = wired.wish(settings, circuits);
             let row = |n: usize| {
                 Rect::new(
                     164.0,
                     ROOM_TOP + ROOM_STEP * n as f32,
-                    440.0,
+                    ROOM_ROWS_END,
                     ROOM_TOP + ROOM_STEP * n as f32 + ICON,
                 )
             };
             let mut items = vec![
-                selector(
-                    Rect::new(8.0, ROOM_TOP, 440.0, ROOM_TOP + ICON),
-                    None,
-                    circuits.0[wish.circuit].name.clone(),
-                    Action::RaceChoice,
-                ),
-                selector(row(1), None, wish.laps().to_string(), Action::Laps),
-                selector(row(2), None, wish.opponents.to_string(), Action::Opponents),
+                selector(row(0), None, wish.laps().to_string(), Action::Laps),
+                selector(row(1), None, wish.opponents.to_string(), Action::Opponents),
             ];
             items.extend(VOTED.iter().enumerate().map(|(n, &extra)| {
-                selector(row(3 + n), None, wish.shown(extra), Action::Extra(extra))
+                selector(row(2 + n), None, wish.shown(extra), Action::Extra(extra))
             }));
+            items.push(way_back(art, Page::Room));
+            items
+        }
+        Page::Room => {
+            // The next race's circuit is voted for on a page of its own; what to
+            // race as is the player's own affair, and not voted on.
+            let mut items = vec![
+                plain(
+                    Vec2::new(3.0, ROOM_RACE),
+                    "NEXT RACE",
+                    Action::Go(Page::Wishes),
+                ),
+                selector(
+                    Rect::new(164.0, ROOM_RIDE, ROOM_ROWS_END, ROOM_RIDE + ICON),
+                    None,
+                    racing_as(settings, garage),
+                    Action::Car,
+                ),
+            ];
             items.push(plain(
                 Vec2::new(3.0, ROOM_BUTTONS),
                 if wired.room.ready {
@@ -892,18 +978,32 @@ fn items(
             }
             if !wired.room.results.is_empty() {
                 items.push(plain(
-                    Vec2::new(200.0, below),
+                    Vec2::new(155.0, below),
                     "LAST RACE",
                     Action::Go(Page::Results),
                 ));
             }
             if wired.role == Role::Host {
                 items.push(plain(
-                    Vec2::new(330.0, below),
+                    Vec2::new(258.0, below),
                     "SESSION",
                     Action::Go(Page::Session),
                 ));
             }
+            // How the race is run, its circuit apart, is the host's to say.
+            if wired.role == Role::Host {
+                items.push(plain(
+                    Vec2::new(440.0, below),
+                    "RULES",
+                    Action::Go(Page::Rules),
+                ));
+            }
+            // To the garage, to build a racer or change one, and back here.
+            items.push(plain(
+                Vec2::new(354.0, below),
+                "BUILD",
+                Action::Go(Page::Garage),
+            ));
             items.push(field(CHAT, wired.online.say.clone(), Typed::Say));
             items.push(Item {
                 widget: Widget::Button {
@@ -975,6 +1075,8 @@ fn items(
             items.push(way_back(art, Page::Room));
             items
         }
+        // The garage's pages, which `workshop::items` has already answered for.
+        _ => Vec::new(),
     }
 }
 
@@ -992,6 +1094,17 @@ const FIELD: [Rect; 2] = [
 /// Where the room's rows begin and how far apart they are.
 const ROOM_TOP: f32 = 76.0;
 const ROOM_STEP: f32 = 32.0;
+/// Which of the room's widgets is "ready", where the room opens: after the way to
+/// the next race's settings and what to race as.
+const READY_AT: usize = 2;
+/// Where the rows of the next race's settings end, with how many agree on each
+/// after that.
+const ROOM_ROWS_END: f32 = 440.0;
+/// In the room, how high the minifigures of those in it are, and where under them
+/// the way to the next race's settings and what to race as go.
+const FIGURE_HEIGHT: f32 = 112.0;
+const ROOM_RACE: f32 = 240.0;
+const ROOM_RIDE: f32 = 272.0;
 /// Where the room's buttons begin, under its rows; where what is to be said to it
 /// is typed; and where what has been said is shown, and how far apart its lines are.
 const ROOM_BUTTONS: f32 = 304.0;
@@ -1017,8 +1130,48 @@ fn wide(area: Rect) -> Rect {
 fn listed(unlisted: bool) -> &'static str {
     if unlisted { "CODE ONLY" } else { "ON THE LIST" }
 }
-/// How far apart those in the room are listed, each two lines.
-const VOTER_STEP: f32 = 48.0;
+/// Where the circuits to be voted for end, down the screen.
+const MAPS_END: f32 = 308.0;
+
+/// Where the `n`th of `count` circuits to be voted for goes: in two columns, down
+/// the first and then the second.
+fn map_place(n: usize, count: usize) -> Vec2 {
+    let rows = count.div_ceil(2).max(1);
+    let step = ((MAPS_END - ROOM_TOP) / rows as f32).min(ROOM_STEP);
+    Vec2::new(
+        3.0 + (n / rows) as f32 * SCREEN.x / 2.0,
+        ROOM_TOP + step * (n % rows) as f32,
+    )
+}
+
+/// How high a line of writing under a minifigure is, and the most of the screen's
+/// width any one of those in the room is given.
+const VOTER_LINE: f32 = 24.0;
+const VOTER_MOST: f32 = 160.0;
+
+/// Where the `n`th of `count` in the room goes: their minifigure, their name under
+/// it, and under that how long their way to the host takes. Side by side across
+/// the screen, in the middle of it.
+fn voter_places(n: usize, count: usize) -> (Rect, Rect, Rect) {
+    let wide = (SCREEN.x / count.max(1) as f32).min(VOTER_MOST);
+    let left = (SCREEN.x - wide * count as f32) / 2.0 + wide * n as f32;
+    let figure = FIGURE_HEIGHT * portraits::SIZE.x / portraits::SIZE.y;
+    let line = |row: f32| {
+        let top = ROOM_TOP + FIGURE_HEIGHT + row * VOTER_LINE;
+        Rect::new(left, top, left + wide, top + VOTER_LINE)
+    };
+    (
+        Rect::new(
+            left + (wide - figure) / 2.0,
+            ROOM_TOP,
+            left + (wide + figure) / 2.0,
+            ROOM_TOP + FIGURE_HEIGHT,
+        ),
+        line(0.0),
+        line(1.0),
+    )
+}
+
 /// Where the rows of the last race's results begin, how far apart they are, and
 /// where each column begins: place, driver, time, how far behind, best lap, points.
 const RESULTS_TOP: f32 = 84.0;
@@ -1047,12 +1200,15 @@ fn way_back(art: &Art, to: Page) -> Item {
 }
 
 /// Who the player races as online, as the menu says it.
-fn racing_as(settings: &Settings) -> &'static str {
-    settings
-        .car
-        .checked_sub(1)
-        .and_then(|n| crate::roster::NAMES.get(n))
-        .map_or("ANYONE", |driver| driver.1)
+fn racing_as(settings: &Settings, garage: &Garage) -> String {
+    match garage.ride(settings) {
+        Ride::Slot => "ANYONE".into(),
+        Ride::Driver(code) => {
+            let driver = crate::roster::NAMES.iter().find(|driver| driver.0 == code);
+            driver.map_or("ANYONE", |driver| driver.1).into()
+        }
+        Ride::Built(racer) => racer.name,
+    }
 }
 
 /// A button of the port's own, with words the original hasn't a string for.
@@ -1147,9 +1303,58 @@ fn notes(
         }
         Page::Password => vec![banner("JOIN A RACE"), beside(FIELD[0], "PASSWORD")],
         Page::Connecting => vec![banner("JOIN A RACE"), middle("CALLING THE HOST")],
-        Page::Room => {
+        Page::Wishes => {
             let room = wired.room;
-            let mut notes = vec![banner(&wired.session.title)];
+            let mut notes = vec![banner("NEXT RACE")];
+            // Before each circuit, how many have voted for it: the player's own
+            // vote in white.
+            let mine = room
+                .ballot
+                .as_ref()
+                .map(|_| wired.wish(settings, circuits).circuit);
+            for (n, circuit) in circuits.0.iter().enumerate() {
+                let votes = room.votes(net::protocol::key(circuit));
+                if votes > 0 {
+                    let corner = map_place(n, circuits.0.len());
+                    notes.push((
+                        Rect::from_corners(corner, corner + Vec2::splat(ICON)),
+                        votes.to_string(),
+                        "font_ths",
+                        if Some(n) == mine { LABEL } else { NORMAL },
+                        true,
+                    ));
+                }
+            }
+            // Under them, how the host has said the race is to be run.
+            if let Some(rules) = room.hosts() {
+                let mut said = vec![
+                    format!(
+                        "{} LAPS",
+                        LAP_CHOICES[rules.lap_choice as usize % LAP_CHOICES.len()]
+                    ),
+                    format!("{} OPPONENTS", rules.opponents),
+                ];
+                said.extend(rules.mirror.then(|| "MIRRORED".to_string()));
+                said.extend(rules.reverse.then(|| "REVERSED".to_string()));
+                let bricks = crate::menu::BRICK_RULES.get(rules.bricks as usize);
+                said.extend(
+                    bricks
+                        .filter(|_| rules.bricks > 0)
+                        .map(|bricks| format!("BRICKS {bricks}")),
+                );
+                said.extend(rules.elimination.then(|| "ELIMINATION".to_string()));
+                notes.push((
+                    Rect::new(320.0, MAPS_END + 8.0, 320.0, MAPS_END + 8.0 + ICON),
+                    said.join(", "),
+                    "font_ths",
+                    LABEL,
+                    true,
+                ));
+            }
+            notes
+        }
+        Page::Rules => {
+            let mut notes = vec![banner("RACE RULES")];
             let label = |n: usize, words: &str| {
                 (
                     Rect::new(
@@ -1164,36 +1369,42 @@ fn notes(
                     false,
                 )
             };
-            notes.push(label(1, "LAPS"));
-            notes.push(label(2, "OPPONENTS"));
+            notes.push(label(0, "LAPS"));
+            notes.push(label(1, "OPPONENTS"));
             notes.extend(
                 VOTED
                     .iter()
                     .enumerate()
-                    .map(|(n, extra)| label(3 + n, extra.label())),
+                    .map(|(n, extra)| label(2 + n, extra.label())),
             );
-            // Beside each, how many in the room want the same.
-            let agreeing: [(usize, usize); 7] = [
-                room.agreeing(|rules| rules.circuit.clone()),
-                room.agreeing(|rules| rules.lap_choice),
-                room.agreeing(|rules| rules.opponents),
-                room.agreeing(|rules| rules.mirror),
-                room.agreeing(|rules| rules.reverse),
-                room.agreeing(|rules| rules.bricks),
-                room.agreeing(|rules| rules.elimination),
-            ];
-            for (n, (agree, of)) in agreeing.into_iter().enumerate() {
-                let at = Rect::new(
-                    444.0,
-                    ROOM_TOP + ROOM_STEP * n as f32,
-                    484.0,
-                    ROOM_TOP + ROOM_STEP * n as f32 + ICON,
-                );
-                notes.push((at, format!("{agree}/{of}"), "font_ths", NORMAL, false));
-            }
-            // Who is here, lit when ready, before each where they came last race, and
-            // under each how good their way to the host is.
-            let _ = (settings, circuits);
+            notes
+        }
+        Page::Room => {
+            let room = wired.room;
+            let mut notes = vec![banner(&wired.session.title)];
+            // Beside the way to the vote, the circuit the player has voted for; and
+            // what the selector under it is for.
+            let wish = wired.wish(settings, circuits);
+            let voted = match &room.ballot {
+                Some(_) => circuits.0[wish.circuit].name.as_str(),
+                None => "NONE YET",
+            };
+            notes.push((
+                Rect::new(164.0, ROOM_RACE, SCREEN.x, ROOM_RACE + ICON),
+                format!("YOUR VOTE: {voted}"),
+                "font_ths",
+                NORMAL,
+                false,
+            ));
+            notes.push((
+                Rect::new(8.0, ROOM_RIDE, 150.0, ROOM_RIDE + ICON),
+                "RACING AS".to_string(),
+                "font_ths",
+                LABEL,
+                false,
+            ));
+            // Who is here, under their minifigures: lit when ready, and under each
+            // how long their way to the host takes.
             // Once anyone has scored, each has their points after their name.
             let scored = room.series.is_some() || room.voters.iter().any(|voter| voter.points > 0);
             for (n, voter) in room.voters.iter().enumerate() {
@@ -1202,35 +1413,37 @@ fn notes(
                 } else {
                     String::new()
                 };
-                let top = ROOM_TOP + VOTER_STEP * n as f32;
+                let (_, name, under) = voter_places(n, room.voters.len());
                 notes.push((
-                    Rect::new(496.0, top, 636.0, top + VOTER_STEP / 2.0),
+                    name,
                     format!("{}{points}", voter.name),
                     "font_ths",
                     if voter.ready { SELECTED } else { NORMAL },
-                    false,
+                    true,
                 ));
                 let link = match voter.link {
-                    Some(link) => format!(
-                        "{} MS {}",
-                        link.ping,
-                        if link.direct { "DIRECT" } else { "RELAY" }
-                    ),
+                    Some(link) => format!("{} MS", link.ping),
                     None if voter.peer == net::protocol::HOST => "HOST".to_string(),
                     None => String::new(),
                 };
-                notes.push((
-                    Rect::new(496.0, top + VOTER_STEP / 2.0, 636.0, top + VOTER_STEP),
-                    link,
-                    "font_ths",
-                    LABEL,
-                    false,
-                ));
+                // The player here is told which of them they are.
+                let link = match (voter.peer == wired.session.you, link.is_empty()) {
+                    (true, true) => "YOU".to_string(),
+                    (true, false) => format!("YOU, {link}"),
+                    (false, _) => link,
+                };
+                notes.push((under, link, "font_ths", LABEL, true));
             }
-            // Beside "ready": the clock, a race that is on, or how far the series has got.
+            // Beside "ready": the clock, a race that is on, how many are ready, or how
+            // far the series has got.
+            let ready = room.voters.iter().filter(|voter| voter.ready).count();
             let standing = match (room.closing, room.racing, room.series) {
                 (Some(left), ..) => format!("RACE STARTS IN {}", left.max(0.0).ceil() as i32),
                 (None, true, _) => "A RACE IS ON".to_string(),
+                // Until most are ready no clock runs: how many are is said instead.
+                (None, false, _) if ready > 0 => {
+                    format!("{ready} OF {} READY", room.voters.len())
+                }
                 (None, false, Some((raced, of))) if raced >= of => "THE SERIES IS OVER".to_string(),
                 (None, false, Some((raced, of))) => format!("RACE {} OF {of} NEXT", raced + 1),
                 (None, false, None) => String::new(),
@@ -1420,7 +1633,11 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
         | Page::Room
         | Page::Results
         | Page::Session
+        | Page::Wishes
+        | Page::Rules
         | Page::Code => Vec::new(),
+        // The garage's pages say what they have to in `workshop::notes`.
+        _ => Vec::new(),
     }
 }
 
@@ -1445,9 +1662,53 @@ fn enter(mut menu: ResMut<Menu>, mut session: ResMut<Session>) {
         Ok("online") => Page::Online,
         Ok("host") => Page::Host,
         Ok("join") => Page::Join,
+        Ok("garage") => Page::Garage,
+        Ok("racer") => Page::Racer,
+        Ok("driver") => Page::Driver,
+        Ok("licence") => Page::Licence,
+        Ok("car") => Page::Car,
+        Ok("bricks") => Page::Bricks,
         _ => return,
     };
     (menu.page, menu.focus) = (page, page.first());
+}
+
+/// Makes the garage's bench ready for a page of its that has been come to.
+fn arrive(
+    art: Res<Art>,
+    menu: Res<Menu>,
+    garage: Res<Garage>,
+    mut bench: ResMut<Bench>,
+    mut settings: ResMut<Settings>,
+    mut last: Local<Option<Page>>,
+) {
+    if *last != Some(menu.page) {
+        // Back in a session's room from the garage, the racer it showed is raced as.
+        let from_garage = last.is_some_and(workshop::mine);
+        if from_garage && menu.page == Page::Room && settings.racer > 0 {
+            settings.car = crate::roster::NAMES.len() + settings.racer;
+        }
+        *last = Some(menu.page);
+        if workshop::mine(menu.page) {
+            workshop::arrive(menu.page, &art, &mut bench, &garage, &mut settings);
+        }
+    }
+}
+
+/// In a session, what the player races as is whatever they have chosen to: the
+/// host hears of it when it changes, a racer changed in the garage being one that has.
+fn ride(
+    settings: Res<Settings>,
+    garage: Res<Garage>,
+    role: Res<Role>,
+    mut session: ResMut<Session>,
+) {
+    if *role != Role::Offline {
+        let ride = garage.ride(&settings);
+        if session.car != ride {
+            session.car = ride;
+        }
+    }
 }
 
 fn leave(mut commands: Commands, roots: Query<Entity, With<Root>>, mut scale: ResMut<UiScale>) {
@@ -1515,13 +1776,15 @@ fn input(
     mut commands: Commands,
     mut typed: MessageReader<KeyboardInput>,
     time: Res<Time<Real>>,
-    (role, mut session, mut room, mut lobby, mut online, mut wire): (
+    (role, mut session, mut room, mut lobby, mut online, mut wire, mut garage, mut bench): (
         Res<Role>,
         ResMut<Session>,
         ResMut<Room>,
         ResMut<Lobby>,
         ResMut<Online>,
         Option<ResMut<net::Wire>>,
+        ResMut<Garage>,
+        ResMut<Bench>,
     ),
 ) {
     // The lobby has said what a code is for: its session is joined, by way of its
@@ -1541,6 +1804,7 @@ fn input(
                     &circuits,
                     &listed,
                     "",
+                    garage.ride(&settings),
                 );
             }
             None => (online.seeking, menu.drawn) = (Some(false), false),
@@ -1552,8 +1816,12 @@ fn input(
         Role::Client if session.you == 0 => Some(Page::Connecting),
         _ => Some(Page::Room),
     };
-    // Off the room are the last race's results, and for the host the session's affairs.
-    let aside = menu.page == Page::Results || (menu.page == Page::Session && *role == Role::Host);
+    // Off the room are the last race's results, the vote for the next race's
+    // circuit, the garage, and for the host the race's rules and the session's
+    // affairs.
+    let aside = matches!(menu.page, Page::Results | Page::Wishes)
+        || workshop::mine(menu.page)
+        || (matches!(menu.page, Page::Session | Page::Rules) && *role == Role::Host);
     let fresh = room.fresh && home == Some(Page::Room);
     if fresh {
         room.fresh = false;
@@ -1564,19 +1832,12 @@ fn input(
         Some(Page::Room) if aside => {}
         // The room opens on being ready.
         Some(page) if menu.page != page => {
-            (menu.page, menu.focus, menu.drawn) = (
-                page,
-                if page == Page::Room {
-                    3 + VOTED.len()
-                } else {
-                    0
-                },
-                false,
-            )
+            (menu.page, menu.focus, menu.drawn) =
+                (page, if page == Page::Room { READY_AT } else { 0 }, false)
         }
         None if matches!(
             menu.page,
-            Page::Room | Page::Connecting | Page::Results | Page::Session
+            Page::Room | Page::Connecting | Page::Results | Page::Session | Page::Wishes
         ) =>
         {
             (menu.page, menu.focus, menu.drawn) = (Page::Online, 2, false)
@@ -1607,6 +1868,8 @@ fn input(
             lobby: &lobby,
             online: &online,
         },
+        &garage,
+        &bench,
     );
     let focus = menu.focus.min(items.len() - 1);
     // Typing takes the letters and the space bar, which otherwise work the menu.
@@ -1614,8 +1877,26 @@ fn input(
         Action::Type(what) => Some(what),
         _ => None,
     };
+    // Where bricks are placed the keys are the bricks', but for the way out.
+    let building = menu.page == Page::Bricks;
+    if building
+        && workshop::keys(
+            &keys,
+            &art,
+            &mut bench,
+            &mut garage,
+            &mut settings,
+            &menu,
+            &mut sfx,
+        )
+    {
+        menu.drawn = false;
+    }
     let pressed = |codes: &[KeyCode]| {
         keys.any_just_pressed(codes.iter().copied().filter(|code| {
+            if building {
+                return *code == KeyCode::Escape;
+            }
             typing.is_none()
                 || matches!(
                     code,
@@ -1638,6 +1919,7 @@ fn input(
                 Typed::Lock => (&mut session.password, PASSWORD_LENGTH),
                 Typed::Say => (&mut online.say, net::room::CHAT_LENGTH),
                 Typed::Code => (&mut online.code, lobby_api::CODE_LENGTH),
+                Typed::Racer => (workshop::name(&mut bench), crate::assets::lrs::NAME_LENGTH),
             };
             for key in typed.read().filter(|key| key.state.is_pressed()) {
                 match &key.logical_key {
@@ -1730,12 +2012,20 @@ fn input(
             }
             Page::Host | Page::Join => Some(Page::Online),
             Page::Password | Page::Code => Some(Page::Join),
-            Page::Results | Page::Session => Some(Page::Room),
+            Page::Results | Page::Session | Page::Wishes | Page::Rules => Some(Page::Room),
             // Backing out of a session is leaving it.
             Page::Room | Page::Connecting => {
                 net::leave(&mut commands, &mut session, &mut settings, None, &mut next);
                 Some(Page::Online)
             }
+            // From a session's room the garage is come to, and gone back from.
+            page => workshop::escape(page, &art, &mut bench, &garage).map(|to| {
+                if to == Page::Main && *role != Role::Offline {
+                    Page::Room
+                } else {
+                    to
+                }
+            }),
         };
         if let Some(back) = back {
             sfx.play(id::MENU_BACK);
@@ -1743,7 +2033,7 @@ fn input(
                 &mut menu,
                 back,
                 if back == Page::Room {
-                    3 + VOTED.len()
+                    READY_AT
                 } else {
                     back.first()
                 },
@@ -1756,10 +2046,19 @@ fn input(
     // Steps a choice round its `count` options.
     let turn =
         |value: usize, count: usize| (value as i32 + change).rem_euclid(count as i32) as usize;
+    // What to race as is the player's own, in the room as out of it: whoever has the
+    // slot, the game's drivers, then the garage's racers.
+    if let (Action::Car, true) = (action, change != 0) {
+        let rides = 1 + crate::roster::NAMES.len() + garage.racers.len();
+        settings.car = turn(settings.car.min(rides - 1), rides);
+        sfx.play(id::MENU_SELECT);
+        menu.drawn = false;
+        return;
+    }
     if change != 0 {
         // In the room it is the player's wish for the next race that is changed, and
         // not their own settings.
-        let mut wish = (menu.page == Page::Room).then(|| {
+        let mut wish = (menu.page == Page::Rules).then(|| {
             Wired {
                 role: *role,
                 session: &session,
@@ -1821,7 +2120,6 @@ fn input(
                     (settings.sound as i32 + change).clamp(0, MAX_VOLUME as i32) as usize
             }
             Action::Extra(extra) => settings.turn(extra, change),
-            Action::Car => settings.car = turn(settings.car, crate::roster::NAMES.len() + 1),
             // Fewer than are here already puts nobody out, and lets nobody else in.
             Action::Limit => {
                 session.limit = Some(
@@ -1854,6 +2152,23 @@ fn input(
             menu.drawn = false;
         }
     }
+    if let (Action::Bench(act), true) = (action, change != 0 || chosen) {
+        let to = workshop::act(
+            act,
+            change,
+            &art,
+            &mut bench,
+            &mut garage,
+            &mut settings,
+            &menu,
+            &mut sfx,
+        );
+        menu.drawn = false;
+        if let Some(page) = to {
+            go(&mut menu, page, page.first());
+        }
+        return;
+    }
     if chosen {
         match action {
             Action::Go(page) => {
@@ -1882,7 +2197,7 @@ fn input(
                     page,
                     match page {
                         Page::Online => 2,
-                        Page::Room => 3 + VOTED.len(),
+                        Page::Room => READY_AT,
                         _ => page.first(),
                     },
                 );
@@ -1943,6 +2258,7 @@ fn input(
                             &circuits,
                             online.title.trim(),
                             &online.password,
+                            garage.ride(&settings),
                         );
                         session.unlisted = online.unlisted;
                     }
@@ -1961,6 +2277,7 @@ fn input(
                             &circuits,
                             &listed,
                             &online.key,
+                            garage.ride(&settings),
                         );
                         online.key.clear();
                     }
@@ -1971,6 +2288,23 @@ fn input(
                 sfx.play(id::MENU_SELECT);
                 online.refresh = 3.0;
                 lobby.list();
+            }
+            Action::Map(circuit) => {
+                // The vote goes in with the rest of what the player's game says of
+                // the next race, which only the host's is heeded in.
+                let mut wish = Wired {
+                    role: *role,
+                    session: &session,
+                    room: &room,
+                    lobby: &lobby,
+                    online: &online,
+                }
+                .wish(&settings, &circuits);
+                wish.circuit = circuit;
+                (room.ballot, room.revision) =
+                    (Some(Rules::of(&wish, &circuits)), room.revision + 1);
+                sfx.play(id::MENU_SELECT);
+                menu.drawn = false;
             }
             Action::Ready => {
                 sfx.play(id::MENU_SELECT);
@@ -2023,12 +2357,15 @@ fn draw(
     championship: Res<Championship>,
     window: Single<&Window, With<PrimaryWindow>>,
     roots: Query<Entity, With<Root>>,
-    (role, session, room, lobby, online): (
+    (role, session, room, lobby, online, garage, bench, portraits): (
         Res<Role>,
         Res<Session>,
         Res<Room>,
         Res<Lobby>,
         Res<Online>,
+        Res<Garage>,
+        Res<Bench>,
+        Res<Portraits>,
     ),
 ) {
     // The whole screen is scaled to fit the window.
@@ -2051,9 +2388,19 @@ fn draw(
         lobby: &lobby,
         online: &online,
     };
-    let items = items(menu.page, art, &circuits, &settings, &championship, &wired);
+    let items = items(
+        menu.page,
+        art,
+        &circuits,
+        &settings,
+        &championship,
+        &wired,
+        &garage,
+        &bench,
+    );
     let labels = labels(menu.page, art);
-    let notes = notes(menu.page, &wired, &settings, &circuits);
+    let mut notes = notes(menu.page, &wired, &settings, &circuits);
+    notes.extend(workshop::notes(menu.page, art, &bench, &garage));
     let focus = menu.focus.min(items.len() - 1);
 
     // Everything is a picture put somewhere on the 640 by 480 screen.
@@ -2087,7 +2434,10 @@ fn draw(
         };
     }
 
-    picture!("backdrp", Vec2::ZERO, Color::WHITE);
+    // The garage's pages are laid over the racer they show.
+    if !workshop::mine(menu.page) {
+        picture!("backdrp", Vec2::ZERO, Color::WHITE);
+    }
     if menu.page == Page::Main {
         picture!("racers", art.place("main", "racers").min, Color::WHITE);
     }
@@ -2203,6 +2553,26 @@ fn draw(
     for (area, text, font, colour, centred) in &notes {
         words!(font, text, *area, *colour, *centred);
     }
+    // In the room, everyone's minifigure over their name, the player's own picked
+    // out by a panel behind it.
+    if menu.page == Page::Room {
+        for (n, voter) in room.voters.iter().enumerate() {
+            if voter.peer == session.you {
+                let (figure, _, under) = voter_places(n, room.voters.len());
+                let panel = Rect::new(
+                    under.min.x + 2.0,
+                    figure.min.y,
+                    under.max.x - 2.0,
+                    under.max.y,
+                );
+                fills.push((panel, BOX_FILL));
+            }
+            if let Some(picture) = portraits.of(voter.peer) {
+                let (area, ..) = voter_places(n, room.voters.len());
+                pieces.push((picture, area, Color::WHITE, false));
+            }
+        }
+    }
     for (index, item) in items.iter().enumerate() {
         let colour = match (item.enabled, index == focus) {
             (false, _) => DISABLED,
@@ -2309,8 +2679,14 @@ fn draw(
         align_items: AlignItems::Center,
         ..default()
     };
+    // Black round the screen, but for the garage's pages, which the racer shows through.
+    let behind = if workshop::mine(menu.page) {
+        Color::NONE
+    } else {
+        Color::BLACK
+    };
     commands
-        .spawn((Root, screen, BackgroundColor(Color::BLACK)))
+        .spawn((Root, screen, BackgroundColor(behind)))
         .with_children(|root| {
             let canvas = Node {
                 width: side(SCREEN.x),

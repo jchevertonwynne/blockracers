@@ -992,6 +992,14 @@ pub fn spawn_karts(
                 skill = 1.0;
             }
         }
+        // A racer someone built goes by the name they gave it, unless the session
+        // has another for its player.
+        if let Some(built) = loaded
+            .as_ref()
+            .and_then(|loaded| loaded.called.iter().find(|named| named.0 == slot))
+        {
+            state.name = built.1.clone().into();
+        }
         if let Some(called) = called {
             state.name = called.into();
         }

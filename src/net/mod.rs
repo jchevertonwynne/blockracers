@@ -31,11 +31,12 @@ pub use host::Remote;
 pub use link::Quality;
 use link::{Event, Link};
 use protocol::{
-    HOST, Inputs, Peer, Refusal, Rules, Seat, Snapshot, TICKS, Tick, ToHost, ToPlayer, decode,
-    encode,
+    HOST, Inputs, Peer, Refusal, Ride, Rules, Seat, Snapshot, TICKS, Tick, ToHost, ToPlayer,
+    decode, encode,
 };
 use room::{Room, Voter};
 
+use crate::garage::Garage;
 #[cfg(test)]
 use crate::kart::Kart;
 use crate::kart::{self, Controls, Player};
@@ -123,17 +124,17 @@ impl Lineup {
         })
     }
 
-    /// The drivers players have chosen to race as, by grid slot.
-    pub fn cast(&self) -> impl Iterator<Item = (usize, &str)> {
+    /// What players have chosen to race as, by grid slot.
+    pub fn cast(&self) -> impl Iterator<Item = (usize, &Ride)> {
         self.seats
             .iter()
-            .filter(|seat| !seat.car.is_empty())
-            .map(|seat| (seat.slot as usize, seat.car.as_str()))
+            .filter(|seat| seat.car != Ride::Slot)
+            .map(|seat| (seat.slot as usize, &seat.car))
     }
 
     /// Players take the grid from the back, the host last of all as a player alone
     /// is, and the computer's cars fill it from the front.
-    pub fn seat(players: &[(Peer, String, String)], opponents: usize) -> Vec<Seat> {
+    pub fn seat(players: &[(Peer, String, Ride)], opponents: usize) -> Vec<Seat> {
         let slots = kart::PLAYER_SLOT + 1;
         let humans = players
             .iter()
@@ -149,7 +150,7 @@ impl Lineup {
             slot: slot as u8,
             peer: None,
             name: String::new(),
-            car: String::new(),
+            car: Ride::Slot,
         });
         humans.chain(computers).collect()
     }
@@ -159,8 +160,8 @@ impl Lineup {
 pub struct Member {
     pub peer: Peer,
     pub name: String,
-    /// Who they race as (`Seat::car`).
-    pub car: String,
+    /// What they race as (`Seat::car`).
+    pub car: Ride,
     /// Their game has the race loaded.
     pub loaded: bool,
 }
@@ -178,8 +179,8 @@ pub struct Session {
     pub you: Peer,
     /// The host's list of who else is here.
     pub members: Vec<Member>,
-    /// Who the player here races as (`Seat::car`).
-    pub car: String,
+    /// What the player here races as (`Seat::car`).
+    pub car: Ride,
     /// Why the session ended, for the menu to say, and that one has just been left.
     pub notice: Option<String>,
     pub left: bool,
@@ -375,7 +376,8 @@ pub fn start(
 /// The room a session begins with: the player here in it, wanting the race their own
 /// settings would give.
 fn fresh_room(session: &Session, hosting: bool, settings: &Settings, circuits: &Circuits) -> Room {
-    let ballot = Some(Rules::of(settings, circuits));
+    // The host's say is how the race is run; a player has no vote until they cast one.
+    let ballot = hosting.then(|| Rules::of(settings, circuits));
     let voters = if hosting {
         vec![Voter {
             peer: HOST,
@@ -404,11 +406,12 @@ pub fn host_session(
     circuits: &Circuits,
     title: &str,
     password: &str,
+    ride: Ride,
 ) {
     *session = Session {
         title: title.into(),
         name: settings.name.clone(),
-        car: settings.car_code(),
+        car: ride,
         password: password.into(),
         you: HOST,
         own: Some(settings.clone()),
@@ -427,11 +430,12 @@ pub fn join_session(
     circuits: &Circuits,
     listed: &lobby_api::Session,
     password: &str,
+    ride: Ride,
 ) {
     *session = Session {
         title: listed.name.clone(),
         name: settings.name.clone(),
-        car: settings.car_code(),
+        car: ride,
         password: password.into(),
         own: Some(settings.clone()),
         ..default()
@@ -588,7 +592,7 @@ fn session(
                             session.members.push(Member {
                                 peer,
                                 name: name.clone(),
-                                car: car.chars().take(8).collect(),
+                                car: car.checked(),
                                 loaded: false,
                             });
                             // Someone who was here before has what they had: their
@@ -697,6 +701,12 @@ fn session(
                         voter.ballot = Some(ballot);
                     }
                 }
+                ToHost::Ride(ride) => {
+                    if let Some(member) = session.members.iter_mut().find(|m| m.peer == peer) {
+                        member.car = ride.checked();
+                        info!("{} has changed what they race as", member.name);
+                    }
+                }
                 ToHost::Ready(ready) => {
                     if let Some(voter) = room.voters.iter_mut().find(|voter| voter.peer == peer) {
                         voter.ready = ready;
@@ -784,6 +794,17 @@ fn session(
             results: room.results.clone(),
         });
         room.series = (session.series > 0).then_some((room.raced, session.series));
+        // And what everyone races as, whenever any of that changes or someone comes.
+        let mut rides = vec![(HOST, session.car.clone())];
+        rides.extend(session.members.iter().map(|m| (m.peer, m.car.clone())));
+        if room.rides != rides {
+            let telling = encode(&ToPlayer::Rides(rides.clone()));
+            for member in &session.members {
+                wire.0.send(member.peer, telling.clone());
+            }
+            room.rides = rides;
+            room.revision += 1;
+        }
         if room.told != telling {
             for member in &session.members {
                 wire.0.send(member.peer, telling.clone());
@@ -856,6 +877,10 @@ fn session(
                 ToPlayer::Scene(scene) => inbox.scenes.push(scene),
                 ToPlayer::Events(notes) => inbox.events.extend(notes),
                 ToPlayer::Said(line) => room.hear(line),
+                ToPlayer::Rides(rides) => {
+                    room.rides = rides;
+                    room.revision += 1;
+                }
             }
         }
         if gone {
@@ -876,6 +901,14 @@ fn session(
             }
             wire.0.send(HOST, encode(&ToHost::Ready(wishes.1)));
             room.sent = Some(wishes);
+        }
+        // And what they race as, which the host had first when they joined.
+        if session.you != HOST && room.rode.as_ref() != Some(&session.car) {
+            if room.rode.is_some() {
+                wire.0
+                    .send(HOST, encode(&ToHost::Ride(session.car.clone())));
+            }
+            room.rode = Some(session.car.clone());
         }
     }
 }
@@ -921,7 +954,7 @@ fn auto(
     time: Res<Time<Real>>,
     role: Res<Role>,
     screen: Res<State<Screen>>,
-    (mut settings, circuits): (ResMut<Settings>, Res<Circuits>),
+    (mut settings, circuits, garage): (ResMut<Settings>, Res<Circuits>, Res<Garage>),
     lobby: Res<lobby::Lobby>,
     mut auto: ResMut<Auto>,
     mut session: ResMut<Session>,
@@ -933,13 +966,16 @@ fn auto(
     if let Ok(name) = std::env::var("BRICK_NAME") {
         settings.name = name;
     }
-    // `BRICK_CAR=PH`: who to race as, by the game's code for the driver.
+    // `BRICK_CAR=PH`: who to race as, by the game's code for the driver; or
+    // `BRICK_CAR=3`, as the third of the garage's racers.
     if let Some(car) = std::env::var("BRICK_CAR").ok().and_then(|code| {
-        crate::roster::NAMES
-            .iter()
-            .position(|driver| driver.0 == code)
+        let built = code.parse::<usize>().ok().filter(|&n| n > 0);
+        built.map(|n| crate::roster::NAMES.len() + n).or_else(|| {
+            let driver = crate::roster::NAMES.iter().position(|d| d.0 == code);
+            driver.map(|n| n + 1)
+        })
     }) {
-        settings.car = car + 1;
+        settings.car = car;
     }
     match &mut *auto {
         Auto::Host { .. } if *role == Role::Offline => {
@@ -950,6 +986,7 @@ fn auto(
                 &circuits,
                 &var("BRICK_SESSION", "Demo"),
                 &var("BRICK_PASSWORD", ""),
+                garage.ride(&settings),
             );
         }
         Auto::Host { players, started } => {
@@ -986,6 +1023,7 @@ fn auto(
                     &circuits,
                     listed,
                     &var("BRICK_PASSWORD", ""),
+                    garage.ride(&settings),
                 );
                 return;
             }

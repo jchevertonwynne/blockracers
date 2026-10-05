@@ -4,9 +4,12 @@
 pub mod adb;
 pub mod bvb;
 pub mod font;
+pub mod gcb;
 pub mod gdb;
 pub mod image;
 pub mod jam;
+pub mod leb;
+pub mod lrs;
 pub mod mab;
 pub mod materials;
 pub mod route;

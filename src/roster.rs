@@ -77,7 +77,8 @@ pub const NAMES: [(&str, &str); 24] = [
     ("NH", "Nova Hunter"),
 ];
 
-/// The player's stand-in in the tables: until cars can be built, Veronica Voltage's.
+/// The player's stand-in in the tables, Veronica Voltage: who they race as until
+/// they have built a racer, and whose voice a built racer has.
 pub const PLAYER: &str = "VV";
 
 /// The entries of a table, `key "name" { fields }` each, as the name and its fields.

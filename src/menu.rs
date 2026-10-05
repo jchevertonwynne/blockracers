@@ -104,8 +104,12 @@ pub struct Settings {
     /// What the player goes by when racing online.
     pub name: String,
     /// Who the player races as online: one of `roster::NAMES`, counted from one, or
-    /// nought for whoever has the grid slot they are given.
+    /// nought for whoever has the grid slot they are given; past the last of those
+    /// names, one of the garage's racers (`Garage::ride`).
     pub car: usize,
+    /// Which of the garage's racers the player races as, counted from one; nought
+    /// while there are none, when the game's stand-in races.
+    pub racer: usize,
 }
 
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
@@ -188,6 +192,7 @@ impl Settings {
             smoothing: true,
             name: "PLAYER".into(),
             car: 0,
+            racer: 0,
         }
     }
 
@@ -210,6 +215,7 @@ impl Settings {
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
             ("car", self.car),
+            ("racer", self.racer),
         ];
         let numbers: String = kept
             .iter()
@@ -251,19 +257,12 @@ impl Settings {
                 "vsync" => self.vsync = on,
                 "fullscreen" => self.fullscreen = on,
                 "smoothing" => self.smoothing = on,
-                "car" if value <= crate::roster::NAMES.len() => self.car = value,
+                // Past the game's drivers are the garage's racers, however many it has.
+                "car" => self.car = value,
+                "racer" => self.racer = value,
                 _ => {}
             }
         }
-    }
-
-    /// The code of the driver the player races as online; empty for whoever has the
-    /// grid slot.
-    pub fn car_code(&self) -> String {
-        self.car
-            .checked_sub(1)
-            .and_then(|n| crate::roster::NAMES.get(n))
-            .map_or(String::new(), |driver| driver.0.to_string())
     }
 
     /// Takes up the settings left by the last session, if there was one.
