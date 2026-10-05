@@ -33,6 +33,8 @@ enum LobbyError {
 enum Heard {
     List(Vec<Listed>),
     Registered(Registered),
+    /// The session a code is for, if it is for any.
+    Found(Option<Listed>),
     /// The lobby no longer has the session: it is to be listed again.
     Forgotten,
     Failed(String),
@@ -46,6 +48,9 @@ pub struct Lobby {
     heard: Mutex<Receiver<Heard>>,
     /// The sessions on the list when it was last read.
     pub sessions: Vec<Listed>,
+    /// What a code asked about turned out to be for, once the lobby has said: a
+    /// session, or none.
+    pub found: Option<Option<Listed>>,
     /// What went wrong the last time the lobby was asked something, if anything did.
     pub trouble: Option<String>,
     /// Counts up whenever either changes, for whatever draws them.
@@ -55,7 +60,7 @@ pub struct Lobby {
     listing: bool,
     /// What the list was told of the session that a beat can't change: what it is
     /// called, whether it is locked, and how many it takes.
-    told: (String, bool, u8),
+    told: (String, bool, u8, bool),
     /// Seconds until the lobby is next told the session is still there.
     beat: f32,
 }
@@ -71,6 +76,7 @@ impl Default for Lobby {
             tell,
             heard: Mutex::new(heard),
             sessions: Vec::new(),
+            found: None,
             trouble: None,
             revision: 0,
             listed: None,
@@ -114,6 +120,23 @@ impl Lobby {
             Ok(Heard::List(
                 answered(request.send().await).await?.json().await?,
             ))
+        });
+    }
+
+    /// Asks which session a code is for; `found` has the answer once there is one.
+    pub fn find(&mut self, code: &str) {
+        self.found = None;
+        let request = self.client.get(format!(
+            "{}/codes/{}?protocol={PROTOCOL}",
+            self.url,
+            code.trim()
+        ));
+        self.ask(async move {
+            match answered(request.send().await).await {
+                Ok(answer) => Ok(Heard::Found(Some(answer.json().await?))),
+                Err(LobbyError::Refused(StatusCode::NOT_FOUND)) => Ok(Heard::Found(None)),
+                Err(error) => Err(error),
+            }
         });
     }
 
@@ -173,7 +196,7 @@ pub fn keep(
     time: Res<Time<Real>>,
     role: Res<Role>,
     screen: Res<State<Screen>>,
-    session: Res<Session>,
+    mut session: ResMut<Session>,
     wire: Option<Res<Wire>>,
     settings: Res<Settings>,
     circuits: Res<Circuits>,
@@ -194,8 +217,12 @@ pub fn keep(
                     (sessions, None, lobby.revision + 1)
             }
             Heard::Registered(listed) => {
+                session.code = listed.code.clone();
                 (lobby.listed, lobby.listing, lobby.beat, lobby.trouble) =
                     (Some(listed), false, BEAT_EVERY as f32, None)
+            }
+            Heard::Found(found) => {
+                (lobby.found, lobby.revision) = (Some(found), lobby.revision + 1)
             }
             Heard::Forgotten => lobby.listed = None,
             Heard::Failed(why) => {
@@ -236,6 +263,7 @@ pub fn keep(
         session.title.clone(),
         !session.password.is_empty(),
         session.most(),
+        session.unlisted,
     );
     if lobby.listed.is_some() && lobby.told != telling {
         lobby.close();
@@ -259,6 +287,7 @@ pub fn keep(
                 locked: !session.password.is_empty(),
                 max: session.most(),
                 status,
+                unlisted: session.unlisted,
             });
         }
         None => {}

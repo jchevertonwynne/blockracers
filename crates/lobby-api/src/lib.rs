@@ -5,11 +5,14 @@
 //! its session on the list and keeps saying it is still there; a player reads the list
 //! and dials the host's `endpoint` directly. A password, where a session has one, is
 //! the host's to check when a player joins, so the lobby is only told it is `locked`.
+//!
+//! Every session is given a short `code` its host can pass on, by which it is found
+//! without the list. An `unlisted` session is found no other way.
 
 use serde::{Deserialize, Serialize};
 
 /// Games list and see only sessions of their own protocol.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 /// How often a host says its session is still there, and how long the lobby waits
 /// without hearing before it takes the session off the list, in seconds.
@@ -22,6 +25,10 @@ pub const MAX_PLAYERS: u8 = 6;
 pub const MAX_NAME: usize = 32;
 /// The longest an `endpoint` may be, in bytes.
 pub const MAX_ENDPOINT: usize = 512;
+/// How many letters a session's code has, and the letters it is made of: none that
+/// is easily taken for another when read out or typed.
+pub const CODE_LENGTH: usize = 5;
+pub const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
 
 /// A host putting its session on the list.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -35,6 +42,9 @@ pub struct Register {
     pub locked: bool,
     pub max: u8,
     pub status: Status,
+    /// Kept off the list, to be found only by its code.
+    #[serde(default)]
+    pub unlisted: bool,
 }
 
 /// What changes about a session while it is listed.
@@ -53,6 +63,9 @@ pub struct Status {
 pub struct Registered {
     pub id: String,
     pub token: String,
+    /// What a player may type to find the session.
+    #[serde(default)]
+    pub code: String,
 }
 
 /// A session as the list shows it.

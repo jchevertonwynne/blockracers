@@ -106,6 +106,8 @@ enum Page {
     Room,
     Results,
     Session,
+    /// Finding a session by the code its host has passed on.
+    Code,
 }
 
 /// What can be typed into.
@@ -118,10 +120,15 @@ enum Typed {
     Key,
     /// The password of the session being hosted, changed while it is.
     Lock,
+    /// Something to say to the room, and the code of a session to find.
+    Say,
+    Code,
 }
 
 /// The things a room votes on, but for the circuit: the port's own ways of racing
 /// that are everyone's affair. How a player steers is their own.
+/// How many races a session's series may be of; none is no series.
+const SERIES: [u8; 4] = [0, 3, 5, 7];
 const VOTED: [Extra; 4] = [
     Extra::Mirror,
     Extra::Reverse,
@@ -148,6 +155,13 @@ struct Online {
     seen: (u32, u32),
     /// The player the host has asked to remove, and not yet said again.
     removing: Option<net::protocol::Peer>,
+    /// Whether the session to be hosted is kept off the list.
+    unlisted: bool,
+    /// What is being typed to say to the room.
+    say: String,
+    /// The code typed to find a session by, and how the search for it stands.
+    code: String,
+    seeking: Option<bool>,
 }
 
 /// What the online pages show: who this game is to the session, the session, its
@@ -252,6 +266,14 @@ enum Action {
     /// The host's: how many the session takes, and putting a player out of it.
     Limit,
     Remove(net::protocol::Peer),
+    /// The host's too: whether the session is on the list, how many races its
+    /// series is of, and beginning the points again.
+    Listed,
+    Length,
+    ResetPoints,
+    /// Going to the race that is on, and finding the session a code is for.
+    Enter,
+    Find,
 }
 
 enum Widget {
@@ -733,6 +755,12 @@ fn items(
         Page::Host => vec![
             field(FIELD[0], wired.online.title.clone(), Typed::Title),
             field(FIELD[1], wired.online.password.clone(), Typed::Password),
+            selector(
+                wide(line(2)),
+                None,
+                listed(wired.online.unlisted).into(),
+                Action::Listed,
+            ),
             Item {
                 widget: Widget::Button {
                     at: art.place("race", "gonext").min,
@@ -775,14 +803,29 @@ fn items(
                     }
                 })
                 .collect();
+            let refresh = art.place("race", "gonext").min;
+            items.push(plain(refresh, "REFRESH", Action::Refresh));
             items.push(plain(
-                art.place("race", "gonext").min,
-                "REFRESH",
-                Action::Refresh,
+                Vec2::new(250.0, refresh.y),
+                "ENTER A CODE",
+                Action::Go(Page::Code),
             ));
             items.push(way_back(art, Page::Online));
             items
         }
+        Page::Code => vec![
+            field(FIELD[0], wired.online.code.clone(), Typed::Code),
+            Item {
+                widget: Widget::Button {
+                    at: art.place("race", "gonext").min,
+                    label: art.string(text::OK),
+                    icon: Some("chck"),
+                },
+                action: Action::Find,
+                enabled: wired.online.code.len() == lobby_api::CODE_LENGTH,
+            },
+            way_back(art, Page::Join),
+        ],
         Page::Password => vec![
             field(FIELD[0], wired.online.key.clone(), Typed::Key),
             Item {
@@ -829,7 +872,7 @@ fn items(
                 selector(row(3 + n), None, wish.shown(extra), Action::Extra(extra))
             }));
             items.push(plain(
-                Vec2::new(3.0, 338.0),
+                Vec2::new(3.0, ROOM_BUTTONS),
                 if wired.room.ready {
                     "READY: YES"
                 } else {
@@ -837,23 +880,31 @@ fn items(
                 },
                 Action::Ready,
             ));
+            let below = ROOM_BUTTONS + ROOM_STEP;
             if wired.role == Role::Host {
-                items.push(plain(Vec2::new(3.0, 378.0), "START NOW", Action::Begin));
+                items.push(plain(Vec2::new(3.0, below), "START NOW", Action::Begin));
+            } else if wired.room.racing {
+                items.push(plain(
+                    Vec2::new(3.0, below),
+                    "GO TO THE RACE",
+                    Action::Enter,
+                ));
             }
             if !wired.room.results.is_empty() {
                 items.push(plain(
-                    Vec2::new(200.0, 378.0),
+                    Vec2::new(200.0, below),
                     "LAST RACE",
                     Action::Go(Page::Results),
                 ));
             }
             if wired.role == Role::Host {
                 items.push(plain(
-                    Vec2::new(400.0, 378.0),
+                    Vec2::new(330.0, below),
                     "SESSION",
                     Action::Go(Page::Session),
                 ));
             }
+            items.push(field(CHAT, wired.online.say.clone(), Typed::Say));
             items.push(Item {
                 widget: Widget::Button {
                     at: art.place("race", "goback").min,
@@ -886,6 +937,21 @@ fn items(
                     wired.session.most().to_string(),
                     Action::Limit,
                 ),
+                selector(
+                    wide(line(2)),
+                    None,
+                    match wired.session.series {
+                        0 => "OFF".to_string(),
+                        races => format!("{races} RACES"),
+                    },
+                    Action::Length,
+                ),
+                selector(
+                    wide(line(3)),
+                    None,
+                    listed(wired.session.unlisted).into(),
+                    Action::Listed,
+                ),
             ];
             // Each player, to be put out: asked twice, so that it isn't done by a slip.
             items.extend(wired.session.members.iter().enumerate().map(|(n, member)| {
@@ -895,11 +961,17 @@ fn items(
                     format!("REMOVE {}", member.name)
                 };
                 plain(
-                    Vec2::new(3.0, 190.0 + 36.0 * n as f32),
+                    Vec2::new(3.0, 262.0 + 32.0 * n as f32),
                     &label,
                     Action::Remove(member.peer),
                 )
             }));
+            let back = art.place("race", "goback").min;
+            items.push(plain(
+                Vec2::new(330.0, back.y),
+                "RESET POINTS",
+                Action::ResetPoints,
+            ));
             items.push(way_back(art, Page::Room));
             items
         }
@@ -919,14 +991,39 @@ const FIELD: [Rect; 2] = [
 ];
 /// Where the room's rows begin and how far apart they are.
 const ROOM_TOP: f32 = 76.0;
-const ROOM_STEP: f32 = 36.0;
+const ROOM_STEP: f32 = 32.0;
+/// Where the room's buttons begin, under its rows; where what is to be said to it
+/// is typed; and where what has been said is shown, and how far apart its lines are.
+const ROOM_BUTTONS: f32 = 304.0;
+const CHAT: Rect = Rect {
+    min: Vec2::new(110.0, 372.0),
+    max: Vec2::new(636.0, 400.0),
+};
+const CHAT_TOP: f32 = 404.0;
+const CHAT_STEP: f32 = 24.0;
+
+/// A further row under the two of `FIELD`, and a row made wide enough for a
+/// selector's arrows.
+fn line(n: usize) -> Rect {
+    let down = Vec2::Y * 40.0 * n as f32;
+    Rect::from_corners(FIELD[0].min + down, FIELD[0].max + down)
+}
+
+fn wide(area: Rect) -> Rect {
+    Rect::from_corners(area.min - Vec2::X * ICON, area.max + Vec2::X * ICON)
+}
+
+/// Whether a session is on the lobby's list, as the menu says it.
+fn listed(unlisted: bool) -> &'static str {
+    if unlisted { "CODE ONLY" } else { "ON THE LIST" }
+}
 /// How far apart those in the room are listed, each two lines.
 const VOTER_STEP: f32 = 48.0;
 /// Where the rows of the last race's results begin, how far apart they are, and
-/// where each column begins: place, driver, time, how far behind, best lap.
+/// where each column begins: place, driver, time, how far behind, best lap, points.
 const RESULTS_TOP: f32 = 84.0;
 const RESULT_STEP: f32 = 30.0;
-const RESULT_COLUMNS: [f32; 5] = [16.0, 48.0, 300.0, 400.0, 520.0];
+const RESULT_COLUMNS: [f32; 6] = [16.0, 48.0, 284.0, 374.0, 474.0, 574.0];
 
 fn field(area: Rect, words: String, typed: Typed) -> Item {
     Item {
@@ -1021,8 +1118,18 @@ fn notes(
             banner("HOST A RACE"),
             beside(FIELD[0], "CALLED"),
             beside(FIELD[1], "PASSWORD"),
+            beside(line(2), "FOUND"),
             middle("LEAVE THE PASSWORD EMPTY TO LET ANYONE IN"),
         ],
+        Page::Code => {
+            let mut notes = vec![banner("JOIN A RACE"), beside(FIELD[0], "CODE")];
+            notes.extend(match wired.online.seeking {
+                Some(true) => Some(middle("ASKING THE LOBBY")),
+                Some(false) => Some(middle("NO SESSION HAS THAT CODE")),
+                None => None,
+            });
+            notes
+        }
         Page::Join => {
             let mut notes = vec![banner("JOIN A RACE")];
             if let Some(trouble) = wired
@@ -1087,16 +1194,18 @@ fn notes(
             // Who is here, lit when ready, before each where they came last race, and
             // under each how good their way to the host is.
             let _ = (settings, circuits);
+            // Once anyone has scored, each has their points after their name.
+            let scored = room.series.is_some() || room.voters.iter().any(|voter| voter.points > 0);
             for (n, voter) in room.voters.iter().enumerate() {
-                let place = room
-                    .results
-                    .iter()
-                    .position(|finish| finish.player && finish.name == voter.name)
-                    .map_or(String::new(), |place| format!("{} ", place + 1));
+                let points = if scored {
+                    format!(" {}", voter.points)
+                } else {
+                    String::new()
+                };
                 let top = ROOM_TOP + VOTER_STEP * n as f32;
                 notes.push((
                     Rect::new(496.0, top, 636.0, top + VOTER_STEP / 2.0),
-                    format!("{place}{}", voter.name),
+                    format!("{}{points}", voter.name),
                     "font_ths",
                     if voter.ready { SELECTED } else { NORMAL },
                     false,
@@ -1118,21 +1227,37 @@ fn notes(
                     false,
                 ));
             }
-            if let Some(left) = room.closing {
+            // Beside "ready": the clock, a race that is on, or how far the series has got.
+            let standing = match (room.closing, room.racing, room.series) {
+                (Some(left), ..) => format!("RACE STARTS IN {}", left.max(0.0).ceil() as i32),
+                (None, true, _) => "A RACE IS ON".to_string(),
+                (None, false, Some((raced, of))) if raced >= of => "THE SERIES IS OVER".to_string(),
+                (None, false, Some((raced, of))) => format!("RACE {} OF {of} NEXT", raced + 1),
+                (None, false, None) => String::new(),
+            };
+            notes.push((
+                Rect::new(200.0, ROOM_BUTTONS, 480.0, ROOM_BUTTONS + ROOM_STEP),
+                standing,
+                "font_ths",
+                LABEL,
+                true,
+            ));
+            // What has been said, and where to say something.
+            notes.push((
+                Rect::new(8.0, CHAT.min.y, CHAT.min.x, CHAT.max.y),
+                "SAY".to_string(),
+                "font_ths",
+                LABEL,
+                false,
+            ));
+            for (n, said) in room.chat.iter().enumerate() {
+                let top = CHAT_TOP + CHAT_STEP * n as f32;
                 notes.push((
-                    Rect::new(200.0, 338.0, 480.0, 370.0),
-                    format!("RACE STARTS IN {}", left.max(0.0).ceil() as i32),
+                    Rect::new(CHAT.min.x, top, CHAT.max.x, top + CHAT_STEP),
+                    said.clone(),
                     "font_ths",
                     LABEL,
-                    true,
-                ));
-            } else if room.racing {
-                notes.push((
-                    Rect::new(200.0, 338.0, 480.0, 370.0),
-                    "A RACE IS ON".to_string(),
-                    "font_ths",
-                    LABEL,
-                    true,
+                    false,
                 ));
             }
             notes
@@ -1153,7 +1278,7 @@ fn notes(
                     false,
                 )
             };
-            for (column, heading) in ["", "", "TIME", "BEHIND", "BEST LAP"]
+            for (column, heading) in ["", "", "TIME", "BEHIND", "BEST LAP", "PTS"]
                 .into_iter()
                 .enumerate()
             {
@@ -1181,12 +1306,29 @@ fn notes(
                     clock(finish.time),
                     behind,
                     clock(finish.best),
+                    format!("+{}", finish.points),
                 ]
                 .into_iter()
                 .enumerate()
                 {
                     notes.push(cell(n + 1, column, words, colour));
                 }
+            }
+            // A series run to its end has a winner: whoever of the room has most.
+            let leader = room.voters.iter().max_by_key(|voter| voter.points);
+            if let (Some((raced, of)), Some(leader)) = (room.series, leader) {
+                let words = if raced >= of {
+                    format!("{} WINS THE SERIES WITH {}", leader.name, leader.points)
+                } else {
+                    format!("RACE {raced} OF {of}")
+                };
+                notes.push((
+                    Rect::new(320.0, 300.0, 320.0, 332.0),
+                    words,
+                    "font_ths",
+                    LABEL,
+                    true,
+                ));
             }
             notes
         }
@@ -1195,7 +1337,19 @@ fn notes(
                 banner(&wired.session.title),
                 beside(FIELD[0], "PASSWORD"),
                 beside(FIELD[1], "PLAYERS"),
+                beside(line(2), "SERIES"),
+                beside(line(3), "FOUND"),
             ];
+            if !wired.session.code.is_empty() {
+                let code = format!("CODE {}", wired.session.code);
+                notes.push((
+                    Rect::new(375.0, 66.0, 375.0, 94.0),
+                    code,
+                    "font_ths",
+                    SELECTED,
+                    true,
+                ));
+            }
             if wired.session.members.is_empty() {
                 notes.push(middle("NOBODY ELSE IS HERE"));
             }
@@ -1265,7 +1419,8 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
         | Page::Connecting
         | Page::Room
         | Page::Results
-        | Page::Session => Vec::new(),
+        | Page::Session
+        | Page::Code => Vec::new(),
     }
 }
 
@@ -1360,14 +1515,37 @@ fn input(
     mut commands: Commands,
     mut typed: MessageReader<KeyboardInput>,
     time: Res<Time<Real>>,
-    (role, mut session, mut room, lobby, mut online): (
+    (role, mut session, mut room, mut lobby, mut online, mut wire): (
         Res<Role>,
         ResMut<Session>,
         ResMut<Room>,
-        Res<Lobby>,
+        ResMut<Lobby>,
         ResMut<Online>,
+        Option<ResMut<net::Wire>>,
     ),
 ) {
+    // The lobby has said what a code is for: its session is joined, by way of its
+    // password if it has one, or there is none.
+    if let (Page::Code, Some(true), Some(found)) = (menu.page, online.seeking, lobby.found.take()) {
+        match found {
+            Some(listed) if listed.locked => {
+                (online.picked, online.key, online.seeking) = (Some(listed), String::new(), None);
+                (menu.page, menu.focus, menu.drawn) = (Page::Password, 0, false);
+            }
+            Some(listed) => {
+                online.seeking = None;
+                net::join_session(
+                    &mut commands,
+                    &mut session,
+                    &settings,
+                    &circuits,
+                    &listed,
+                    "",
+                );
+            }
+            None => (online.seeking, menu.drawn) = (Some(false), false),
+        }
+    }
     // In a session the menu is its room, or the wait to be let into it.
     let home = match *role {
         Role::Offline => None,
@@ -1458,6 +1636,8 @@ fn input(
                 Typed::Password => (&mut online.password, PASSWORD_LENGTH),
                 Typed::Key => (&mut online.key, PASSWORD_LENGTH),
                 Typed::Lock => (&mut session.password, PASSWORD_LENGTH),
+                Typed::Say => (&mut online.say, net::room::CHAT_LENGTH),
+                Typed::Code => (&mut online.code, lobby_api::CODE_LENGTH),
             };
             for key in typed.read().filter(|key| key.state.is_pressed()) {
                 match &key.logical_key {
@@ -1549,7 +1729,7 @@ fn input(
                 Some(Page::Options)
             }
             Page::Host | Page::Join => Some(Page::Online),
-            Page::Password => Some(Page::Join),
+            Page::Password | Page::Code => Some(Page::Join),
             Page::Results | Page::Session => Some(Page::Room),
             // Backing out of a session is leaving it.
             Page::Room | Page::Connecting => {
@@ -1648,6 +1828,15 @@ fn input(
                     (session.most() as i32 + change).clamp(2, lobby_api::MAX_PLAYERS as i32) as u8,
                 )
             }
+            Action::Listed if menu.page == Page::Host => online.unlisted = !online.unlisted,
+            Action::Listed => session.unlisted = !session.unlisted,
+            Action::Length => {
+                let at = SERIES
+                    .iter()
+                    .position(|races| *races == session.series)
+                    .unwrap_or(0);
+                session.series = SERIES[turn(at, SERIES.len())];
+            }
             _ => {}
         }
         if let Some(wish) = wish {
@@ -1685,6 +1874,7 @@ fn input(
                             .collect()
                     }
                     Page::Join => online.refresh = 0.0,
+                    Page::Code => online.seeking = None,
                     _ => {}
                 }
                 go(
@@ -1707,9 +1897,33 @@ fn input(
                 (online.removing, menu.drawn) = (Some(peer), false);
             }
             // Typed, a field is done with: on to the next thing.
+            // Said, something stays where it was typed, for the next thing to say.
+            Action::Type(Typed::Say) => {
+                if let Some(wire) = &mut wire {
+                    net::say(*role, &session, &mut room, wire, &online.say);
+                }
+                online.say.clear();
+                menu.drawn = false;
+                sfx.play(id::MENU_SELECT);
+            }
             Action::Type(_) => {
                 (menu.focus, menu.drawn) = (step(1), false);
                 sfx.play(id::MENU_HIGHLIGHT);
+            }
+            Action::Find => {
+                sfx.play(id::MENU_CONFIRM);
+                lobby.find(&online.code);
+                (online.seeking, menu.drawn) = (Some(true), false);
+            }
+            Action::Enter => {
+                sfx.play(id::MENU_CONFIRM);
+                if let Some(wire) = &mut wire {
+                    net::enter(wire);
+                }
+            }
+            Action::ResetPoints => {
+                sfx.play(id::MENU_SELECT);
+                room.reset();
             }
             Action::BeginHosting | Action::Pick(_) | Action::Dial => {
                 if settings.name.trim().is_empty() {
@@ -1730,6 +1944,7 @@ fn input(
                             online.title.trim(),
                             &online.password,
                         );
+                        session.unlisted = online.unlisted;
                     }
                     // A locked session wants its password first.
                     (Action::Pick(_), Some(listed)) if listed.locked => {

@@ -31,6 +31,8 @@ pub struct Voter {
     pub ballot: Option<Rules>,
     /// How good their way to the host is; nothing for the host itself.
     pub link: Option<Quality>,
+    /// What they have scored in the session's races so far.
+    pub points: u32,
 }
 
 /// How a car's race went.
@@ -43,6 +45,8 @@ pub struct Finish {
     pub time: Option<f32>,
     /// Its quickest lap, if it finished one.
     pub best: Option<f32>,
+    /// What its place scored.
+    pub points: u32,
 }
 
 /// The room, as the host has it or as a player was last told it is.
@@ -60,6 +64,12 @@ pub struct Room {
     pub fresh: bool,
     /// A race is on, which those in the room are not in.
     pub racing: bool,
+    /// The races run of a series and how many it is of, if one is being run; the
+    /// host's own count of them is `raced`.
+    pub series: Option<(u8, u8)>,
+    pub raced: u8,
+    /// The last things said in the room, oldest first.
+    pub chat: Vec<String>,
     /// What the player here has asked for, and whether they are ready.
     pub ballot: Option<Rules>,
     pub ready: bool,
@@ -130,7 +140,42 @@ pub fn decide(voters: &[Voter], fallback: &Rules, dice: &mut Rng) -> Rules {
     }
 }
 
+/// The most lines of what has been said that a room keeps, and the longest one said.
+pub const CHAT_LINES: usize = 3;
+pub const CHAT_LENGTH: usize = 36;
+
 impl Room {
+    /// Takes in something said.
+    pub fn hear(&mut self, line: String) {
+        self.chat.push(line);
+        let extra = self.chat.len().saturating_sub(CHAT_LINES);
+        self.chat.drain(..extra);
+        self.revision += 1;
+    }
+
+    /// Gives each car of a race run the points its place scores, as the original's
+    /// circuits score them, and the players theirs to keep. `who` is which of the
+    /// room a result is, if any.
+    pub fn score(&mut self, who: impl Fn(usize) -> Option<Peer>) {
+        for (place, finish) in self.results.iter_mut().enumerate() {
+            finish.points = crate::championship::POINTS.get(place).copied().unwrap_or(0);
+            if let Some(voter) =
+                who(place).and_then(|peer| self.voters.iter_mut().find(|voter| voter.peer == peer))
+            {
+                voter.points += finish.points;
+            }
+        }
+        self.raced = self.raced.saturating_add(1);
+    }
+
+    /// The series is begun again: nobody has any points and no race of it is run.
+    pub fn reset(&mut self) {
+        for voter in &mut self.voters {
+            voter.points = 0;
+        }
+        (self.raced, self.revision) = (0, self.revision + 1);
+    }
+
     /// How many in the room want what the player here wants of one thing.
     pub fn agreeing<T: PartialEq>(&self, of: impl Fn(&Rules) -> T) -> (usize, usize) {
         let Some(mine) = self.ballot.as_ref().map(&of) else {
@@ -192,6 +237,7 @@ mod tests {
             ready: false,
             ballot,
             link: None,
+            points: 0,
         }
     }
 

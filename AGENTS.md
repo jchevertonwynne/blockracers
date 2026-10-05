@@ -21,7 +21,9 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   pause, photo mode and replays are off. Bricks, power-ups and the circuit's events
   are run only on the host, which tells the others what came of them (`net::scene`);
   a joiner's `TrackEvents` is `following` and starts nothing by itself. A player who
-  gives a race up is back in the session's room, and their car is the computer's. A joiner's own car
+  gives a race up is back in the session's room, and their car is the computer's;
+  from the room they can go back to it, and someone with no car in a race watches
+  it (`net::Watching`: on their game the car followed carries `Player`). A joiner's own car
   is driven ahead of the host and the others are shown where they will be by then
   (`net::client`), so that what is seen and what is bumped into agree.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
@@ -94,7 +96,9 @@ with something to type into are reached by `BRICK_MENU` and `BRICK_NET` and not
 through the menus; in the room, `Enter` is on "ready" to begin with. After a race
 the room opens on its results, where `Enter` is on "OK". The room's other pages
 (the last race, and the host's page for the password, the player limit and putting
-a player out) are reached with `BRICK_KEYS`.
+a player out) are reached with `BRICK_KEYS`. In a race online the question `Escape`
+asks opens on "no": `Escape@13,Up@13.4,Enter@13.8` gives the race up. In the room
+while a race is on, `Down` then `Enter` from "ready" goes to the race.
 
 ## Being a good guest on the user's machine
 

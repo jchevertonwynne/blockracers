@@ -189,6 +189,17 @@ pub struct Session {
     pub limit: Option<u8>,
     /// Players the host wants out of the session.
     pub removing: Vec<Peer>,
+    /// The rules of the race that is on, and the players in the room who are
+    /// watching it without a car in it.
+    pub racing: Option<Rules>,
+    pub watching: Vec<Peer>,
+    /// How many races the session's series is of; none if it is not run as one.
+    pub series: u8,
+    /// Players who have gone, and the points they had, should they come back.
+    pub absent: Vec<(String, u32)>,
+    /// Kept off the lobby's list, and the code the lobby has given the session.
+    pub unlisted: bool,
+    pub code: String,
 }
 
 impl Session {
@@ -197,6 +208,78 @@ impl Session {
         self.limit
             .unwrap_or(lobby_api::MAX_PLAYERS)
             .clamp(2, lobby_api::MAX_PLAYERS)
+    }
+}
+
+/// The car the screen is on when that isn't the player's own: another's, once the
+/// player's race is run, or any at all for someone come only to watch.
+#[derive(Resource, Default)]
+pub struct Watching {
+    /// The grid slot of the car followed; the player's own if none.
+    pub slot: Option<usize>,
+    /// The player has no car to drive, and may look at whichever they like.
+    pub free: bool,
+}
+
+/// Lets a player with no car to drive follow the others: left and right go from car
+/// to car. Someone with no car in the race begins on the leader. On their game the
+/// car followed is marked as the player's, so that everything a screen does for its
+/// own car (what is heard, what the display says) is done for that one.
+fn watch(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    role: Res<Role>,
+    lineup: Option<Res<Lineup>>,
+    mut watching: ResMut<Watching>,
+    karts: Query<(Entity, &kart::Kart, Has<Player>)>,
+) {
+    let Some(lineup) = lineup else { return };
+    let seat = lineup
+        .seats
+        .iter()
+        .find(|seat| seat.peer == Some(lineup.you))
+        .map(|seat| seat.slot as usize);
+    let own = seat
+        .and_then(|slot| karts.iter().find(|(_, kart, _)| kart.slot == slot))
+        .map(|(_, kart, _)| kart);
+    let free = match (seat, own) {
+        (None, _) => true,
+        (Some(_), Some(own)) => own.finished.is_some() || own.out.is_some(),
+        (Some(_), None) => false,
+    };
+    let mut running: Vec<&kart::Kart> = karts
+        .iter()
+        .map(|(_, kart, _)| kart)
+        .filter(|kart| kart.out.is_none())
+        .collect();
+    running.sort_by_key(|kart| kart.slot);
+    let step = keys.just_pressed(KeyCode::ArrowRight) as usize
+        + keys.just_pressed(KeyCode::ArrowLeft) as usize * running.len().saturating_sub(1);
+    let followed = watching.slot.or(seat);
+    let at = running.iter().position(|kart| Some(kart.slot) == followed);
+    let slot = match (free, at) {
+        (false, _) => None,
+        (true, Some(at)) if step > 0 => Some(running[(at + step) % running.len()].slot),
+        (true, Some(_)) => watching.slot,
+        // The car followed is out of the race, or none is yet: on to the leader.
+        (true, None) => running
+            .iter()
+            .min_by_key(|kart| kart.place)
+            .map(|kart| kart.slot),
+    };
+    // The player's own car followed is nothing out of the ordinary.
+    let slot = slot.filter(|slot| Some(*slot) != seat);
+    if (watching.slot, watching.free) != (slot, free) {
+        (watching.slot, watching.free) = (slot, free);
+    }
+    if *role == Role::Client && seat.is_none() {
+        for (entity, kart, marked) in &karts {
+            match (Some(kart.slot) == slot, marked) {
+                (true, false) => drop(commands.entity(entity).insert(Player)),
+                (false, true) => drop(commands.entity(entity).remove::<Player>()),
+                _ => {}
+            }
+        }
     }
 }
 
@@ -273,6 +356,7 @@ pub fn start(
             .map(|member| (member.peer, member.name.clone(), member.car.clone())),
     );
     let seats = Lineup::seat(&players, settings.opponents);
+    (session.racing, session.watching) = (Some(rules.clone()), Vec::new());
     let start = encode(&ToPlayer::Start {
         rules: rules.clone(),
         seats: seats.clone(),
@@ -299,6 +383,7 @@ fn fresh_room(session: &Session, hosting: bool, settings: &Settings, circuits: &
             ready: false,
             ballot: ballot.clone(),
             link: None,
+            points: 0,
         }]
     } else {
         Vec::new()
@@ -359,12 +444,36 @@ pub fn join_session(
 /// The host calls the race off: everyone is back in the room, the session as it was,
 /// to vote on another.
 pub fn call_off(session: &mut Session, wire: &mut Wire, next: &mut NextState<Screen>) {
+    (session.racing, session.watching) = (None, Vec::new());
     let over = encode(&ToPlayer::Over);
     for member in &mut session.members {
         wire.0.send(member.peer, over.clone());
         member.loaded = false;
     }
     next.set(Screen::Menu);
+}
+
+/// Says something to the room.
+pub fn say(role: Role, session: &Session, room: &mut Room, wire: &mut Wire, words: &str) {
+    let words: String = words.trim().chars().take(room::CHAT_LENGTH).collect();
+    if words.is_empty() {
+        return;
+    }
+    if role == Role::Host {
+        let line = format!("{}: {words}", session.name);
+        for member in &session.members {
+            wire.0
+                .send(member.peer, encode(&ToPlayer::Said(line.clone())));
+        }
+        room.hear(line);
+    } else {
+        wire.0.send(HOST, encode(&ToHost::Say(words)));
+    }
+}
+
+/// A player in the room goes to the race that is on.
+pub fn enter(wire: &mut Wire) {
+    wire.0.send(HOST, encode(&ToHost::Enter));
 }
 
 /// A player gives the race up and goes back to the room, still in the session: the
@@ -408,9 +517,15 @@ fn session(
     mut wire: ResMut<Wire>,
     mut settings: ResMut<Settings>,
     mut next: ResMut<NextState<Screen>>,
-    remotes: Query<(Entity, &Remote)>,
+    karts: Query<(Entity, &kart::Kart, Option<&Remote>)>,
+    (mut lineup, mut told): (Option<ResMut<Lineup>>, ResMut<scene::Told>),
     mut measured: Local<f32>,
 ) {
+    let remotes = || {
+        karts
+            .iter()
+            .filter_map(|(entity, _, remote)| Some((entity, remote?)))
+    };
     let (inbox, room, session) = (&mut *inbox, &mut *room, &mut *session);
     // Nothing is listening for the race's own traffic outside a race.
     if *screen.get() != Screen::Race {
@@ -476,6 +591,25 @@ fn session(
                                 car: car.chars().take(8).collect(),
                                 loaded: false,
                             });
+                            // Someone who was here before has what they had: their
+                            // points, and their car if the race they left is still on.
+                            let had = session.absent.iter().position(|gone| gone.0 == name);
+                            let points = had.map_or(0, |had| session.absent.remove(had).1);
+                            if let Some(lineup) = &mut lineup {
+                                let here = |seat: &Seat| {
+                                    seat.peer.is_some_and(|sat| {
+                                        sat == HOST
+                                            || session.members.iter().any(|member| {
+                                                member.peer == sat && member.peer != peer
+                                            })
+                                    })
+                                };
+                                if let Some(seat) = lineup.seats.iter_mut().find(|seat| {
+                                    seat.peer.is_some() && seat.name == name && !here(seat)
+                                }) {
+                                    seat.peer = Some(peer);
+                                }
+                            }
                             room.voters.retain(|voter| voter.peer != peer);
                             room.voters.push(Voter {
                                 peer,
@@ -483,6 +617,7 @@ fn session(
                                 ready: false,
                                 ballot: None,
                                 link: None,
+                                points,
                             });
                             ToPlayer::Welcome { you: peer }
                         }
@@ -497,6 +632,65 @@ fn session(
                     {
                         member.loaded = true;
                     }
+                    // Someone come to a race already on drives their car if they
+                    // have one in it that nobody is driving, and otherwise watches;
+                    // either way they are told what they missed.
+                    if *screen.get() == Screen::Race
+                        && session.members.iter().any(|member| member.peer == peer)
+                    {
+                        let seat = lineup.as_ref().and_then(|lineup| {
+                            lineup.seats.iter().find(|seat| seat.peer == Some(peer))
+                        });
+                        let car = seat.and_then(|seat| {
+                            karts
+                                .iter()
+                                .find(|(_, kart, _)| kart.slot == seat.slot as usize)
+                        });
+                        match car {
+                            Some((_, _, Some(_))) => continue,
+                            Some((entity, _, None)) => {
+                                commands.entity(entity).insert(Remote::new(peer));
+                            }
+                            None if !session.watching.contains(&peer) => {
+                                session.watching.push(peer)
+                            }
+                            None => {}
+                        }
+                        wire.0.send(peer, encode(&ToPlayer::Events(told.again())));
+                    }
+                }
+                ToHost::Enter => {
+                    if let (Screen::Race, Some(rules), Some(lineup)) =
+                        (*screen.get(), &session.racing, &lineup)
+                    {
+                        wire.0.send(
+                            peer,
+                            encode(&ToPlayer::Start {
+                                rules: rules.clone(),
+                                seats: lineup.seats.clone(),
+                            }),
+                        );
+                    }
+                }
+                ToHost::Say(words) => {
+                    let name = session
+                        .members
+                        .iter()
+                        .find(|member| member.peer == peer)
+                        .map(|member| member.name.clone());
+                    if let Some(name) = name {
+                        let words: String = words
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(room::CHAT_LENGTH)
+                            .collect();
+                        let line = format!("{name}: {words}");
+                        for member in &session.members {
+                            wire.0
+                                .send(member.peer, encode(&ToPlayer::Said(line.clone())));
+                        }
+                        room.hear(line);
+                    }
                 }
                 ToHost::Vote(ballot) => {
                     if let Some(voter) = room.voters.iter_mut().find(|voter| voter.peer == peer) {
@@ -509,7 +703,8 @@ fn session(
                     }
                 }
                 ToHost::Back => {
-                    for (entity, _) in remotes.iter().filter(|(_, remote)| remote.peer == peer) {
+                    session.watching.retain(|watching| *watching != peer);
+                    for (entity, _) in remotes().filter(|(_, remote)| remote.peer == peer) {
                         commands.entity(entity).remove::<Remote>();
                     }
                 }
@@ -525,9 +720,14 @@ fn session(
         for peer in inbox.left.drain(..) {
             info!("player {peer} has gone");
             session.members.retain(|member| member.peer != peer);
+            session.watching.retain(|watching| *watching != peer);
+            if let Some(voter) = room.voters.iter().find(|voter| voter.peer == peer) {
+                session.absent.retain(|gone| gone.0 != voter.name);
+                session.absent.push((voter.name.clone(), voter.points));
+            }
             room.voters.retain(|voter| voter.peer != peer);
             // A car whose player has gone is the computer's to drive.
-            for (entity, _) in remotes.iter().filter(|(_, remote)| remote.peer == peer) {
+            for (entity, _) in remotes().filter(|(_, remote)| remote.peer == peer) {
                 commands.entity(entity).remove::<Remote>();
             }
         }
@@ -558,6 +758,10 @@ fn session(
             let fallback = Rules::of(&settings, &circuits);
             let mut dice = crate::meshgen::Rng(time.elapsed().subsec_nanos() | 1);
             if let Some(rules) = room.tick(time.delta_secs(), &fallback, &mut dice) {
+                // A series that has been run to its end is begun again.
+                if session.series > 0 && room.raced >= session.series {
+                    room.reset();
+                }
                 start(
                     &mut commands,
                     session,
@@ -575,9 +779,11 @@ fn session(
             voters: room.voters.clone(),
             closing: room.closing.map(|left| left.ceil().max(0.0)),
             racing: *screen.get() != Screen::Menu,
+            series: (session.series > 0).then_some((room.raced, session.series)),
             last: room.last.clone(),
             results: room.results.clone(),
         });
+        room.series = (session.series > 0).then_some((room.raced, session.series));
         if room.told != telling {
             for member in &session.members {
                 wire.0.send(member.peer, telling.clone());
@@ -609,9 +815,11 @@ fn session(
                     voters,
                     closing,
                     racing,
+                    series,
                     last,
                     results,
                 } => {
+                    room.series = series;
                     room.fresh |= !results.is_empty() && results != room.results;
                     (
                         room.voters,
@@ -647,6 +855,7 @@ fn session(
                 ToPlayer::Over => next.set(Screen::Menu),
                 ToPlayer::Scene(scene) => inbox.scenes.push(scene),
                 ToPlayer::Events(notes) => inbox.events.extend(notes),
+                ToPlayer::Said(line) => room.hear(line),
             }
         }
         if gone {
@@ -834,6 +1043,7 @@ pub fn enter_race(
     sfx.listening = false;
     sfx.heard.clear();
     sfx.looping.clear();
+    commands.insert_resource(Watching::default());
     commands.insert_resource(scene::Told::default());
     commands.insert_resource(scene::Shown::default());
     commands.insert_resource(Clock::default());
@@ -849,6 +1059,7 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Room>()
         .init_resource::<lobby::Lobby>()
         .init_resource::<Clock>()
+        .init_resource::<Watching>()
         .init_resource::<Pending>()
         .init_resource::<host::Flow>()
         .init_resource::<client::Prediction>()
@@ -880,6 +1091,7 @@ pub fn plugin(app: &mut App) {
                     .chain()
                     .before(kart::sync_karts)
                     .before(crate::racer_sounds::racer_sounds),
+                watch.before(kart::sync_karts),
                 client::smooth.after(kart::sync_karts).run_if(joined),
                 scene::follow_events
                     .before(crate::events::track_events)

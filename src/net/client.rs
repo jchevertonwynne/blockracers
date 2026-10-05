@@ -30,6 +30,9 @@ use crate::{Phase, Race};
 /// The other cars are shown this many of the host's steps behind the newest heard of:
 /// enough that there are nearly always two places to show a car between.
 const BEHIND: f32 = 6.0;
+/// How many steps the moment shown may be from where it should be before it is
+/// drawn back.
+const SLACK: f32 = 2.0;
 /// The steps remembered for stepping the car again: two seconds' worth, far more than
 /// any connection worth racing on leaves unanswered.
 const REMEMBERED: usize = 120;
@@ -143,16 +146,16 @@ pub fn receive(
             if let Some(standing) = standing {
                 standing.put(&mut kart);
             }
-        } else {
+        } else if let Some(state) = &snapshot.own {
             kart.place = standing.map_or(kart.place, |standing| standing.place as usize);
             // A white brick taken sounds as it does where the race is run, a note
             // higher for each one carried.
-            if snapshot.own.whites() > kart.whites {
+            if state.whites() > kart.whites {
                 sfx.play(crate::audio::id::WHITE_BRICK + kart.whites as usize);
             }
             // Its race run, the car is the host's to drive, and is shown like the rest.
-            if snapshot.own.finished.is_some() || snapshot.own.out.is_some() {
-                snapshot.own.put(&mut kart);
+            if state.finished.is_some() || state.out.is_some() {
+                state.put(&mut kart);
                 commands.entity(entity).insert(Puppet);
             } else {
                 driven = Some(entity);
@@ -162,14 +165,16 @@ pub fn receive(
             race.phase = Phase::Finished;
         }
     }
-    let Some(own) = driven else { return };
+    let (Some(own), Some(state)) = (driven, &snapshot.own) else {
+        return;
+    };
     let Ok((_, mut kart, ..)) = karts.get_mut(own) else {
         return;
     };
     let was = (kart.pos, kart.rot);
     // Stepping the car again must not sound its sounds again.
     let owed = (kart.cues, kart.touched, kart.honked, kart.sparks);
-    snapshot.own.put(&mut kart);
+    state.put(&mut kart);
     p.sent.retain(|(tick, _)| *tick > snapshot.used);
     // The host has now driven the car past the knocks it gave up to there.
     for knock in p
@@ -323,21 +328,33 @@ pub fn puppets(
     race: Res<Race>,
     mut p: ResMut<Prediction>,
     mut karts: Query<&mut Kart, With<Puppet>>,
+    driving: Query<(), (With<Player>, Without<Puppet>)>,
 ) {
     let Some(latest) = p.latest else { return };
-    // The moment shown moves on a step each step, and is drawn towards where it
-    // should be if words from the host come faster or slower than that.
+    // The moment shown moves on a step each step. The host's word comes every other
+    // step, so where the moment should be goes in twos; it is left to run evenly
+    // within that, and only drawn back, gently, when it has strayed farther: a car
+    // followed closely would otherwise be seen to shake.
     let wanted = latest as f32 - BEHIND;
-    p.shown = if (wanted - p.shown).abs() > 2.0 * BEHIND {
+    let astray = wanted - (p.shown + 1.0);
+    p.shown = if astray.abs() > 2.0 * BEHIND {
         wanted
+    } else if astray.abs() > SLACK {
+        p.shown + 1.0 + (astray - SLACK.copysign(astray)) * 0.05
     } else {
-        p.shown + 1.0 + (wanted - p.shown - 1.0) * 0.1
+        p.shown + 1.0
     };
     let shown = p.shown;
     let dt = time.delta_secs();
     // How far the player's car is ahead of the moment the host's word is read at:
     // the steps it has taken that the host hasn't answered, and how old the word is.
-    let lead = ((p.sent.len() as f32 + (latest as f32 - shown).max(0.0)) * dt).min(LEAD);
+    // Someone not driving has no moment of their own for the others to be shown at:
+    // they see the cars just as the host had them, a little late and evenly.
+    let lead = if driving.is_empty() {
+        0.0
+    } else {
+        ((p.sent.len() as f32 + (latest as f32 - shown).max(0.0)) * dt).min(LEAD)
+    };
     // A knock is done with once the cars are shown as the host had them after it.
     for knocks in &mut p.shunts {
         knocks.retain(|knock| knock.heard.is_none_or(|heard| shown < heard as f32));

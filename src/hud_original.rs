@@ -403,10 +403,11 @@ pub fn draw(
     pause: Res<crate::Pause>,
     championship: Res<crate::championship::Championship>,
     time_race: Res<crate::time_race::TimeRace>,
-    (variant, replay, role, lineup, camera, cars): (
+    (variant, replay, role, watching, lineup, camera, cars): (
         Res<crate::variant::Variant>,
         Res<crate::replay::Replay>,
         Res<crate::net::Role>,
+        Res<crate::net::Watching>,
         Option<Res<crate::net::Lineup>>,
         Single<(&Camera, &Transform), With<Camera3d>>,
         Query<(&Kart, &Transform), Without<Camera3d>>,
@@ -415,9 +416,14 @@ pub fn draw(
     for root in &roots {
         commands.entity(root).despawn();
     }
-    let Some((player, _)) = karts.iter().find(|k| k.1) else {
+    let Some((own, _)) = karts.iter().find(|k| k.1) else {
         return;
     };
+    // Online, the display is of the car being followed.
+    let followed = watching
+        .slot
+        .and_then(|slot| karts.iter().find(|k| k.0.slot == slot));
+    let player = followed.map_or(own, |k| k.0);
     let fit = window.height() / HEIGHT;
     if scale.0 != fit {
         scale.0 = fit;
@@ -457,6 +463,16 @@ pub fn draw(
             gadget: state.gadget,
             ..default()
         };
+    }
+
+    // The port's own: a player with no car to drive is told whose they are watching.
+    if watching.free {
+        let words = format!("WATCHING {}   LEFT RIGHT: ANOTHER CAR", player.name);
+        let at = Vec2::new(
+            (width - frame.width("font_ths", &words, 0.6)) / 2.0,
+            HEIGHT - 1.2 * line,
+        );
+        frame.write("font_ths", &words, at, 0.6, Color::WHITE);
     }
 
     // The port's own: online, the other players' names go over their cars, smaller

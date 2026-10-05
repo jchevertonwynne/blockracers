@@ -60,6 +60,17 @@ pub struct Told {
     /// has come up since the last telling.
     cues: [Cues; 6],
     cued: Vec<(u8, Cues)>,
+    /// The events of the circuit's own that have started and not ended.
+    going: Vec<EventNote>,
+}
+
+impl Told {
+    /// Someone has come to the race late: every brick is told again, to everyone,
+    /// and what is given back is the events still going on, for the latecomer.
+    pub fn again(&mut self) -> Vec<EventNote> {
+        self.bricks.clear();
+        self.going.clone()
+    }
 }
 
 /// What a player's game has put into the world on its host's word, by which of the
@@ -168,6 +179,7 @@ pub fn tell(
 /// Passes on the events of the circuit's that have started and ended.
 pub fn tell_events(
     session: Res<Session>,
+    mut told: ResMut<Told>,
     mut wire: ResMut<Wire>,
     events: Option<ResMut<TrackEvents>>,
     karts: Query<(Entity, &Kart)>,
@@ -196,6 +208,12 @@ pub fn tell_events(
             whole,
         })
         .collect();
+    for note in notes.iter().filter(|note| note.whole) {
+        told.going.retain(|going| going.event != note.event);
+        if note.start {
+            told.going.push(*note);
+        }
+    }
     let notes = encode(&ToPlayer::Events(notes));
     for member in &session.members {
         wire.0.send(member.peer, notes.clone());

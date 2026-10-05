@@ -81,6 +81,7 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
                 ready: false,
                 ballot: None,
                 link: None,
+                points: 0,
             }],
             ..default()
         })
@@ -531,6 +532,7 @@ fn a_room_votes_and_its_race_begins_for_everyone() {
                 ready: false,
                 ballot: None,
                 link: None,
+                points: 0,
             }]
         } else {
             Vec::new()
@@ -984,5 +986,217 @@ fn a_race_run_is_told_to_everyone_with_its_times() {
         // The computer's car was still out, and has a place but no time.
         assert_eq!((told.len(), told[2].1, told[2].2), (3, false, None));
         assert!(room.fresh, "the results should be waiting to be shown");
+        // Each place has scored as the original's circuits score them.
+        let scored: Vec<u32> = room.results.iter().map(|finish| finish.points).collect();
+        assert_eq!(scored, [30, 20, 10]);
     }
+    // The host, who is in its own room, has its points to keep.
+    assert_eq!(pair.host.world().resource::<Room>().voters[0].points, 30);
+}
+
+/// What is said in the room is heard by everyone in it, with who said it.
+#[test]
+fn what_is_said_in_the_room_is_heard_by_everyone() {
+    let mut pair = Pair::new(0, 0.0);
+    for app in [&mut pair.host, &mut pair.guest] {
+        app.insert_state(Screen::Menu);
+    }
+    fn speak(
+        role: Res<Role>,
+        session: Res<Session>,
+        mut room: ResMut<Room>,
+        mut wire: ResMut<Wire>,
+    ) {
+        say(*role, &session, &mut room, &mut wire, "  good luck  ");
+    }
+    pair.guest.world_mut().run_system_cached(speak).unwrap();
+    pair.host.world_mut().run_system_cached(speak).unwrap();
+    for _ in 0..30 {
+        pair.step();
+    }
+    for app in [&pair.host, &pair.guest] {
+        let mut said = app.world().resource::<Room>().chat.clone();
+        said.sort();
+        assert_eq!(said, ["Guest: good luck", "Me: good luck"]);
+    }
+}
+
+/// A player who gave a race up may go back to it, and has their car again.
+#[test]
+fn a_player_who_gave_the_race_up_may_go_back_to_it() {
+    let mut pair = Pair::new(0, 0.0);
+    for _ in 0..60 {
+        pair.step();
+    }
+    fn give_up(mut wire: ResMut<Wire>, mut next: ResMut<NextState<Screen>>) {
+        retire(&mut wire, &mut next);
+    }
+    fn go_back(mut wire: ResMut<Wire>) {
+        enter(&mut wire);
+    }
+    pair.guest.world_mut().run_system_cached(give_up).unwrap();
+    for _ in 0..30 {
+        pair.step();
+    }
+    let driven = |app: &mut App| app.world_mut().query::<&Remote>().iter(app.world()).count();
+    assert_eq!(driven(&mut pair.host), 0);
+    // The host knows what race is on, as it does of one it began.
+    let circuits = Circuits::find();
+    pair.host.world_mut().resource_mut::<Session>().racing =
+        Some(Rules::of(&Settings::new(&circuits), &circuits));
+    pair.guest.world_mut().run_system_cached(go_back).unwrap();
+    for _ in 0..30 {
+        pair.step();
+    }
+    // The host has sent the race again, and the player's game is loading it.
+    let state = |app: &App| *app.world().resource::<State<Screen>>().get();
+    assert_eq!(state(&pair.guest), Screen::Loading);
+    // Loaded (here, the cars are still there from before), it says so and drives.
+    pair.guest.insert_state(Screen::Race);
+    pair.guest
+        .world_mut()
+        .run_system_cached(client::loaded)
+        .unwrap();
+    for _ in 0..30 {
+        pair.step();
+    }
+    assert_eq!(driven(&mut pair.host), 1);
+    assert!(pair.host.world().resource::<Session>().watching.is_empty());
+}
+
+/// Someone with no car in the race watches it: they are told where every car is,
+/// and their screen is on the leader's.
+#[test]
+fn someone_with_no_car_in_the_race_watches_it() {
+    let mut pair = Pair::new(1, 0.0);
+    // The race is the host's and two of the computer's cars: the player isn't in it.
+    let alone = Lineup::seat(&[(HOST, "Host".to_string(), String::new())], 2);
+    pair.host.insert_resource(Lineup {
+        seats: alone.clone(),
+        you: HOST,
+    });
+    pair.guest.insert_resource(Lineup {
+        seats: alone,
+        you: 1,
+    });
+    pair.step();
+    pair.guest
+        .world_mut()
+        .run_system_cached(client::loaded)
+        .unwrap();
+    press(&mut pair.host, KeyCode::KeyW, true);
+    for _ in 0..180 {
+        pair.step();
+    }
+    assert_eq!(pair.host.world().resource::<Session>().watching, [1]);
+    let watching = pair.guest.world().resource::<Watching>();
+    assert!(watching.free && watching.slot.is_some());
+    // The car watched is marked as this screen's, and is shown as the host has it.
+    let marked: Vec<usize> = pair
+        .guest
+        .world_mut()
+        .query_filtered::<&Kart, (With<Player>, With<Puppet>)>()
+        .iter(pair.guest.world())
+        .map(|kart| kart.slot)
+        .collect();
+    assert_eq!(marked, [watching_slot(&pair.guest)]);
+    let (there, shown) = (
+        car(&mut pair.host, HOSTS).pos,
+        car(&mut pair.guest, HOSTS).pos,
+    );
+    assert!(
+        there.distance(car(&mut pair.host, 0).pos) > 1.0,
+        "the host's car should have moved off"
+    );
+    // Not driving, they see it as the host had it a moment ago, and no guess at now.
+    assert!(
+        shown.distance(there) < 8.0,
+        "the watcher should see the host's car near where it is: {shown} against {there}"
+    );
+    // A car followed must move evenly from step to step, or the screen shakes.
+    let mut steps = Vec::new();
+    let mut was = shown;
+    for _ in 0..120 {
+        pair.step();
+        let now = car(&mut pair.guest, HOSTS).pos;
+        steps.push(now.distance(was));
+        was = now;
+    }
+    let uneven = steps
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .fold(0.0, f32::max);
+    println!(
+        "steps of {:.3} to {:.3}, uneven by {uneven:.4}",
+        steps.iter().copied().fold(f32::MAX, f32::min),
+        steps.iter().copied().fold(0.0, f32::max)
+    );
+    assert!(
+        uneven < 0.01,
+        "the car watched should move evenly: {uneven}"
+    );
+}
+
+fn watching_slot(app: &App) -> usize {
+    app.world()
+        .resource::<Watching>()
+        .slot
+        .expect("a car being watched")
+}
+
+/// A player who drops out and comes back under the same name has their points, and
+/// their place in the race they left.
+#[test]
+fn a_player_who_comes_back_has_what_they_had() {
+    let mut pair = Pair::new(0, 0.0);
+    pair.guest.world_mut().resource_mut::<Session>().name = "Guest".into();
+    for _ in 0..30 {
+        pair.step();
+    }
+    let mut room = pair.host.world_mut().resource_mut::<Room>();
+    room.voters
+        .iter_mut()
+        .find(|voter| voter.peer == 1)
+        .expect("the player in the room")
+        .points = 50;
+    // The player's connection goes.
+    pair.host.world_mut().resource_mut::<Inbox>().left.push(1);
+    for _ in 0..10 {
+        pair.step();
+    }
+    assert_eq!(
+        pair.host.world().resource::<Session>().absent,
+        [("Guest".to_string(), 50)]
+    );
+    // They dial again, and are someone new to the link.
+    let mut back = game(Role::Client, pair.hub.join(), 0, 0);
+    back.insert_state(Screen::Menu);
+    *back.world_mut().resource_mut::<Session>() = Session {
+        name: "Guest".into(),
+        ..default()
+    };
+    for _ in 0..30 {
+        pair.step();
+        back.update();
+    }
+    let session = pair.host.world().resource::<Session>();
+    assert!(session.absent.is_empty() && session.members.iter().any(|member| member.peer == 2));
+    let voter = pair
+        .host
+        .world()
+        .resource::<Room>()
+        .voters
+        .iter()
+        .find(|voter| voter.peer == 2)
+        .cloned();
+    assert_eq!(voter.map(|voter| voter.points), Some(50));
+    let lineup = pair.host.world().resource::<Lineup>();
+    assert_eq!(
+        lineup
+            .seats
+            .iter()
+            .find(|seat| seat.name == "Guest")
+            .and_then(|seat| seat.peer),
+        Some(2)
+    );
 }

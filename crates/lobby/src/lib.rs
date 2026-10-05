@@ -6,7 +6,8 @@
 //! | `POST /sessions` | lists a session, answering with its id and the host's token |
 //! | `PUT /sessions/{id}` | the host saying it is still there, with its `Status` |
 //! | `DELETE /sessions/{id}` | the host taking it down |
-//! | `GET /sessions?protocol=N` | the list |
+//! | `GET /sessions?protocol=N` | the list, less the sessions that asked to be left off it |
+//! | `GET /codes/{code}?protocol=N` | the session with that code, listed or not |
 //! | `GET /healthz`, `GET /metrics` | for the cluster's probes and scraping |
 //! | `GET /` | a page saying what this is, where its source is, and how busy it is |
 //! | `GET /favicon.ico` | the picture a browser puts beside that page: a brick |
@@ -27,7 +28,8 @@ use axum::response::Html;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use lobby_api::{
-    GONE_AFTER, MAX_ENDPOINT, MAX_NAME, MAX_PLAYERS, Register, Registered, Session, Status,
+    CODE_LENGTH, CODE_LETTERS, GONE_AFTER, MAX_ENDPOINT, MAX_NAME, MAX_PLAYERS, Register,
+    Registered, Session, Status,
 };
 use serde::Deserialize;
 use tokio::time::Instant;
@@ -43,6 +45,9 @@ struct Entry {
     session: Session,
     protocol: u32,
     token: String,
+    /// What finds it without the list, and whether it is kept off the list.
+    code: String,
+    unlisted: bool,
     /// Who listed it, as Cloudflare names them; empty when it doesn't say.
     address: String,
     heard: Instant,
@@ -88,6 +93,7 @@ pub fn app() -> Router {
     Router::new()
         .route("/sessions", post(register).get(list))
         .route("/sessions/{id}", put(beat).delete(close))
+        .route("/codes/{code}", get(find))
         .route("/", get(home))
         .route(
             "/favicon.ico",
@@ -113,6 +119,21 @@ fn random_name() -> String {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("the system's random numbers");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A code no session there has.
+fn fresh_code(sessions: &HashMap<String, Entry>) -> String {
+    loop {
+        let mut bytes = [0u8; CODE_LENGTH];
+        getrandom::fill(&mut bytes).expect("the system's random numbers");
+        let code: String = bytes
+            .iter()
+            .map(|b| CODE_LETTERS[*b as usize % CODE_LETTERS.len()] as char)
+            .collect();
+        if !sessions.values().any(|e| e.code == code) {
+            return code;
+        }
+    }
 }
 
 /// A name is short, not empty, and has nothing in it a list couldn't show.
@@ -154,7 +175,7 @@ async fn register(
         lobby.refused.fetch_add(1, Ordering::Relaxed);
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
-    let (id, token) = (random_name(), random_name());
+    let (id, token, code) = (random_name(), random_name(), fresh_code(&sessions));
     let session = Session {
         id: id.clone(),
         name: ask.name,
@@ -170,12 +191,14 @@ async fn register(
             session,
             protocol: ask.protocol,
             token: token.clone(),
+            code: code.clone(),
+            unlisted: ask.unlisted,
             address,
             heard: Instant::now(),
         },
     );
     lobby.listed.fetch_add(1, Ordering::Relaxed);
-    Ok(Json(Registered { id, token }))
+    Ok(Json(Registered { id, token, code }))
 }
 
 /// The session `id`, if the request carries its token. A session that isn't there and
@@ -231,11 +254,25 @@ async fn list(State(lobby): State<Shared>, Query(which): Query<Which>) -> Json<V
     let sessions = lobby.live();
     let mut found: Vec<Session> = sessions
         .values()
-        .filter(|e| e.protocol == which.protocol)
+        .filter(|e| e.protocol == which.protocol && !e.unlisted)
         .map(|e| e.session.clone())
         .collect();
     found.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
     Json(found)
+}
+
+/// The session a code is for, however the code's letters are cased.
+async fn find(
+    State(lobby): State<Shared>,
+    Path(code): Path<String>,
+    Query(which): Query<Which>,
+) -> Result<Json<Session>, StatusCode> {
+    lobby
+        .live()
+        .values()
+        .find(|e| e.protocol == which.protocol && e.code.eq_ignore_ascii_case(&code))
+        .map(|e| Json(e.session.clone()))
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 /// Text made safe to put in a page: a session's name is whatever its host typed.
@@ -266,8 +303,19 @@ fn span(seconds: u64) -> String {
 /// The page at the root: what this is, where its source is, and how busy it is. How
 /// a session is dialled is left off it; the game reads that from `/sessions`.
 async fn home(State(lobby): State<Shared>) -> Html<String> {
-    let mut sessions: Vec<Session> = lobby.live().values().map(|e| e.session.clone()).collect();
-    sessions.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    // Every session is counted, and those that asked to be left off the list are
+    // left out of the table too.
+    let (mut sessions, mut shown): (Vec<Session>, Vec<bool>) = (Vec::new(), Vec::new());
+    let mut live: Vec<(Session, bool)> = lobby
+        .live()
+        .values()
+        .map(|e| (e.session.clone(), !e.unlisted))
+        .collect();
+    live.sort_by(|a, b| a.0.name.cmp(&b.0.name).then_with(|| a.0.id.cmp(&b.0.id)));
+    for (session, listed) in live {
+        sessions.push(session);
+        shown.push(listed);
+    }
     let players: usize = sessions
         .iter()
         .map(|session| session.status.players as usize)
@@ -278,7 +326,9 @@ async fn home(State(lobby): State<Shared>) -> Html<String> {
         .count();
     let rows: String = sessions
         .iter()
-        .map(|session| {
+        .zip(&shown)
+        .filter(|(_, shown)| **shown)
+        .map(|(session, _)| {
             let doing = match (session.status.racing, session.status.circuit.is_empty()) {
                 (true, false) => format!("racing {}", escaped(&session.status.circuit)),
                 (true, true) => "racing".to_string(),
@@ -294,7 +344,7 @@ async fn home(State(lobby): State<Shared>) -> Html<String> {
             )
         })
         .collect();
-    let table = if sessions.is_empty() {
+    let table = if rows.is_empty() {
         "<p>Nobody is hosting a race just now.</p>".to_string()
     } else {
         format!(
@@ -384,6 +434,7 @@ mod tests {
                 players: 1,
                 ..Status::default()
             },
+            unlisted: false,
         }
     }
 
@@ -745,5 +796,50 @@ mod tests {
             send(&app, "GET", "/healthz", None, None, None).await,
             (StatusCode::OK, "ok".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_session_is_found_only_by_its_code() {
+        let app = app();
+        let hidden = Register {
+            unlisted: true,
+            ..ask("Just us")
+        };
+        let made = host(&app, &hidden, None).await;
+        let open = host(&app, &ask("Anyone"), None).await;
+        assert_eq!(made.code.len(), CODE_LENGTH);
+        assert_ne!(made.code, open.code);
+        // The list has the one that didn't ask to be left off it, and the page too.
+        let seen = listing(&app, PROTOCOL).await;
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].name, "Anyone");
+        let (_, page) = send(&app, "GET", "/", None, None, None).await;
+        assert!(page.contains("Anyone") && !page.contains("Just us"));
+        // Its code finds it, in either case, for a game of its protocol.
+        let path = |code: &str, protocol: u32| format!("/codes/{code}?protocol={protocol}");
+        let (status, body) = send(
+            &app,
+            "GET",
+            &path(&made.code.to_lowercase(), PROTOCOL),
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let found: Session = serde_json::from_str(&body).unwrap();
+        assert_eq!((found.id, found.name.as_str()), (made.id, "Just us"));
+        let other = send(
+            &app,
+            "GET",
+            &path(&made.code, PROTOCOL + 1),
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(other.0, StatusCode::NOT_FOUND);
+        let wrong = send(&app, "GET", &path("ZZZZZZ", PROTOCOL), None, None, None).await;
+        assert_eq!(wrong.0, StatusCode::NOT_FOUND);
     }
 }

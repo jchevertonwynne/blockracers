@@ -73,6 +73,17 @@ next one run: the circuit, laps, computer cars, and the port's own ways of racin
 everyone is ready, or half a minute after the first is, the circuit is drawn from those
 asked for and the rest goes to the majority, the host settling a tie.
 
+A session has a short code, shown on the host's **Session** page, which finds it
+from **Enter a code** on the join page; a host can keep a session off the list so
+that the code is the only way in. Each race scores as the original's circuits do,
+the room keeps the players' points, and the host can make a series of three, five
+or seven races of it, with a winner. There is a line to say things to the room on.
+Someone who arrives while a race is on, or has given it up, can **Go to the race**:
+they drive their car if they have one in it and otherwise watch, as does anyone
+whose own race is run, going from car to car with left and right. A player whose
+connection drops and who joins again under the same name has their points and
+their car back.
+
 The room shows each player's ping to the host and whether they reach it directly or
 by way of a relay, and after a race how it went: times, gaps and best laps. The host
 can change the password and how many players the session takes, and put a player

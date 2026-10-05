@@ -110,8 +110,8 @@ pub struct Snapshot {
     pub stage: Stage,
     /// What is left of the intro and of the countdown, and how long the race has run.
     pub clocks: [f32; 3],
-    /// The player's own car, in full.
-    pub own: State,
+    /// The player's own car, in full; nothing for someone only watching.
+    pub own: Option<State>,
     /// Every car, the player's too, by grid slot.
     pub karts: Vec<(u8, Pose, Standing)>,
 }
@@ -207,6 +207,11 @@ pub enum ToHost {
     /// The player has given the race up and is back in the room; their car is the
     /// computer's to drive.
     Back,
+    /// The player wants into the race that is on: to drive their car if they have
+    /// one in it, and otherwise to watch.
+    Enter,
+    /// Something said to the room.
+    Say(String),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -226,6 +231,8 @@ pub enum ToPlayer {
         voters: Vec<Voter>,
         closing: Option<f32>,
         racing: bool,
+        /// The races run of a series and how many it is of, if one is being run.
+        series: Option<(u8, u8)>,
         last: Option<Rules>,
         results: Vec<Finish>,
     },
@@ -235,6 +242,8 @@ pub enum ToPlayer {
     /// that have started and ended (`scene`).
     Scene(Scene),
     Events(Vec<EventNote>),
+    /// What someone in the room has said, their name before it.
+    Said(String),
 }
 
 #[cfg(test)]

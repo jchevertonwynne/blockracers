@@ -206,7 +206,7 @@ pub fn flow(
     }
     flow.shown += dt;
     if flow.shown >= RESULT_WAIT {
-        let mut order: Vec<(usize, Finish)> = karts
+        let mut order: Vec<(usize, Finish, usize)> = karts
             .iter()
             .map(|(k, ..)| {
                 // A player's car is theirs in the results though they gave it up.
@@ -227,12 +227,27 @@ pub fn flow(
                         player,
                         time,
                         best,
+                        points: 0,
                     },
+                    k.slot,
                 )
             })
             .collect();
-        order.sort_by_key(|(place, _)| *place);
-        (room.results, room.fresh) = (order.into_iter().map(|(_, finish)| finish).collect(), true);
+        order.sort_by_key(|(place, ..)| *place);
+        // Each place scores, and the players keep what theirs did.
+        let slots: Vec<usize> = order.iter().map(|(.., slot)| *slot).collect();
+        (room.results, room.fresh) = (
+            order.into_iter().map(|(_, finish, _)| finish).collect(),
+            true,
+        );
+        room.score(|place| {
+            let seats = &lineup.as_ref()?.seats;
+            seats
+                .iter()
+                .find(|seat| seat.slot as usize == slots[place])?
+                .peer
+        });
+        (session.racing, session.watching) = (None, Vec::new());
         let over = encode(&ToPlayer::Over);
         for member in &mut session.members {
             wire.0.send(member.peer, over.clone());
@@ -246,6 +261,7 @@ pub fn flow(
 pub fn send(
     clock: Res<Clock>,
     race: Res<Race>,
+    session: Res<Session>,
     mut wire: ResMut<Wire>,
     karts: Query<(&Kart, Option<&Remote>)>,
 ) {
@@ -268,10 +284,22 @@ pub fn send(
             used: remote.used,
             stage,
             clocks: [race.intro, race.countdown, race.time],
-            own: State::of(kart),
+            own: Some(State::of(kart)),
             karts: all.clone(),
         };
         wire.0.datagram(remote.peer, encode(&snapshot));
+    }
+    // Those watching are told of every car and of none in particular.
+    for &peer in &session.watching {
+        let snapshot = Snapshot {
+            tick: clock.tick,
+            used: 0,
+            stage,
+            clocks: [race.intro, race.countdown, race.time],
+            own: None,
+            karts: all.clone(),
+        };
+        wire.0.datagram(peer, encode(&snapshot));
     }
 }
 

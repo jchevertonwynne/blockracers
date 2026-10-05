@@ -990,6 +990,8 @@ fn chase_camera(
     mut rig: ResMut<camera::Rig>,
     track: Res<Track>,
     mut replay: ResMut<replay::Replay>,
+    watching: Res<net::Watching>,
+    mut watched: Local<Option<usize>>,
 ) {
     let (mut t, mut projection) = camera.into_inner();
     let Some((own, _)) = karts.iter().find(|k| k.1) else {
@@ -997,6 +999,17 @@ fn chase_camera(
     };
     // A replay may be watched over any car's shoulder, or from beside the road.
     let mut player = own;
+    // Online, a player with no car to drive follows whichever they choose.
+    if let Some((other, _)) = watching
+        .slot
+        .and_then(|slot| karts.iter().find(|k| k.0.slot == slot))
+    {
+        player = other;
+    }
+    if *watched != watching.slot {
+        *watched = watching.slot;
+        rig.reset();
+    }
     if replay.showing.is_some() {
         let step = keys.just_pressed(KeyCode::ArrowRight) as isize
             - keys.just_pressed(KeyCode::ArrowLeft) as isize;
