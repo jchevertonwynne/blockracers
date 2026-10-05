@@ -168,13 +168,15 @@ fn surfaces(model: &Model, rigged: bool, library: &Library) -> Vec<(Option<usize
 }
 
 /// The tracks of a material animation of `dir`, with the pictures each shows.
-/// `named` is what a material of the animation's is called in the library.
+/// `named` is what a material of the animation's is called in the library; with
+/// `wanted`, only those tracks have their pictures, the rest keeping their places.
 pub fn reels(
     jam: &Jam,
     dir: &str,
     name: &str,
     library: &Library,
     named: impl Fn(&str) -> String,
+    wanted: Option<&[usize]>,
 ) -> Arc<Vec<ReelDef>> {
     let animation = jam
         .get(&format!("{dir}/{name}.MAB"))
@@ -185,6 +187,7 @@ pub fn reels(
         pictures: animation
             .materials(index)
             .iter()
+            .filter(|_| wanted.is_none_or(|wanted| wanted.contains(&index)))
             .filter_map(|(m, frame)| Some((*frame, library.texture(&named(m))?)))
             .collect(),
     };
@@ -471,7 +474,7 @@ pub fn load_files(
         // Material animations, each decoded the once however many models use it.
         let reels: Vec<Arc<Vec<ReelDef>>> = names(&tokens, 0x3d)
             .iter()
-            .map(|name| reels(jam, dir, name, library, str::to_string))
+            .map(|name| reels(jam, dir, name, library, str::to_string, None))
             .collect();
         for (i, token) in tokens.iter().enumerate() {
             // A placement may go without a name, and is then known by its model's.

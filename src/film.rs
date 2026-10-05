@@ -11,7 +11,9 @@
 //! here; pictures, sprays of particles and streamed sound are not.
 //!
 //! `BRICK_FILM=<folder>` shows a film of `/MENUDATA` when the menu opens: `C_AWARD1`
-//! to `C_AWARD4` are those for the places of a circuit.
+//! to `C_AWARD4` are those for the places of a circuit, `WINCAR` the one for a
+//! champion's car set won (`WINCAR:c2` for the third circuit's champion) and
+//! `WINRRCAR` the one for Rocket Racer's.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,7 +31,11 @@ use crate::assets::{
 use crate::frontend::Art;
 use crate::scenery::{self, Animated, Prop, PropDef, Recast, ReelDef, Rig, Scrolling};
 use crate::world::Library;
-use crate::{Screen, build};
+use crate::assets::lrs::Racer;
+use crate::{Screen, build, roster};
+
+/// The part set that is Rocket Racer's, counted from the first that is won.
+const ROCKET_RACERS_SET: usize = 6;
 
 const DIR: &str = "/MENUDATA";
 /// The model a film has standing in for the racer it is about, and the two it shows
@@ -37,6 +43,11 @@ const DIR: &str = "/MENUDATA";
 const RACER: &str = "guy1";
 const PEG_LEG_MODELS: [&str; 2] = ["swap", "pleg"];
 const PEG_LEG: u8 = 10;
+/// The model a film has standing in for the car it is about.
+const CAR: &str = "carbody";
+/// The words of the film for a champion's car set that name a champion; only the
+/// ones for the champion beaten are shown, whose code ends their name.
+const CHAMPIONS_WORDS: [&str; 6] = ["textcr", "textkk", "textbb", "textjt", "textgm", "textbvb"];
 /// The looks a face has, as the films' material animations call them and as the
 /// part catalogue ends the names of a face's materials.
 const LOOKS: [(&str, &str); 6] = [
@@ -223,6 +234,8 @@ pub struct Film {
     props: Vec<PropDef>,
     /// Skeletons with nothing on them, for cameras to ride.
     riders: Vec<(String, Rig, Vec3, Quat)>,
+    /// The car the film is about, if it is about one.
+    car: Option<Racer>,
 }
 
 const SOUND: u16 = 0x2f;
@@ -232,8 +245,9 @@ const WORDS: u16 = 0x3f;
 impl Film {
     /// The film in a folder of `/MENUDATA`, with the racer it is about made of
     /// these parts.
-    pub fn load(jam: &Jam, folder: &str, cosmetics: Cosmetics) -> Option<Film> {
-        let dir = format!("{DIR}/{}", folder.to_uppercase());
+    pub fn load(jam: &Jam, request: &Request) -> Option<Film> {
+        let cosmetics = request.cosmetics;
+        let dir = format!("{DIR}/{}", request.folder.to_uppercase());
         let file = jam.list(&dir).find(|f| f.ends_with(".CDB"))?.to_string();
         let tokens = tokenize(jam.get(&file)?);
         let worlds: Vec<String> = scenery::names(&tokens, 0x28);
@@ -255,6 +269,7 @@ impl Film {
             ended: Vec::new(),
             props: Vec::new(),
             riders: Vec::new(),
+            car: None,
         };
         let part = |fields: &[Token]| {
             number(fields, 0x2d, 0)
@@ -304,6 +319,13 @@ impl Film {
         }
         film.worlds(jam, &dir, &worlds, cosmetics);
         film.effects(jam, &dir);
+        // `AwardCinematicScreen::CreateWidgets`: of the words that name a champion,
+        // only the beaten one's are left.
+        let named = request.champion.as_ref().map(|code| format!("text{code}"));
+        film.effects.retain(|(kind, name), _| {
+            *kind != WORDS || !CHAMPIONS_WORDS.contains(&name.as_str()) || named.as_ref() == Some(name)
+        });
+        film.car = request.car.clone();
         Some(film)
     }
 
@@ -371,23 +393,32 @@ impl Film {
         let files: Vec<&str> = files.iter().map(String::as_str).collect();
         self.props = scenery::load_files(jam, dir, &files, &library, |_, _| true);
         let racer = self.racer(jam, dir, &animations, cosmetics);
-        // Each model has the tracks of whatever a cue of its will set going.
-        let mut reels: HashMap<(usize, usize), Arc<Vec<ReelDef>>> = HashMap::new();
-        for cue in &self.cues {
-            let (Some(key), Some(prop)) = (
-                cue.reels.filter(|_| cue.model != RACER || !racer),
-                self.props.iter_mut().find(|prop| prop.name() == cue.model),
-            ) else {
-                continue;
-            };
-            let Some(name) = animations.get(key.0).and_then(|world| world.get(key.1)) else {
-                continue;
-            };
-            let tracks = reels.entry(key).or_insert_with(|| {
-                scenery::reels(jam, dir, &name.to_uppercase(), &library, str::to_string)
-            });
-            for (material, _) in &cue.tracks {
-                prop.reel(*material, tracks.clone());
+        // Each model has the tracks its cues will set going, and the pictures of
+        // no others: a film's animations have a great many tracks between them.
+        let mut reels: HashMap<(usize, usize, Vec<usize>), Arc<Vec<ReelDef>>> = HashMap::new();
+        for prop in &mut self.props {
+            let name = prop.name().to_string();
+            let cues = || self.cues.iter().filter(|cue| cue.model == name);
+            let mut wanted: Vec<usize> = cues().flat_map(|cue| &cue.tracks).map(|t| t.1).collect();
+            wanted.sort();
+            wanted.dedup();
+            for cue in cues() {
+                let Some((world, animation)) = cue.reels.filter(|_| cue.model != RACER || !racer)
+                else {
+                    continue;
+                };
+                let Some(name) = animations.get(world).and_then(|world| world.get(animation))
+                else {
+                    continue;
+                };
+                let key = (world, animation, wanted.clone());
+                let tracks = reels.entry(key).or_insert_with(|| {
+                    let name = name.to_uppercase();
+                    scenery::reels(jam, dir, &name, &library, str::to_string, Some(&wanted))
+                });
+                for (material, _) in &cue.tracks {
+                    prop.reel(*material, tracks.clone());
+                }
             }
         }
     }
@@ -429,7 +460,9 @@ impl Film {
                     let look = LOOKS.iter().find(|look| look.0 == material);
                     format!("{face}{}", look.map_or("dflt", |look| look.1))
                 };
-                let tracks = scenery::reels(jam, dir, &name.to_uppercase(), &parts, look);
+                let wanted: Vec<usize> = cue.tracks.iter().map(|track| track.1).collect();
+                let name = name.to_uppercase();
+                let tracks = scenery::reels(jam, dir, &name, &parts, look, Some(&wanted));
                 made.reel(own, tracks);
                 // The film's face is whichever material its tracks are set on.
                 for track in &mut cue.tracks {
@@ -502,6 +535,7 @@ impl Film {
 }
 
 /// A film asked for.
+#[derive(Default)]
 pub struct Request {
     /// Its folder in `/MENUDATA`.
     pub folder: String,
@@ -511,6 +545,10 @@ pub struct Request {
     pub skippable: bool,
     /// Which of the menus' tunes it is heard with.
     pub tune: Option<usize>,
+    /// The car it is about, which goes where the film's own stands in for one.
+    pub car: Option<Racer>,
+    /// The champion it names in its words, by the game's code for them.
+    pub champion: Option<String>,
 }
 
 impl Request {
@@ -534,9 +572,37 @@ impl Request {
         Request {
             folder: folder.into(),
             cosmetics,
-            skippable: false,
             tune: Some(tune),
+            ..default()
         }
+    }
+
+    /// `AwardCinematicScreen::Navigate`: the film that follows a circuit won for
+    /// the first time, for the part set it wins. Rocket Racer's has the racer who
+    /// won it; a champion's has the champion and their car, the one of the game's
+    /// quick-build cars that is theirs (`CreateWinnerCar`).
+    pub fn car_set(jam: &Jam, circuit: &str, cosmetics: Cosmetics) -> Option<Request> {
+        if roster::part_set(jam, circuit)? == ROCKET_RACERS_SET {
+            return Some(Request {
+                folder: "WINRRCAR".into(),
+                cosmetics,
+                tune: Some(14),
+                ..default()
+            });
+        }
+        let champion = roster::field(jam, circuit).into_iter().next()?;
+        let cars = crate::garage::stock(jam);
+        let own = |racer: &&Racer| {
+            racer.name == "CHAMP" && racer.chassis.eq_ignore_ascii_case(&champion.chassis)
+        };
+        Some(Request {
+            folder: "WINCAR".into(),
+            cosmetics: roster::cosmetics_of(jam, &champion.code)?,
+            tune: Some(13),
+            car: cars.iter().find(own).cloned(),
+            champion: Some(champion.code.to_lowercase()),
+            ..default()
+        })
     }
 }
 
@@ -544,13 +610,15 @@ impl Request {
 #[derive(Resource, Default)]
 pub struct Showing {
     pub request: Option<Request>,
+    /// The film to show after that one.
+    pub next: Option<Request>,
     playing: Option<Playing>,
 }
 
 impl Showing {
     /// Whether the screen is a film's, and not the menus'.
     pub fn busy(&self) -> bool {
-        self.request.is_some() || self.playing.is_some()
+        self.request.is_some() || self.next.is_some() || self.playing.is_some()
     }
 }
 
@@ -574,6 +642,9 @@ struct Playing {
     /// What is laid over the film: the fade, and on it the page the words go on.
     veil: Entity,
     page: Entity,
+    /// The car the film is about, which is hung the other way about from a model
+    /// of the film's own.
+    car: Option<Entity>,
     /// Where the camera was and how it saw, to be given back.
     camera: (Transform, Projection, ClearColorConfig),
 }
@@ -634,11 +705,17 @@ fn open(
         ResMut<Assets<SkinnedMeshInverseBindposes>>,
     ),
 ) {
-    let Some(request) = showing.request.take() else {
+    if showing.playing.is_some() {
+        return;
+    }
+    let Some(request) = showing.request.take().or_else(|| showing.next.take()) else {
         return;
     };
-    let Some(mut film) = art.and_then(|art| Film::load(art.jam(), &request.folder, request.cosmetics))
-    else {
+    let Some(art) = art else {
+        showing.next = None;
+        return;
+    };
+    let Some(mut film) = Film::load(art.jam(), &request) else {
         warn!("no film in {}", request.folder);
         return;
     };
@@ -650,6 +727,29 @@ fn open(
         let prop = scenery::spawn(def, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
         commands.entity(prop).insert((Piece, Visibility::Hidden));
         cast.insert(name, prop);
+    }
+    // `SceneEntityGroup`: the car, on its wheels and with nobody in it, where the
+    // film has a box for one.
+    let built = film.car.take().and_then(|racer| {
+        let mut model = crate::world::load_built(art.jam(), &racer, true)?;
+        model.driver.clear();
+        Some((model, cast.get(CAR).copied()?))
+    });
+    let mut car = None;
+    if let Some((model, stood_in)) = built {
+        commands.entity(stood_in).despawn();
+        let prop = Prop {
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: 1.0,
+            scroll: Vec2::ZERO,
+        };
+        let hung = commands
+            .spawn((Piece, prop, Transform::default(), Visibility::Hidden))
+            .id();
+        crate::time_race::dress(&mut commands, hung, model, &mut meshes, &mut materials, &mut images, None);
+        cast.insert(CAR.to_string(), hung);
+        car = Some(hung);
     }
     for (name, rig, position, rotation) in std::mem::take(&mut film.riders) {
         let rider = Animated {
@@ -700,6 +800,7 @@ fn open(
         materials: Vec::new(),
         fade: None,
         words: HashMap::new(),
+        car,
         veil,
         page,
         camera: (*camera.0, camera.1.clone(), camera.2.clear_color.clone()),
@@ -756,6 +857,13 @@ fn play(
             (prop.position, prop.rotation) = (cue.position, cue.rotation);
             let placed = scenery::placed(cue.position, cue.rotation, prop.scale);
             (transform.translation, transform.rotation) = (placed.translation, placed.rotation);
+            if playing.car == Some(model) {
+                // `time_race::dress` hangs a car on something that faces -Z; the
+                // film's models face along the game's X.
+                let hung = Quat::from_mat3(&Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y));
+                transform.rotation = placed.rotation * hung.inverse();
+                transform.scale = Vec3::ONE;
+            }
             *visibility = Visibility::Visible;
             if let (Some(part), Some(mut animated)) = (cue.part, animated) {
                 animated.play(part, true);
@@ -910,14 +1018,21 @@ fn play(
 
 /// `BRICK_FILM=<folder>`: a film to show as the menu opens.
 fn asked(mut showing: ResMut<Showing>) {
-    if let Ok(folder) = std::env::var("BRICK_FILM") {
-        showing.request = Some(Request {
-            folder,
-            cosmetics: Cosmetics::default(),
-            skippable: true,
-            tune: None,
-        });
-    }
+    let Ok(asked) = std::env::var("BRICK_FILM") else {
+        return;
+    };
+    let (folder, circuit) = asked.split_once(':').unwrap_or((&asked, "c0"));
+    // The films about a car set are about a circuit's champion too.
+    let circuit = if folder == "WINRRCAR" { "c6" } else { circuit };
+    let car_set = matches!(folder, "WINCAR" | "WINRRCAR")
+        .then(|| Request::car_set(&crate::world::jam()?, circuit, Cosmetics::default()))
+        .flatten();
+    showing.request = Some(Request {
+        folder: folder.to_string(),
+        skippable: true,
+        tune: None,
+        ..car_set.unwrap_or_default()
+    });
 }
 
 pub fn plugin(app: &mut App) {
@@ -941,7 +1056,7 @@ mod tests {
         let Some(jam) = crate::world::jam() else {
             return;
         };
-        let film = Film::load(&jam, "C_AWARD1", Cosmetics::default()).unwrap();
+        let film = Film::load(&jam, &Request::award(1, Cosmetics::default())).unwrap();
         assert_eq!((film.rate, film.length), (30.0, 346));
         assert!((film.seconds() - 11.53).abs() < 0.01);
         // One camera for all of it, riding a bone of a skeleton with no model.
@@ -981,7 +1096,7 @@ mod tests {
         };
         for place in 2..=4 {
             let request = Request::award(place, Cosmetics::default());
-            let film = Film::load(&jam, &request.folder, request.cosmetics).unwrap();
+            let film = Film::load(&jam, &request).unwrap();
             assert!(film.length > 0 && !film.shots.is_empty(), "{}", request.folder);
             assert!(film.props.iter().any(|prop| prop.name() == RACER));
             // Each camera is one of the world's, and what it rides is there to ride.
@@ -996,12 +1111,45 @@ mod tests {
                 }
             }
         }
-        let film = Film::load(&jam, "C_AWARD4", Cosmetics::default()).unwrap();
+        let film = Film::load(&jam, &Request::award(4, Cosmetics::default())).unwrap();
         assert!(matches!(
             film.effects.get(&(WORDS, "text1".into())),
             Some(Effect::Words(words, _)) if !words.is_empty()
         ));
         assert!(film.ended.iter().any(|bound| bound.1 == WORDS));
+    }
+
+    #[test]
+    fn a_car_set_won_has_the_champion_s_film_or_rocket_racer_s() {
+        let Some(jam) = crate::world::jam() else {
+            return;
+        };
+        let racer = Cosmetics {
+            hat: 4,
+            ..default()
+        };
+        // Each of the six champions stands by their own car, under their own name.
+        for (circuit, code) in ["cr", "kk", "bb", "jt", "bvb", "gm"].iter().enumerate() {
+            let request = Request::car_set(&jam, &format!("c{circuit}"), racer).unwrap();
+            assert_eq!(request.folder, "WINCAR");
+            assert_eq!(request.champion.as_deref(), Some(*code));
+            assert_eq!(Some(request.cosmetics), roster::cosmetics_of(&jam, code));
+            assert!(request.car.as_ref().is_some_and(|car| car.name == "CHAMP"));
+            let film = Film::load(&jam, &request).unwrap();
+            assert!(film.car.is_some() && film.cues.iter().any(|cue| cue.model == CAR));
+            let words = film.effects.keys().filter(|(kind, _)| *kind == WORDS);
+            let mut words: Vec<&str> = words.map(|(_, name)| name.as_str()).collect();
+            words.sort();
+            assert_eq!(words, ["text1", &format!("text{code}")]);
+        }
+        // Rocket Racer's is about the racer who won it, and has no car to put in.
+        let request = Request::car_set(&jam, "c6", racer).unwrap();
+        assert_eq!((request.folder.as_str(), request.cosmetics), ("WINRRCAR", racer));
+        assert!(request.car.is_none() && request.champion.is_none());
+        let film = Film::load(&jam, &request).unwrap();
+        assert_eq!((film.length, film.shots.len()), (1100, 3));
+        assert!(film.props.iter().any(|prop| prop.name() == RACER));
+        assert_eq!(film.effects.keys().filter(|key| key.0 == WORDS).count(), 7);
     }
 
     #[test]

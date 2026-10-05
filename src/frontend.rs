@@ -1808,6 +1808,8 @@ fn enter(
     mut showing: ResMut<Showing>,
     garage: Res<Garage>,
     settings: Res<Settings>,
+    championship: Res<Championship>,
+    art: Option<Res<Art>>,
 ) {
     *menu = Menu::default();
     menu.focus = 2;
@@ -1825,7 +1827,14 @@ fn enter(
     if let Some(award) = progress.award {
         if let Some(place) = award.place {
             let racer = garage.racing(&settings).map(|racer| racer.cosmetics);
-            showing.request = Some(Request::award(place, racer.unwrap_or_default()));
+            let racer = racer.unwrap_or_default();
+            showing.request = Some(Request::award(place, racer));
+            // A part set won has a film of its own after that: the champion's
+            // car, or for Rocket Racer's the racer who won it.
+            let circuit = award.parts.and_then(|set| championship.series.get(set));
+            if let (Some(circuit), Some(art)) = (circuit, &art) {
+                showing.next = Request::car_set(art.jam(), &circuit.code, racer);
+            }
         }
         (menu.page, menu.focus) = (Page::Award, 0);
         return;
