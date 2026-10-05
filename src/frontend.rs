@@ -17,10 +17,12 @@ use crate::assets::{
     Jam,
     font::{Font, load_fonts, load_strings},
     image::decode_bmp,
+    lrs::Cosmetics,
     tokens::{Token, tokenize},
 };
 use crate::audio::{Sfx, id};
 use crate::championship::Championship;
+use crate::film::{Request, Showing};
 use crate::garage::Garage;
 use crate::input::{Bindings, Bound, Devices, EVENTS, PAD};
 use crate::progress::Progress;
@@ -44,8 +46,10 @@ use bevy::{
 };
 use std::collections::HashMap;
 
+mod mascot;
 mod portraits;
 mod workshop;
+use mascot::Mascot;
 use portraits::Portraits;
 use workshop::Bench;
 
@@ -113,9 +117,9 @@ enum Page {
     AudioOptions,
     /// The original's `ControlConfigScreen`: what the keys and a pad's buttons do.
     Controls,
-    /// What a circuit raced to the end, or the last record beaten, has won. The
-    /// port's own: the original says it with a film (`AwardCinematicScreen`), which
-    /// the port has no player for.
+    /// What a circuit raced to the end, or the last record beaten, has won, said
+    /// after the circuit's film (`film`). The port's own: the original leaves it to
+    /// a notice on the main menu and to the build menu to show.
     Award,
     Extras,
     /// The port's own, for racing online: where to host or join from, what to host
@@ -408,14 +412,29 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Online>()
         .init_resource::<Bench>()
         .init_resource::<Portraits>()
+        .init_resource::<Mascot>()
         .add_systems(OnEnter(Screen::Menu), enter)
         .add_systems(
             OnExit(Screen::Menu),
-            (leave, workshop::put_away, portraits::put_away),
+            (
+                leave,
+                workshop::put_away,
+                portraits::put_away,
+                mascot::put_away,
+            ),
         )
         .add_systems(
             Update,
-            (input, arrive, ride, portraits::keep, draw, workshop::show)
+            (
+                input,
+                arrive,
+                ride,
+                portraits::keep,
+                mascot::keep,
+                mascot::dress,
+                draw,
+                workshop::show,
+            )
                 .chain()
                 .run_if(in_state(Screen::Menu))
                 .run_if(resource_exists::<Art>),
@@ -544,7 +563,13 @@ impl Art {
         self.pictures.get(name).cloned()
     }
 
-    fn write(
+    /// The game's archive.
+    pub fn jam(&self) -> &Jam {
+        &self.jam
+    }
+
+    /// Words in one of the game's fonts, as a picture and its size.
+    pub fn write(
         &mut self,
         font: &str,
         words: &str,
@@ -1780,6 +1805,9 @@ fn enter(
     mut menu: ResMut<Menu>,
     mut session: ResMut<Session>,
     mut progress: ResMut<Progress>,
+    mut showing: ResMut<Showing>,
+    garage: Res<Garage>,
+    settings: Res<Settings>,
 ) {
     *menu = Menu::default();
     menu.focus = 2;
@@ -1792,8 +1820,13 @@ fn enter(
             parts: Some(0),
         });
     }
-    // Something has just been won, and is said before anything else.
-    if progress.award.is_some() {
+    // Something has just been won, and is said before anything else: a circuit
+    // raced to the end has its film first (`AwardCinematicScreen`).
+    if let Some(award) = progress.award {
+        if let Some(place) = award.place {
+            let racer = garage.racing(&settings).map(|racer| racer.cosmetics);
+            showing.request = Some(Request::award(place, racer.unwrap_or_default()));
+        }
         (menu.page, menu.focus) = (Page::Award, 0);
         return;
     }
@@ -1825,6 +1858,27 @@ fn enter(
         _ => return,
     };
     (menu.page, menu.focus) = (page, page.first());
+}
+
+/// What the minifigure of whoever won the room's last race is made of: the racer a
+/// player built, the game's driver they raced as, or the one of the computer's that
+/// came first. Nothing if nobody finished.
+fn winner(room: &Room, jam: &Jam) -> Option<Cosmetics> {
+    let first = room.results.first().filter(|first| first.time.is_some())?;
+    let driver = |code: &str| crate::roster::cosmetics_of(jam, code).unwrap_or_default();
+    if !first.player {
+        let names = crate::roster::NAMES.iter();
+        let code = names.clone().find(|name| name.1 == first.name);
+        return Some(code.map_or(Cosmetics::default(), |name| driver(name.0)));
+    }
+    let voter = room.voters.iter().find(|voter| voter.name == first.name);
+    let ride = voter.and_then(|voter| room.rides.iter().find(|ride| ride.0 == voter.peer));
+    Some(match ride.map(|ride| &ride.1) {
+        Some(Ride::Built(racer)) => racer.cosmetics,
+        Some(Ride::Driver(code)) => driver(code),
+        // Whoever the circuit put in their place is not something the room is told.
+        Some(Ride::Slot) | None => Cosmetics::default(),
+    })
 }
 
 /// Makes the garage's bench ready for a page of its that has been come to.
@@ -1941,6 +1995,7 @@ fn input(
         mut bench,
         mut devices,
         mut progress,
+        mut showing,
     ): (
         Res<Role>,
         ResMut<Session>,
@@ -1952,8 +2007,14 @@ fn input(
         ResMut<Bench>,
         ResMut<Devices>,
         ResMut<Progress>,
+        ResMut<Showing>,
     ),
 ) {
+    // While a film is shown the keys are its own.
+    if showing.busy() {
+        typed.clear();
+        return;
+    }
     // `ControlConfigScreen::HandleKeyDown`: the page is waiting to be told what to
     // bind something to, and the next key or button is it, or is refused.
     if let (Page::Controls, Some(event)) = (menu.page, devices.awaiting) {
@@ -2012,6 +2073,10 @@ fn input(
     let fresh = room.fresh && home == Some(Page::Room);
     if fresh {
         room.fresh = false;
+        // The port's own: whoever won is seen celebrating before the results are.
+        if let Some(cosmetics) = winner(&room, art.jam()) {
+            showing.request = Some(Request::winner(cosmetics));
+        }
     }
     match home {
         // A race just run is shown before anything else.
@@ -2573,7 +2638,20 @@ fn draw(
     championship: Res<Championship>,
     window: Single<&Window, With<PrimaryWindow>>,
     roots: Query<Entity, With<Root>>,
-    (role, session, room, lobby, online, garage, bench, portraits, devices, progress): (
+    (
+        role,
+        session,
+        room,
+        lobby,
+        online,
+        garage,
+        bench,
+        portraits,
+        devices,
+        progress,
+        showing,
+        mascot,
+    ): (
         Res<Role>,
         Res<Session>,
         Res<Room>,
@@ -2584,8 +2662,18 @@ fn draw(
         Res<Portraits>,
         Res<Devices>,
         Res<Progress>,
+        Res<Showing>,
+        Res<Mascot>,
     ),
 ) {
+    // A film has the screen to itself, and the menu is drawn afresh after it.
+    if showing.busy() {
+        for root in &roots {
+            commands.entity(root).despawn();
+        }
+        menu.drawn = false;
+        return;
+    }
     // The whole screen is scaled to fit the window.
     let fit = (Vec2::new(window.width(), window.height()) / SCREEN).min_element();
     if scale.0 != fit {
@@ -2660,6 +2748,12 @@ fn draw(
     }
     if menu.page == Page::Main {
         picture!("racers", art.place("main", "racers").min, Color::WHITE);
+        // `MainMenuScreen::CreateWidgets`: the scene the figure stands in, over the
+        // background and under the buttons.
+        if let Some(picture) = &mascot.picture {
+            let scene = art.place("main", "platform");
+            pieces.push((picture.clone(), scene, Color::WHITE, false));
+        }
     }
     if menu.page == Page::Licence {
         // `DriverLicenseScreen::CreateWidgets`: the trophy the racer has for each
@@ -2989,4 +3083,58 @@ fn draw(
                 }
             });
         });
+}
+
+#[cfg(test)]
+#[test]
+fn the_winner_of_a_race_online_is_who_celebrates() {
+    use crate::assets::lrs::Racer;
+    use crate::net::room::{Finish, Voter};
+    let Some(jam) = crate::world::jam() else {
+        return;
+    };
+    let finish = |name: &str, player: bool, time: Option<f32>| Finish {
+        name: name.into(),
+        player,
+        time,
+        best: None,
+        points: 0,
+    };
+    let voter = |peer, name: &str| Voter {
+        peer,
+        name: name.into(),
+        ready: false,
+        ballot: None,
+        link: None,
+        points: 0,
+    };
+    let built = Cosmetics {
+        hat: 4,
+        face: 5,
+        torso: 25,
+        legs: 3,
+        expression: 0,
+    };
+    let racer = Racer {
+        cosmetics: built,
+        ..default()
+    };
+    let mut room = Room::default();
+    room.voters = vec![voter(1, "ANNA"), voter(2, "BEN")];
+    room.rides = vec![(1, Ride::Built(racer)), (2, Ride::Driver("KK".into()))];
+    room.results = vec![
+        finish("ANNA", true, Some(61.0)),
+        finish("BEN", true, Some(62.0)),
+    ];
+    // A player who built their racer is seen as they built it.
+    assert_eq!(winner(&room, &jam), Some(built));
+    // One racing as a driver of the game's is that driver, and so is the computer.
+    room.results.swap(0, 1);
+    let kahuka = crate::roster::cosmetics_of(&jam, "KK");
+    assert!(kahuka.is_some() && winner(&room, &jam) == kahuka);
+    room.results[0] = finish("King Kahuka", false, Some(60.0));
+    assert_eq!(winner(&room, &jam), kahuka);
+    // A race nobody finished has nobody to celebrate.
+    room.results[0].time = None;
+    assert_eq!(winner(&room, &jam), None);
 }

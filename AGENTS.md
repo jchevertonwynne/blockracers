@@ -30,9 +30,20 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   bindings are changed on the options' controls page and kept with the settings.
 - **What has been won:** `src/progress.rs` keeps the circuits opened, the part sets
   and minifigure parts won and the records beaten; a racer's trophies are in its own
-  record (`assets::lrs`). The build menu offers only what has been won. The films
-  the original shows for a circuit won are not ported: a page of the menu says what
-  was won instead (`frontend`'s `Page::Award`).
+  record (`assets::lrs`). The build menu offers only what has been won. A circuit
+  raced to the end has its film, and then a page of the menu says what was won
+  (`frontend`'s `Page::Award`, the port's own).
+- **Films:** `src/film.rs` plays the films of `/MENUDATA` (a `.CDB` of what begins
+  and ends when, a `.CEB` of what that sets off, and world files of models) with
+  the scenery's models and animations. The four for the places of a circuit are
+  shown; the films for a champion's car won, for Rocket Racer and for Veronica
+  Voltage, and the game's opening ones, are not shown yet. While a film plays the
+  menus neither draw nor take keys (`film::Showing`). Online, the film for first
+  place is shown about whoever won a race, before the room shows its results.
+- **Minifigures standing:** `build::figure` makes one sitting, for a car, or
+  standing, for the films and for the main menu, where the champion of the last
+  circuit opened stands (`src/frontend/mascot.rs`), drawn onto a picture by a
+  camera of its own, as the room's portraits are.
 - **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
   games drive their own car ahead of the host's word and are shown the rest. Online
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
@@ -92,8 +103,9 @@ menu instead. These combine with it:
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |
 | `BRICK_TIME=1` | time race |
-| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|controls\|award\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks` | menu page to open on; the last five are of the build menu, with the racer `BRICK_RACER` names on the bench; `award` is the page for a circuit won, as it is the first time the first is |
+| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|controls\|award\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks` | menu page to open on; the last five are of the build menu, with the racer `BRICK_RACER` names on the bench; `award` is a circuit won, as it is the first time the first is: its film (eleven and a half seconds), then the page that says what was won |
 | `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brick_racers_garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
+| `BRICK_FILM=C_AWARD1` | a film to show as the menu opens, by its folder in `/MENUDATA` (`C_AWARD1` to `C_AWARD4` are the circuit's places; a key ends it after a second) |
 | `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brick_racers_progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
 | `BRICK_RACER=4` | which of the garage's racers the player races as, counted from one |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |

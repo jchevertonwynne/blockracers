@@ -2,6 +2,7 @@
 //! each circuit its drivers (`LEGORACE.CRB`), each driver a figure and a champion's
 //! car (`DRIVERS.DDB`), and each champion the models of that car (`CHAMPS.CCB`).
 
+use crate::assets::lrs::Cosmetics;
 use crate::assets::{
     Jam,
     tokens::{Token, tokenize},
@@ -166,6 +167,32 @@ pub fn part_set(jam: &Jam, circuit: &str) -> Option<usize> {
     usize::try_from(number(fields, 0x2a)?).ok()
 }
 
+/// What the minifigure of one of the game's drivers is made of, by the number the
+/// menus' table of them gives the driver (`DriverCosmeticTable::CopyCosmetics`).
+pub fn cosmetics(jam: &Jam, id: usize) -> Option<Cosmetics> {
+    parts(jam, |_, fields| number(fields, 0x33) == Some(id as i32))
+}
+
+/// The same, by the game's short name for the driver.
+pub fn cosmetics_of(jam: &Jam, code: &str) -> Option<Cosmetics> {
+    parts(jam, |name, _| name.eq_ignore_ascii_case(code))
+}
+
+fn parts(jam: &Jam, which: impl Fn(&str, &[Token]) -> bool) -> Option<Cosmetics> {
+    let drivers = tokenize(jam.get("/MENUDATA/PARTDB/DRIVERS.DDB")?);
+    let (_, fields) = entries(&drivers)
+        .into_iter()
+        .find(|(name, fields)| which(name, fields))?;
+    let part = |key: u16| number(fields, key).map(|at| at as u8);
+    Some(Cosmetics {
+        hat: part(0x35)?,
+        face: part(0x36)?,
+        torso: part(0x37)?,
+        legs: part(0x38)?,
+        expression: 0,
+    })
+}
+
 /// One driver, by the game's short name for them.
 pub fn driver(jam: &Jam, code: &str) -> Option<Driver> {
     let drivers = tokenize(jam.get("/GAMEDATA/COMMON/DRIVERS.DDB")?);
@@ -293,5 +320,26 @@ fn the_first_circuit_is_captain_redbeard_s() {
     assert_eq!(driver(&jam, "GM").unwrap().chassis, "gm_chas0");
     for (circuit, _) in &circuits {
         assert_eq!(self::field(&jam, circuit).len(), 6, "{circuit}");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_menus_know_what_each_champion_is_made_of() {
+    let Some(jam) = crate::world::jam() else {
+        return;
+    };
+    // Captain Redbeard, whom the main menu shows to begin with, and Rocket Racer.
+    let redbeard = cosmetics(&jam, 0x13).unwrap();
+    assert_eq!(
+        (redbeard.hat, redbeard.face, redbeard.torso, redbeard.legs),
+        (4, 4, 24, 10)
+    );
+    assert_eq!(cosmetics(&jam, 0).unwrap().hat, 1);
+    assert!(cosmetics(&jam, 99).is_none());
+    assert_eq!(cosmetics_of(&jam, "cr"), Some(redbeard));
+    // Everyone a player can race as online has a figure to celebrate with.
+    for (code, _) in NAMES {
+        assert!(cosmetics_of(&jam, code).is_some(), "{code}");
     }
 }

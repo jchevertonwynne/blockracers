@@ -104,11 +104,91 @@ impl PropDef {
         self.position
     }
 
+    /// A model the port has put together itself (a minifigure of the parts someone
+    /// chose, say), to be placed and moved like one a world file places.
+    pub fn made(name: &str, model: &Model, rig: Option<Rig>, library: &Library) -> PropDef {
+        PropDef {
+            name: name.to_string(),
+            surfaces: surfaces(model, rig.is_some(), library),
+            rig,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: model.scale,
+            scroll: Vec2::ZERO,
+            cycles: Vec::new(),
+            backdrop: false,
+        }
+    }
+
+    pub fn rig(&self) -> Option<&Rig> {
+        self.rig.as_ref()
+    }
+
+    /// Stands it where another model is, facing as that does.
+    pub fn stand_in(&mut self, other: &PropDef) {
+        (self.position, self.rotation) = (other.position, other.rotation);
+    }
+
+    /// Has one of its materials ready to play through a material animation's
+    /// tracks, which `Recast` sets going.
+    pub fn reel(&mut self, material: usize, reels: Arc<Vec<ReelDef>>) {
+        if !self.cycles.iter().any(|cycle| cycle.0 == material) {
+            self.cycles.push((material, IDLE, reels));
+        }
+    }
+
     /// Puts it somewhere else: turned and made larger or smaller, and moved to `position`.
     pub fn moved(&mut self, turn: Quat, position: Vec3, scale: f32) {
         (self.rotation, self.position, self.scale) =
             (turn * self.rotation, position, self.scale * scale);
     }
+}
+
+/// The track of a mesh that has tracks to play and is playing none.
+const IDLE: usize = usize::MAX;
+
+/// The meshes of a model by the bone they hang from; `None` is the model itself.
+fn surfaces(model: &Model, rigged: bool, library: &Library) -> Vec<(Option<usize>, Vec<Surface>)> {
+    let mut bones: Vec<Option<usize>> = model
+        .batches
+        .iter()
+        .map(|b| b.bone.filter(|_| rigged))
+        .collect();
+    bones.sort();
+    bones.dedup();
+    let hung = |bone: Option<usize>| {
+        let surfaces = if rigged {
+            library.surfaces_rigged(model, |b| b.bone == bone)
+        } else {
+            library.surfaces(model, |_| true, Vec3::from)
+        };
+        (bone, surfaces)
+    };
+    bones.into_iter().map(hung).collect()
+}
+
+/// The tracks of a material animation of `dir`, with the pictures each shows.
+/// `named` is what a material of the animation's is called in the library.
+pub fn reels(
+    jam: &Jam,
+    dir: &str,
+    name: &str,
+    library: &Library,
+    named: impl Fn(&str) -> String,
+) -> Arc<Vec<ReelDef>> {
+    let animation = jam
+        .get(&format!("{dir}/{name}.MAB"))
+        .and_then(MaterialAnimation::parse)
+        .unwrap_or_default();
+    let reel = |(index, track): (usize, &Track)| ReelDef {
+        track: *track,
+        pictures: animation
+            .materials(index)
+            .iter()
+            .filter_map(|(m, frame)| Some((*frame, library.texture(&named(m))?)))
+            .collect(),
+    };
+    Arc::new(animation.tracks.iter().enumerate().map(reel).collect())
 }
 
 /// One track of a material animation: its timing and the pictures it shows, with the
@@ -129,6 +209,8 @@ struct Reel {
 pub struct Cycle {
     prop: Entity,
     reels: Arc<Vec<Reel>>,
+    /// Which of the model's materials the mesh is.
+    material: usize,
     reel: usize,
     time: f32,
     looping: bool,
@@ -139,6 +221,11 @@ pub struct Cycle {
 /// playing and the one to play instead, and whether that goes round and round.
 #[derive(Component)]
 pub struct Retrack(pub Vec<(usize, usize)>, pub bool);
+
+/// Put on a prop to set tracks going on its materials, round and round: pairs of
+/// the material and the track (`MabMaterialTrack::Assign`).
+#[derive(Component)]
+pub struct Recast(pub Vec<(usize, usize)>);
 
 /// A skeleton and what moves it.
 #[derive(Clone)]
@@ -327,7 +414,7 @@ pub struct Joint {
 pub struct Scenery(pub HashMap<String, Entity>);
 
 /// The names in a `key [count] { "a" "b" ... }` list.
-fn names(tokens: &[Token], key: u16) -> Vec<String> {
+pub fn names(tokens: &[Token], key: u16) -> Vec<String> {
     let Some(at) = tokens
         .windows(2)
         .position(|w| w[0] == Token::Key(key) && w[1] == Token::LBracket)
@@ -384,21 +471,7 @@ pub fn load_files(
         // Material animations, each decoded the once however many models use it.
         let reels: Vec<Arc<Vec<ReelDef>>> = names(&tokens, 0x3d)
             .iter()
-            .map(|name| {
-                let animation = jam
-                    .get(&format!("{dir}/{name}.MAB"))
-                    .and_then(MaterialAnimation::parse)
-                    .unwrap_or_default();
-                let reel = |(index, track): (usize, &Track)| ReelDef {
-                    track: *track,
-                    pictures: animation
-                        .materials(index)
-                        .iter()
-                        .filter_map(|(m, frame)| Some((*frame, library.texture(m)?)))
-                        .collect(),
-                };
-                Arc::new(animation.tracks.iter().enumerate().map(reel).collect())
-            })
+            .map(|name| reels(jam, dir, name, library, str::to_string))
             .collect();
         for (i, token) in tokens.iter().enumerate() {
             // A placement may go without a name, and is then known by its model's.
@@ -465,26 +538,7 @@ pub fn load_files(
             let rotation = Quat::from_mat3(&Mat3::from_cols(x, y, x.cross(y)));
             let scale = field(0x36, 0).unwrap_or(1.0) * model.scale;
 
-            let mut bones: Vec<Option<usize>> = model
-                .batches
-                .iter()
-                .map(|b| b.bone.filter(|_| rig.is_some()))
-                .collect();
-            bones.sort();
-            bones.dedup();
-            let surfaces = bones
-                .into_iter()
-                .map(|bone| {
-                    (
-                        bone,
-                        if rig.is_some() {
-                            library.surfaces_rigged(&model, |b| b.bone == bone)
-                        } else {
-                            library.surfaces(&model, |_| true, Vec3::from)
-                        },
-                    )
-                })
-                .collect();
+            let surfaces = surfaces(&model, rig.is_some(), library);
             props.push(PropDef {
                 backdrop: file.to_uppercase().ends_with("/BACKGRD.WDB"),
                 name: placed,
@@ -619,11 +673,12 @@ impl Template {
                 if let Some((_, start, reels)) = self
                     .cycles
                     .iter()
-                    .find(|c| c.0 == *index && c.1 < c.2.len())
+                    .find(|c| c.0 == *index && (c.1 < c.2.len() || c.1 == IDLE))
                 {
                     let cycle = Cycle {
                         prop: root,
                         reels: reels.clone(),
+                        material: *index,
                         reel: *start,
                         time: 0.0,
                         looping: true,
@@ -784,6 +839,40 @@ impl Models {
                 animated.play(part, looping);
             }
         }
+    }
+}
+
+/// Puts a model into the world where its file has it, or where it was `moved` to.
+pub fn spawn(
+    mut def: PropDef,
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    binds: &mut Assets<SkinnedMeshInverseBindposes>,
+) -> Entity {
+    let transform = Transform {
+        translation: to_world(def.position),
+        rotation: basis() * def.rotation,
+        scale: Vec3::splat(def.scale * UNIT),
+    };
+    let prop = Prop {
+        position: def.position,
+        rotation: def.rotation,
+        scale: def.scale,
+        scroll: def.scroll,
+    };
+    let root = commands.spawn((transform, Visibility::default())).id();
+    Template::new(&mut def, meshes, materials, images, binds).build(commands, root, prop);
+    root
+}
+
+/// Where a prop is in the world for where it is in the game's: what `spawn` gave it.
+pub fn placed(position: Vec3, rotation: Quat, scale: f32) -> Transform {
+    Transform {
+        translation: to_world(position),
+        rotation: basis() * rotation,
+        scale: Vec3::splat(scale * UNIT),
     }
 }
 
@@ -960,8 +1049,19 @@ pub fn cycle(
     requests: Query<(Entity, &Retrack)>,
     mut cycles: Query<(&mut Cycle, &MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    casts: Query<(Entity, &Recast)>,
 ) {
     let dt = time.delta_secs().min(0.05);
+    for (prop, Recast(tracks)) in &casts {
+        for (mut cycle, _) in cycles.iter_mut().filter(|c| c.0.prop == prop) {
+            let cast = tracks.iter().find(|t| t.0 == cycle.material);
+            if let Some(&(_, track)) = cast.filter(|t| t.1 < cycle.reels.len()) {
+                (cycle.reel, cycle.time, cycle.looping) = (track, 0.0, true);
+                cycle.shown = usize::MAX;
+            }
+        }
+        commands.entity(prop).remove::<Recast>();
+    }
     for (prop, Retrack(swaps, looping)) in &requests {
         for (mut cycle, _) in cycles.iter_mut().filter(|c| c.0.prop == prop) {
             if let Some(&(_, to)) = swaps
@@ -976,10 +1076,9 @@ pub fn cycle(
     for (mut cycle, material) in &mut cycles {
         cycle.time += dt;
         let reels = cycle.reels.clone();
-        let reel = &reels[cycle.reel];
-        if reel.pictures.is_empty() {
+        let Some(reel) = reels.get(cycle.reel).filter(|reel| !reel.pictures.is_empty()) else {
             continue;
-        }
+        };
         // One played once holds its last picture.
         let at = if cycle.looping {
             cycle.time

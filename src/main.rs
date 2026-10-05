@@ -5,6 +5,7 @@ mod camera;
 mod championship;
 mod collision;
 mod events;
+mod film;
 mod frontend;
 mod garage;
 mod gauntlet;
@@ -404,6 +405,7 @@ fn main() {
             audio::plugin,
             net::plugin,
             input::plugin,
+            film::plugin,
         ))
         .add_systems(
             Update,

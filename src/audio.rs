@@ -319,6 +319,8 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Library>()
         .init_resource::<Playing>()
         .init_resource::<VoicePlaces>()
+        .init_resource::<Cue>()
+        .add_systems(Update, film_sound)
         // Before the first screen is entered, which wants its music.
         .add_systems(PreStartup, (load_banks, start_mixer))
         .add_systems(OnEnter(Screen::Menu), menu_music)
@@ -452,6 +454,46 @@ fn load_circuit_bank(
     let dir = format!("/GAMEDATA/{race}");
     if let Some(bank) = jam.list(&dir).find(|f| f.ends_with(".SBK")) {
         library.ambient = load_bank(&jam, bank, &dir);
+    }
+}
+
+/// What a film asks of the sound: its own sounds in the circuit's place
+/// (`id::AMBIENT`) from its folder, and one of the menus' tunes played once
+/// (`MenuGameScreen::StartMenuMusic`); and, when it is over, the menus' theme back.
+#[derive(Resource, Default)]
+pub enum Cue {
+    #[default]
+    Nothing,
+    Film(String, Option<usize>),
+    Theme,
+}
+
+fn film_sound(
+    mut cue: ResMut<Cue>,
+    mut library: ResMut<Library>,
+    mixer: Res<Mixer>,
+    mut playing: ResMut<Playing>,
+    settings: Res<Settings>,
+) {
+    let tune = match std::mem::take(&mut *cue) {
+        Cue::Nothing => return,
+        Cue::Theme => Some(("theme.tun".to_string(), true)),
+        Cue::Film(dir, tune) => {
+            let Some(jam) = Jam::open(jam_path()) else {
+                return;
+            };
+            library.ambient = match jam.list(&dir).find(|f| f.ends_with(".SBK")) {
+                Some(bank) => load_bank(&jam, bank, &dir),
+                None => Bank::new(),
+            };
+            let list = String::from_utf8_lossy(jam.get("/MENUDATA/LEGOMSC").unwrap_or_default())
+                .into_owned();
+            let mut tunes = list.lines().map(str::trim).filter(|l| l.ends_with(".tun"));
+            tune.and_then(|tune| Some((tunes.nth(tune)?.to_string(), false)))
+        }
+    };
+    if let Some((tune, looped)) = tune {
+        play_music(&mixer, &mut playing, &library, &settings, &tune, looped);
     }
 }
 

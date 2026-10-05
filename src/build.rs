@@ -705,11 +705,18 @@ pub struct Catalogue {
     /// What each hat, face, torso and pair of legs is marked with, which says what
     /// has to be won before it can be worn (`progress::Progress::part_open`).
     marks: [Vec<u8>; 4],
+    /// Which of the standing bodies each torso and each pair of legs goes on: a
+    /// hook for a hand, a peg for a leg.
+    variants: [Vec<u8>; 2],
+    /// The bodies: the four that stand, by torso and legs, then the one that sits.
+    bodies: Vec<String>,
 }
 
 const PARTS: &str = "/MENUDATA/PARTDB";
 /// The directory of what races make a minifigure of.
 const GAME_PARTS: &str = "/MENUDATA/PARTDB/GAMEPART";
+/// The directory of what the menus and the films make one of.
+const MENU_PARTS: &str = "/MENUDATA/PARTDB/MENUPART";
 
 impl Catalogue {
     pub fn open(jam: &Jam) -> Option<Catalogue> {
@@ -720,12 +727,16 @@ impl Catalogue {
             r.list_header()?;
             let mut names = Vec::new();
             let mut marks: Vec<u8> = Vec::new();
+            let mut variants: Vec<u8> = Vec::new();
+            let mut fresh = false;
             loop {
                 match r.next()? {
                     Token::RCurly => break,
                     Token::Str(name) => {
                         names.push(name.to_lowercase());
                         marks.push(0);
+                        variants.push(0);
+                        fresh = true;
                     }
                     // A torso and a pair of legs say which model they go on, and
                     // every part ends with what it is marked with.
@@ -733,6 +744,10 @@ impl Catalogue {
                         if let Some(last) = marks.last_mut() {
                             *last = mark as u8;
                         }
+                        if let (true, Some(last)) = (fresh, variants.last_mut()) {
+                            *last = mark as u8;
+                        }
+                        fresh = false;
                     }
                     _ => {}
                 }
@@ -744,8 +759,15 @@ impl Catalogue {
                 0x2a => (1, 1),
                 0x2b => (2, 2),
                 0x2c => (3, 2),
+                0x2e => {
+                    catalogue.bodies = names;
+                    continue;
+                }
                 _ => continue,
             };
+            if let 2 | 3 = part {
+                catalogue.variants[part - 2] = variants.split_off(models.min(variants.len()));
+            }
             let names = names.split_off(models.min(names.len()));
             catalogue.marks[part] = marks.split_off(models.min(marks.len()));
             *[
@@ -778,13 +800,42 @@ impl Catalogue {
     }
 }
 
-/// A minifigure as races show it, sitting: the box of its legs, its chest and arms,
-/// and the head its hat is part of, with the faces of each given the materials the
-/// figure was made with. `DriverModelBuilder::BuildDriverModel`, for the part
-/// resources of the race. The bones are those of `skeleton`.
-pub fn figure(jam: &Jam, catalogue: &Catalogue, cosmetics: Cosmetics) -> Option<Model> {
-    let mut model = Model::parse_lit(jam.get(&format!("{GAME_PARTS}/LEG_BOX.GDB"))?)?;
-    let parts = Parts::parse(jam.get(&format!("{GAME_PARTS}/ICB_CHAR.GCB"))?)?;
+/// The file of the body a figure is made on, less its ending: the one that sits in
+/// a car, or of those that stand the one for its torso and legs
+/// (`DriverPartResources::GetBodyModel`).
+fn body(catalogue: &Catalogue, cosmetics: Cosmetics, standing: bool) -> Option<String> {
+    let variant = |part: usize, at: u8| {
+        let variants = &catalogue.variants[part];
+        variants.get(at as usize).copied().unwrap_or(0) as usize
+    };
+    let (folder, at) = if standing {
+        let at = 2 * variant(1, cosmetics.legs) + variant(0, cosmetics.torso);
+        (MENU_PARTS, at)
+    } else {
+        (GAME_PARTS, 4)
+    };
+    Some(format!("{folder}/{}", catalogue.bodies.get(at)?.to_uppercase()))
+}
+
+/// A minifigure: sitting, as races show it, or standing, as the menus and the films
+/// do. Its body, and the head its hat is part of, with the faces of each given the
+/// materials the figure was made with. `DriverModelBuilder::BuildDriverModel`, for
+/// the part resources of the race or of the menus. The bones are those of
+/// `skeleton`.
+pub fn figure(
+    jam: &Jam,
+    catalogue: &Catalogue,
+    cosmetics: Cosmetics,
+    standing: bool,
+) -> Option<Model> {
+    let body = body(catalogue, cosmetics, standing)?;
+    let heads = if standing {
+        format!("{MENU_PARTS}/CBBODIES.GCB")
+    } else {
+        format!("{GAME_PARTS}/ICB_CHAR.GCB")
+    };
+    let mut model = Model::parse_lit(jam.get(&format!("{body}.GDB"))?)?;
+    let parts = Parts::parse(jam.get(&heads)?)?;
     fn pick(names: &[String], at: u8) -> Option<&String> {
         names.get(at as usize).or(names.first())
     }
@@ -833,8 +884,19 @@ pub fn figure(jam: &Jam, catalogue: &Catalogue, cosmetics: Cosmetics) -> Option<
 }
 
 /// The bones of the figure `figure` makes.
-pub fn skeleton(jam: &Jam) -> Option<&[u8]> {
-    jam.get(&format!("{GAME_PARTS}/LEG_BOX.SDB"))
+pub fn skeleton<'a>(
+    jam: &'a Jam,
+    catalogue: &Catalogue,
+    cosmetics: Cosmetics,
+    standing: bool,
+) -> Option<&'a [u8]> {
+    jam.get(&format!("{}.SDB", body(catalogue, cosmetics, standing)?))
+}
+
+/// The start of the name of a face's materials, one to each look it can have.
+pub fn face(catalogue: &Catalogue, cosmetics: Cosmetics) -> Option<&str> {
+    let faces = &catalogue.faces;
+    faces.get(cosmetics.face as usize).or(faces.first()).map(String::as_str)
 }
 
 #[cfg(test)]
@@ -945,17 +1007,30 @@ mod tests {
             legs: 18,
             expression: 0,
         };
-        let model = figure(&jam, &catalogue, cosmetics).unwrap();
-        for material in ["rr_dflt", "rr_chst", "rr_leg", "helmetrr"] {
-            assert!(model.materials.iter().any(|m| m == material), "{material}");
+        // Sitting in a car and standing in the menus, it is made of the same parts.
+        for standing in [false, true] {
+            let model = figure(&jam, &catalogue, cosmetics, standing).unwrap();
+            for material in ["rr_dflt", "rr_chst", "rr_leg", "helmetrr"] {
+                assert!(model.materials.iter().any(|m| m == material), "{material}");
+            }
+            assert_eq!(model.vertices.len(), model.normals.len());
+            assert!(model.batches.iter().all(|b| b.bone.is_some()));
+            // Its bones are enough for every part of it.
+            let bones = crate::assets::gdb::parse_skeleton(skeleton(&jam, &catalogue, cosmetics, standing).unwrap());
+            let bones = bones.unwrap().len();
+            assert!(model.batches.iter().all(|b| b.bone.unwrap() < bones));
+            // Every figure there could be has its parts.
+            for hat in 0..catalogue.count(0) as u8 {
+                let cosmetics = Cosmetics { hat, ..cosmetics };
+                let made = figure(&jam, &catalogue, cosmetics, standing);
+                assert!(made.is_some(), "hat {hat}");
+            }
         }
-        assert_eq!(model.vertices.len(), model.normals.len());
-        assert!(model.batches.iter().all(|b| b.bone.is_some()));
-        // Every figure there could be has its parts.
-        for hat in 0..catalogue.count(0) as u8 {
-            let cosmetics = Cosmetics { hat, ..cosmetics };
-            assert!(figure(&jam, &catalogue, cosmetics).is_some(), "hat {hat}");
-        }
+        // A hook for a hand and a peg for a leg are bodies of their own.
+        let hooked = Cosmetics { torso: 24, legs: 10, ..cosmetics };
+        assert!(body(&catalogue, hooked, true).unwrap().ends_with("/HP"));
+        assert!(body(&catalogue, cosmetics, true).unwrap().ends_with("/RR"));
+        assert!(body(&catalogue, hooked, false).unwrap().ends_with("/LEG_BOX"));
     }
 }
 

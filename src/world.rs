@@ -495,10 +495,10 @@ pub fn load_built(jam: &Jam, racer: &Racer, detailed: bool) -> Option<KartModel>
 /// A minifigure made of the parts given, sitting as it does in a car, and its scale.
 fn built_figure(jam: &Jam, cosmetics: Cosmetics) -> Option<(Vec<Surface>, f32)> {
     let catalogue = build::Catalogue::open(jam)?;
-    let figure = build::figure(jam, &catalogue, cosmetics)?;
+    let figure = build::figure(jam, &catalogue, cosmetics, false)?;
     let (files, folders) = build::Catalogue::files();
     let library = Library::new(jam, files.iter().map(String::as_str), &folders);
-    let skeleton = parse_skeleton(build::skeleton(jam)?)?;
+    let skeleton = parse_skeleton(build::skeleton(jam, &catalogue, cosmetics, false)?)?;
     Some((posed(&figure, &library, &skeleton), figure.scale))
 }
 
