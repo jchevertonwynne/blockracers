@@ -112,9 +112,14 @@ pub fn tell(
     // A cue stands until it has been sounded here, which may be several steps:
     // it is passed on once, as it comes up.
     for kart in &karts {
-        let Some(before) = told.cues.get_mut(kart.slot) else { continue };
+        let Some(before) = told.cues.get_mut(kart.slot) else {
+            continue;
+        };
         let new = Cues {
-            reaction: kart.cues.reaction.filter(|_| kart.cues.reaction != before.reaction),
+            reaction: kart
+                .cues
+                .reaction
+                .filter(|_| kart.cues.reaction != before.reaction),
             shield_hit: kart.cues.shield_hit && !before.shield_hit,
             horn: kart.cues.horn && !before.horn,
         };
@@ -127,13 +132,30 @@ pub fn tell(
         return;
     }
     let scene = Scene {
-        actions: actions.iter().map(|(entity, action, at)| (entity, action.clone(), at.translation, at.rotation, at.scale)).collect(),
+        actions: actions
+            .iter()
+            .map(|(entity, action, at)| {
+                (
+                    entity,
+                    action.clone(),
+                    at.translation,
+                    at.rotation,
+                    at.scale,
+                )
+            })
+            .collect(),
         bricks: crate::items::bricks_changed(&bricks, &mut told.bricks),
-        sounds: std::mem::take(&mut sfx.heard).into_iter().map(|(sound, emitter)| (sound as u32, emitter)).collect(),
+        sounds: std::mem::take(&mut sfx.heard)
+            .into_iter()
+            .map(|(sound, emitter)| (sound as u32, emitter))
+            .collect(),
         loops: sfx.looping.clone(),
         cues: std::mem::take(&mut told.cued),
     };
-    let anything = !scene.actions.is_empty() || !scene.bricks.is_empty() || !scene.sounds.is_empty() || !scene.cues.is_empty();
+    let anything = !scene.actions.is_empty()
+        || !scene.bricks.is_empty()
+        || !scene.sounds.is_empty()
+        || !scene.cues.is_empty();
     if anything || told.actions {
         told.actions = !scene.actions.is_empty();
         let scene = encode(&ToPlayer::Scene(scene));
@@ -144,7 +166,12 @@ pub fn tell(
 }
 
 /// Passes on the events of the circuit's that have started and ended.
-pub fn tell_events(session: Res<Session>, mut wire: ResMut<Wire>, events: Option<ResMut<TrackEvents>>, karts: Query<(Entity, &Kart)>) {
+pub fn tell_events(
+    session: Res<Session>,
+    mut wire: ResMut<Wire>,
+    events: Option<ResMut<TrackEvents>>,
+    karts: Query<(Entity, &Kart)>,
+) {
     let Some(mut events) = events else { return };
     if events.log.is_empty() {
         return;
@@ -154,8 +181,20 @@ pub fn tell_events(session: Res<Session>, mut wire: ResMut<Wire>, events: Option
         .log
         .drain(..)
         // What some racer did is of no use without the racer.
-        .filter(|logged| logged.whole || logged.fired.racer.is_some_and(|racer| slot(racer).is_some()))
-        .map(|Logged { fired, whole }| EventNote { event: fired.event, start: fired.start, at: fired.at, racer: fired.racer.and_then(slot), whole })
+        .filter(|logged| {
+            logged.whole
+                || logged
+                    .fired
+                    .racer
+                    .is_some_and(|racer| slot(racer).is_some())
+        })
+        .map(|Logged { fired, whole }| EventNote {
+            event: fired.event,
+            start: fired.start,
+            at: fired.at,
+            racer: fired.racer.and_then(slot),
+            whole,
+        })
         .collect();
     let notes = encode(&ToPlayer::Events(notes));
     for member in &session.members {
@@ -180,13 +219,23 @@ pub fn take(
     let scenes = std::mem::take(&mut inbox.scenes);
     let count = scenes.len();
     for (n, scene) in scenes.into_iter().enumerate() {
-        crate::items::bricks_told(&mut commands, &assets, models.as_deref(), scene.bricks, &mut bricks);
+        crate::items::bricks_told(
+            &mut commands,
+            &assets,
+            models.as_deref(),
+            scene.bricks,
+            &mut bricks,
+        );
         for (sound, emitter) in scene.sounds {
             sfx.emit(sound as usize, emitter);
         }
         for (slot, cues) in scene.cues {
             if let Some(mut kart) = karts.iter_mut().find(|kart| kart.slot == slot as usize) {
-                kart.cues = Cues { reaction: cues.reaction.or(kart.cues.reaction), shield_hit: cues.shield_hit || kart.cues.shield_hit, horn: cues.horn || kart.cues.horn };
+                kart.cues = Cues {
+                    reaction: cues.reaction.or(kart.cues.reaction),
+                    shield_hit: cues.shield_hit || kart.cues.shield_hit,
+                    horn: cues.horn || kart.cues.horn,
+                };
             }
         }
         // Of several tellings at once only the last says what is there now.
@@ -202,18 +251,42 @@ pub fn take(
             still
         });
         for (theirs, action, translation, rotation, scale) in scene.actions {
-            let at = Transform { translation, rotation, scale };
+            let at = Transform {
+                translation,
+                rotation,
+                scale,
+            };
             match shown.actions.get(&theirs) {
                 Some(&ours) => {
                     // On from where it was last said to be, unless it has been put elsewhere.
                     let from = glides.get(ours).map_or(at, |glide| glide.to);
-                    let from = if from.translation.distance_squared(at.translation) > PUT * PUT { at } else { from };
-                    commands.entity(ours).try_insert((action, Glide { from, to: at, along: 0.0 }));
+                    let from = if from.translation.distance_squared(at.translation) > PUT * PUT {
+                        at
+                    } else {
+                        from
+                    };
+                    commands.entity(ours).try_insert((
+                        action,
+                        Glide {
+                            from,
+                            to: at,
+                            along: 0.0,
+                        },
+                    ));
                 }
                 None => {
                     let (mesh, material) = assets.look(&action);
-                    let glide = Glide { from: at, to: at, along: 1.0 };
-                    shown.actions.insert(theirs, commands.spawn((action, Mesh3d(mesh), MeshMaterial3d(material), at, glide)).id());
+                    let glide = Glide {
+                        from: at,
+                        to: at,
+                        along: 1.0,
+                    };
+                    shown.actions.insert(
+                        theirs,
+                        commands
+                            .spawn((action, Mesh3d(mesh), MeshMaterial3d(material), at, glide))
+                            .id(),
+                    );
                 }
             }
         }
@@ -221,15 +294,34 @@ pub fn take(
 }
 
 /// A player's game starts and ends the circuit's events as its host did.
-pub fn follow_events(mut inbox: ResMut<Inbox>, mut sfx: ResMut<Sfx>, events: Option<ResMut<TrackEvents>>, karts: Query<(Entity, &Kart)>) {
+pub fn follow_events(
+    mut inbox: ResMut<Inbox>,
+    mut sfx: ResMut<Sfx>,
+    events: Option<ResMut<TrackEvents>>,
+    karts: Query<(Entity, &Kart)>,
+) {
     let notes = std::mem::take(&mut inbox.events);
     let Some(mut events) = events else { return };
     for note in notes {
-        let racer = note.racer.and_then(|slot| karts.iter().find(|(_, kart)| kart.slot == slot as usize)).map(|(entity, _)| entity);
+        let racer = note
+            .racer
+            .and_then(|slot| karts.iter().find(|(_, kart)| kart.slot == slot as usize))
+            .map(|(entity, _)| entity);
         if !note.whole && racer.is_none() {
             continue;
         }
-        events.follow(Logged { fired: Fired { event: note.event, start: note.start, at: note.at, racer }, whole: note.whole }, &mut sfx);
+        events.follow(
+            Logged {
+                fired: Fired {
+                    event: note.event,
+                    start: note.start,
+                    at: note.at,
+                    racer,
+                },
+                whole: note.whole,
+            },
+            &mut sfx,
+        );
     }
 }
 

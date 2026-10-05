@@ -1,8 +1,7 @@
 //! Tiny vertex-coloured mesh builder used to make everything out of bricks.
 
 use bevy::{
-    asset::RenderAssetUsages, mesh::Indices, prelude::*,
-    render::render_resource::PrimitiveTopology,
+    asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };
 use std::f32::consts::TAU;
 
@@ -44,7 +43,14 @@ impl BrickMesh {
         let y = rot * Vec3::Y * half.y;
         let z = rot * Vec3::Z * half.z;
         // (normal, u, v) with u × v = normal
-        for (n, u, v) in [(x, y, z), (-x, z, y), (y, z, x), (-y, x, z), (z, x, y), (-z, y, x)] {
+        for (n, u, v) in [
+            (x, y, z),
+            (-x, z, y),
+            (y, z, x),
+            (-y, x, z),
+            (z, x, y),
+            (-z, y, x),
+        ] {
             let c = center + n;
             self.quad(c - u - v, c + u - v, c + u + v, c - u + v, color);
         }
@@ -84,11 +90,14 @@ impl BrickMesh {
     }
 
     pub fn build(self) -> Mesh {
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
-            .with_inserted_indices(Indices::U32(self.idx))
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
+        .with_inserted_indices(Indices::U32(self.idx))
     }
 }
 

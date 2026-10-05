@@ -73,6 +73,12 @@ next one run: the circuit, laps, computer cars, and the port's own ways of racin
 everyone is ready, or half a minute after the first is, the circuit is drawn from those
 asked for and the rest goes to the majority, the host settling a tie.
 
+The room shows each player's ping to the host and whether they reach it directly or
+by way of a relay, and after a race how it went: times, gaps and best laps. The host
+can change the password and how many players the session takes, and put a player
+out, from **Session**. In a race the other players' names are over their cars and on
+the map; `Esc` gives the race up and takes you back to the room.
+
 The host's game runs the race, and everyone else is shown it: the cars, the bricks,
 the power-ups and what the circuit does. Your own car answers at once and is put right
 by the host when the two disagree, which you may feel as a nudge when cars touch.

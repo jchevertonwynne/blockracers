@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::room::Voter;
+use super::room::{Finish, Voter};
 use super::scene::{EventNote, Scene};
 use super::state::{Standing, State};
 use crate::kart::Controls;
@@ -59,7 +59,15 @@ pub struct Drive {
 
 impl Drive {
     pub fn of(c: &Controls) -> Self {
-        Drive { throttle: c.throttle, steer: c.steer, drift: c.drift, tight: c.tight, use_item: c.use_item, direct: c.direct, start_boost: c.start_boost }
+        Drive {
+            throttle: c.throttle,
+            steer: c.steer,
+            drift: c.drift,
+            tight: c.tight,
+            use_item: c.use_item,
+            direct: c.direct,
+            start_boost: c.start_boost,
+        }
     }
 
     pub fn controls(self) -> Controls {
@@ -129,7 +137,12 @@ fn key(circuit: &crate::menu::Circuit) -> &str {
 impl Rules {
     pub fn of(settings: &Settings, circuits: &Circuits) -> Self {
         Rules {
-            circuit: circuits.0.get(settings.circuit).map(key).unwrap_or_default().to_string(),
+            circuit: circuits
+                .0
+                .get(settings.circuit)
+                .map(key)
+                .unwrap_or_default()
+                .to_string(),
             lap_choice: settings.lap_choice as u8,
             mirror: settings.mirror,
             reverse: settings.reverse,
@@ -142,11 +155,14 @@ impl Rules {
 
     /// Sets a game up to race by these. False if it hasn't the circuit.
     pub fn apply(&self, settings: &mut Settings, circuits: &Circuits) -> bool {
-        let Some(circuit) = circuits.0.iter().position(|c| key(c) == self.circuit) else { return false };
+        let Some(circuit) = circuits.0.iter().position(|c| key(c) == self.circuit) else {
+            return false;
+        };
         settings.circuit = circuit;
         settings.lap_choice = (self.lap_choice as usize).min(LAP_CHOICES.len() - 1);
         (settings.championship, settings.time_race) = (None, false);
-        (settings.mirror, settings.reverse, settings.elimination) = (self.mirror, self.reverse, self.elimination);
+        (settings.mirror, settings.reverse, settings.elimination) =
+            (self.mirror, self.reverse, self.elimination);
         settings.bricks = (self.bricks as usize).min(crate::menu::BRICK_RULES.len() - 1);
         settings.opponents = (self.opponents as usize).min(crate::menu::MAX_OPPONENTS);
         settings.difficulty = (self.difficulty as usize).min(crate::menu::DIFFICULTIES.len() - 1);
@@ -171,27 +187,48 @@ pub enum Refusal {
     Version,
     Password,
     Full,
+    /// The host has put the player out of the session.
+    Removed,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ToHost {
-    Hello { protocol: u32, name: String, password: String, car: String },
+    Hello {
+        protocol: u32,
+        name: String,
+        password: String,
+        car: String,
+    },
     /// The race asked for is loaded and its cars are on the grid.
     Loaded,
     /// How the player would have the next race run, and whether they are ready for it.
     Vote(Rules),
     Ready(bool),
+    /// The player has given the race up and is back in the room; their car is the
+    /// computer's to drive.
+    Back,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum ToPlayer {
-    Welcome { you: Peer },
+    Welcome {
+        you: Peer,
+    },
     Refused(Refusal),
-    Start { rules: Rules, seats: Vec<Seat> },
+    Start {
+        rules: Rules,
+        seats: Vec<Seat>,
+    },
     /// How the room stands: who is in it and what they want, the seconds until the
-    /// vote closes if a clock is running, how the last race was run and who came
-    /// where in it.
-    Room { voters: Vec<Voter>, closing: Option<f32>, last: Option<Rules>, results: Vec<String> },
+    /// vote closes if a clock is running, whether a race is on, how the last race
+    /// was run and who came where in it.
+    Room {
+        voters: Vec<Voter>,
+        closing: Option<f32>,
+        racing: bool,
+        last: Option<Rules>,
+        results: Vec<Finish>,
+    },
     /// The race is run, and everyone is back in the room.
     Over,
     /// What has become of the bricks and the power-ups, and the circuit's events
@@ -206,16 +243,39 @@ mod tests {
 
     #[test]
     fn messages_come_back_as_they_went() {
-        let inputs = Inputs { last: 77, drives: vec![Drive { throttle: 1.0, steer: -0.5, use_item: true, start_boost: Some(1), ..default() }; RESENT] };
+        let inputs = Inputs {
+            last: 77,
+            drives: vec![
+                Drive {
+                    throttle: 1.0,
+                    steer: -0.5,
+                    use_item: true,
+                    start_boost: Some(1),
+                    ..default()
+                };
+                RESENT
+            ],
+        };
         assert_eq!(decode::<Inputs>(&encode(&inputs)).unwrap(), inputs);
-        let hello = ToHost::Hello { protocol: 1, name: "Rocket".into(), password: "bricks".into(), car: "RR".into() };
+        let hello = ToHost::Hello {
+            protocol: 1,
+            name: "Rocket".into(),
+            password: "bricks".into(),
+            car: "RR".into(),
+        };
         assert_eq!(decode::<ToHost>(&encode(&hello)).unwrap(), hello);
         assert!(decode::<ToPlayer>(&[0xff, 0xff, 0xff]).is_err());
     }
 
     #[test]
     fn a_pedal_only_goes_down_so_far() {
-        let c = Drive { throttle: 9.0, steer: -9.0, start_boost: Some(7), ..default() }.controls();
+        let c = Drive {
+            throttle: 9.0,
+            steer: -9.0,
+            start_boost: Some(7),
+            ..default()
+        }
+        .controls();
         assert_eq!((c.throttle, c.steer, c.start_boost), (1.0, -1.0, Some(1)));
     }
 }

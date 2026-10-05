@@ -59,7 +59,14 @@ impl Collision {
             return;
         }
         let index = self.triangles.len() as u32;
-        self.triangles.push(Triangle { a, ab: b - a, ac: c - a, normal, surface, tag });
+        self.triangles.push(Triangle {
+            a,
+            ab: b - a,
+            ac: c - a,
+            normal,
+            surface,
+            tag,
+        });
         let (lo, hi) = (a.min(b).min(c), a.max(b).max(c));
         let (lo, hi) = (cell_of(lo.x, lo.z), cell_of(hi.x, hi.z));
         for x in lo.0..=hi.0 {
@@ -76,7 +83,13 @@ impl Collision {
     }
 
     /// As `segment`, but among either the solid triangles or the passable ones.
-    fn segment_through(&self, from: Vec3, to: Vec3, accept: impl Fn(Vec3) -> bool, passable: bool) -> Option<Hit> {
+    fn segment_through(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        accept: impl Fn(Vec3) -> bool,
+        passable: bool,
+    ) -> Option<Hit> {
         let dir = to - from;
         let (lo, hi) = (from.min(to), from.max(to));
         let (lo, hi) = (cell_of(lo.x, lo.z), cell_of(hi.x, hi.z));
@@ -85,7 +98,9 @@ impl Collision {
             for z in lo.1..=hi.1 {
                 for &i in self.cells.get(&(x, z)).into_iter().flatten() {
                     let tri = &self.triangles[i as usize];
-                    if !accept(tri.normal) || self.passable.get(tri.tag).is_some_and(|&p| p) != passable {
+                    if !accept(tri.normal)
+                        || self.passable.get(tri.tag).is_some_and(|&p| p) != passable
+                    {
                         continue;
                     }
                     // A barrier is not there for anything coming from behind it.
@@ -114,7 +129,11 @@ impl Collision {
         best.map(|(t, tri)| Hit {
             t,
             point: from + dir * t,
-            normal: if tri.normal.dot(dir) > 0.0 { -tri.normal } else { tri.normal },
+            normal: if tri.normal.dot(dir) > 0.0 {
+                -tri.normal
+            } else {
+                tri.normal
+            },
             surface: tri.surface,
             tag: tri.tag,
         })
@@ -130,8 +149,14 @@ impl Collision {
 
     /// The box round every triangle with this tag: its least and greatest corners.
     pub fn bounds(&self, tag: usize) -> Option<(Vec3, Vec3)> {
-        let corners = self.triangles.iter().filter(|t| t.tag == tag).flat_map(|t| [t.a, t.a + t.ab, t.a + t.ac]);
-        corners.fold(None, |bounds: Option<(Vec3, Vec3)>, p| Some(bounds.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p)))))
+        let corners = self
+            .triangles
+            .iter()
+            .filter(|t| t.tag == tag)
+            .flat_map(|t| [t.a, t.a + t.ab, t.a + t.ac]);
+        corners.fold(None, |bounds: Option<(Vec3, Vec3)>, p| {
+            Some(bounds.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))))
+        })
     }
 
     /// Lets shots through every triangle with this tag, for good.
@@ -167,7 +192,8 @@ impl Collision {
     pub fn touched(&self, from: Vec3, to: Vec3) -> Option<Hit> {
         let dir = to - from;
         let front = |normal: Vec3| (normal.dot(dir) < 0.0) != self.mirrored;
-        self.segment_through(from, to, front, true).filter(|hit| hit.surface.touch_event.is_some() || hit.surface.finish)
+        self.segment_through(from, to, front, true)
+            .filter(|hit| hit.surface.touch_event.is_some() || hit.surface.finish)
     }
 
     /// Drivable surface on the way straight down from `from`, at most `depth` below.
@@ -190,7 +216,13 @@ impl Collision {
 #[test]
 fn a_barrier_stops_cars_and_lets_shots_by() {
     let mut world = Collision::default();
-    let wall = |x: f32| [Vec3::new(x, -5.0, -5.0), Vec3::new(x, 5.0, -5.0), Vec3::new(x, 0.0, 5.0)];
+    let wall = |x: f32| {
+        [
+            Vec3::new(x, -5.0, -5.0),
+            Vec3::new(x, 5.0, -5.0),
+            Vec3::new(x, 0.0, 5.0),
+        ]
+    };
     world.add_tagged(wall(2.0), Surface::default(), 1);
     world.add_tagged(wall(4.0), Surface::default(), 2);
     world.set_shots_pass(1);
@@ -211,18 +243,31 @@ fn a_barrier_stops_cars_and_lets_shots_by() {
 #[test]
 fn a_doorway_tells_going_in_from_coming_out() {
     let mut world = Collision::default();
-    let surface = |event| Surface { touch_event: Some(event), ..Surface::default() };
+    let surface = |event| Surface {
+        touch_event: Some(event),
+        ..Surface::default()
+    };
     // Two faces in the same place, one facing each way.
-    let (a, b, c) = (Vec3::new(0.0, -5.0, -5.0), Vec3::new(0.0, 5.0, -5.0), Vec3::new(0.0, 0.0, 5.0));
+    let (a, b, c) = (
+        Vec3::new(0.0, -5.0, -5.0),
+        Vec3::new(0.0, 5.0, -5.0),
+        Vec3::new(0.0, 0.0, 5.0),
+    );
     world.add_tagged([a, b, c], surface(1), 7);
     world.add_tagged([a, c, b], surface(2), 7);
     world.set_passable(7, true);
     let (west, east) = (Vec3::X * -3.0, Vec3::X * 3.0);
-    let (through, back) = (world.touched(west, east).unwrap(), world.touched(east, west).unwrap());
+    let (through, back) = (
+        world.touched(west, east).unwrap(),
+        world.touched(east, west).unwrap(),
+    );
     assert_ne!(through.surface.touch_event, back.surface.touch_event);
     // Each is met from its front: against the way it faces.
     assert!(through.normal.dot(east - west) < 0.0 && back.normal.dot(west - east) < 0.0);
     // Mirrored, the faces have changed places.
     world.set_mirrored(true);
-    assert_eq!(world.touched(west, east).unwrap().surface.touch_event, back.surface.touch_event);
+    assert_eq!(
+        world.touched(west, east).unwrap().surface.touch_event,
+        back.surface.touch_event
+    );
 }

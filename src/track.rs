@@ -2,11 +2,11 @@
 //! pickups all live in "track space" (distance along the track + lateral offset), which
 //! keeps collisions with the walls and the hills trivial.
 
+use crate::assets::materials::Surface;
+use crate::collision::Collision;
 use crate::meshgen::*;
 use bevy::prelude::*;
 use std::collections::HashMap;
-use crate::assets::materials::Surface;
-use crate::collision::Collision;
 
 /// Half-width of the tarmac.
 pub const ROAD_HW: f32 = 8.0;
@@ -69,79 +69,253 @@ const FIGURE_EIGHT: &[[f32; 3]] = &[
 const GAUNTLET: &[[f32; 3]] = &[
     [0.0, 0.0, 0.0],
     // The start straight: the hammer and the rolling stones.
-    [9.0, 0.0, 0.0], [27.0, 0.0, 0.0], [63.0, 0.0, 0.0], [87.0, 0.0, 0.0], [123.0, 0.0, 0.0],
-    [141.0, 0.0, 0.0], [150.0, 0.0, 0.0],
+    [9.0, 0.0, 0.0],
+    [27.0, 0.0, 0.0],
+    [63.0, 0.0, 0.0],
+    [87.0, 0.0, 0.0],
+    [123.0, 0.0, 0.0],
+    [141.0, 0.0, 0.0],
+    [150.0, 0.0, 0.0],
     // A zigzag of two right angles.
-    [159.0, 0.0, -2.4], [165.6, 0.0, -9.0], [168.0, 0.0, -18.0], [168.0, 0.0, -30.0], [168.0, 0.0, -42.0],
-    [170.4, 0.0, -51.0], [177.0, 0.0, -57.6], [186.0, 0.0, -60.0],
+    [159.0, 0.0, -2.4],
+    [165.6, 0.0, -9.0],
+    [168.0, 0.0, -18.0],
+    [168.0, 0.0, -30.0],
+    [168.0, 0.0, -42.0],
+    [170.4, 0.0, -51.0],
+    [177.0, 0.0, -57.6],
+    [186.0, 0.0, -60.0],
     // The saucer.
-    [195.0, 0.0, -60.0], [213.0, 0.0, -60.0], [259.0, 0.0, -60.0], [277.0, 0.0, -60.0], [286.0, 0.0, -60.0],
+    [195.0, 0.0, -60.0],
+    [213.0, 0.0, -60.0],
+    [259.0, 0.0, -60.0],
+    [277.0, 0.0, -60.0],
+    [286.0, 0.0, -60.0],
     // Esses, then the crane.
-    [297.5, 0.0, -57.7], [307.2, 0.0, -51.2], [316.9, 0.0, -44.7], [328.4, 0.0, -42.4], [339.9, 0.0, -44.7],
-    [349.6, 0.0, -51.2], [359.4, 0.0, -57.7], [370.9, 0.0, -60.0], [379.9, 0.0, -60.0], [421.9, 0.0, -60.0],
-    [430.9, 0.0, -60.0], [444.9, 0.0, -63.8], [455.1, 0.0, -74.0], [458.9, 0.0, -88.0], [458.9, 0.0, -100.0],
+    [297.5, 0.0, -57.7],
+    [307.2, 0.0, -51.2],
+    [316.9, 0.0, -44.7],
+    [328.4, 0.0, -42.4],
+    [339.9, 0.0, -44.7],
+    [349.6, 0.0, -51.2],
+    [359.4, 0.0, -57.7],
+    [370.9, 0.0, -60.0],
+    [379.9, 0.0, -60.0],
+    [421.9, 0.0, -60.0],
+    [430.9, 0.0, -60.0],
+    [444.9, 0.0, -63.8],
+    [455.1, 0.0, -74.0],
+    [458.9, 0.0, -88.0],
+    [458.9, 0.0, -100.0],
     [458.9, 0.0, -112.0],
     // A switchback of two hairpins over a hill, which the warp pad skips.
-    [461.3, 0.8, -121.0], [467.9, 1.7, -127.6], [476.9, 2.5, -130.0], [485.9, 3.3, -127.6], [492.4, 4.2, -121.0],
-    [494.9, 5.0, -112.0], [494.9, 5.0, -103.0], [494.9, 5.0, -71.0], [494.9, 5.0, -62.0], [497.3, 4.2, -53.0],
-    [503.9, 3.3, -46.4], [512.9, 2.5, -44.0], [521.9, 1.7, -46.4], [528.4, 0.8, -53.0], [530.9, 0.0, -62.0],
+    [461.3, 0.8, -121.0],
+    [467.9, 1.7, -127.6],
+    [476.9, 2.5, -130.0],
+    [485.9, 3.3, -127.6],
+    [492.4, 4.2, -121.0],
+    [494.9, 5.0, -112.0],
+    [494.9, 5.0, -103.0],
+    [494.9, 5.0, -71.0],
+    [494.9, 5.0, -62.0],
+    [497.3, 4.2, -53.0],
+    [503.9, 3.3, -46.4],
+    [512.9, 2.5, -44.0],
+    [521.9, 1.7, -46.4],
+    [528.4, 0.8, -53.0],
+    [530.9, 0.0, -62.0],
     // The cannons.
-    [530.9, 0.0, -71.0], [530.9, 0.0, -89.0], [530.9, 0.0, -115.0], [530.9, 0.0, -133.0], [530.9, 0.0, -142.0],
+    [530.9, 0.0, -71.0],
+    [530.9, 0.0, -89.0],
+    [530.9, 0.0, -115.0],
+    [530.9, 0.0, -133.0],
+    [530.9, 0.0, -142.0],
     // Esses, then the lava.
-    [528.6, 0.0, -153.5], [522.1, 0.0, -163.2], [515.6, 0.0, -172.9], [513.3, 0.0, -184.4], [515.6, 0.0, -195.9],
-    [522.1, 0.0, -205.6], [528.6, 0.0, -215.4], [530.9, 0.0, -226.9], [530.9, 0.0, -235.9], [530.9, 0.0, -253.9],
-    [530.9, 0.0, -297.4], [530.9, 0.0, -315.4], [530.9, 0.0, -324.4], [527.6, 0.0, -336.4], [518.9, 0.0, -345.2],
+    [528.6, 0.0, -153.5],
+    [522.1, 0.0, -163.2],
+    [515.6, 0.0, -172.9],
+    [513.3, 0.0, -184.4],
+    [515.6, 0.0, -195.9],
+    [522.1, 0.0, -205.6],
+    [528.6, 0.0, -215.4],
+    [530.9, 0.0, -226.9],
+    [530.9, 0.0, -235.9],
+    [530.9, 0.0, -253.9],
+    [530.9, 0.0, -297.4],
+    [530.9, 0.0, -315.4],
+    [530.9, 0.0, -324.4],
+    [527.6, 0.0, -336.4],
+    [518.9, 0.0, -345.2],
     [506.9, 0.0, -348.4],
     // The force field.
-    [497.9, 0.0, -348.4], [479.9, 0.0, -348.4], [443.9, 0.0, -348.4], [425.9, 0.0, -348.4], [416.9, 0.0, -348.4],
+    [497.9, 0.0, -348.4],
+    [479.9, 0.0, -348.4],
+    [443.9, 0.0, -348.4],
+    [425.9, 0.0, -348.4],
+    [416.9, 0.0, -348.4],
     // A kink, the smoke, and esses in a tunnel.
-    [407.8, 0.0, -347.0], [399.6, 0.0, -343.0], [392.3, 0.0, -337.8], [366.1, 0.0, -319.4], [358.7, 0.0, -314.3],
-    [350.5, 0.0, -310.2], [341.5, 0.0, -308.8], [326.7, 0.0, -312.5], [315.3, 0.0, -322.5], [303.8, 0.0, -332.5],
-    [289.1, 0.0, -336.1], [274.3, 0.0, -332.5], [262.8, 0.0, -322.5], [251.4, 0.0, -312.5], [236.6, 0.0, -308.8],
+    [407.8, 0.0, -347.0],
+    [399.6, 0.0, -343.0],
+    [392.3, 0.0, -337.8],
+    [366.1, 0.0, -319.4],
+    [358.7, 0.0, -314.3],
+    [350.5, 0.0, -310.2],
+    [341.5, 0.0, -308.8],
+    [326.7, 0.0, -312.5],
+    [315.3, 0.0, -322.5],
+    [303.8, 0.0, -332.5],
+    [289.1, 0.0, -336.1],
+    [274.3, 0.0, -332.5],
+    [262.8, 0.0, -322.5],
+    [251.4, 0.0, -312.5],
+    [236.6, 0.0, -308.8],
     // The other long straight: the ghost and the dragon.
-    [227.6, 0.0, -308.8], [209.6, 0.0, -308.8], [173.6, 0.0, -308.8], [129.6, 0.0, -308.8], [93.6, 0.0, -308.8],
-    [75.6, 0.0, -308.8], [66.6, 0.0, -308.8],
+    [227.6, 0.0, -308.8],
+    [209.6, 0.0, -308.8],
+    [173.6, 0.0, -308.8],
+    [129.6, 0.0, -308.8],
+    [93.6, 0.0, -308.8],
+    [75.6, 0.0, -308.8],
+    [66.6, 0.0, -308.8],
     // A zigzag the other way, over a hump.
-    [57.6, 0.7, -311.3], [51.0, 1.4, -317.8], [48.6, 2.0, -326.8], [48.6, 2.7, -335.8], [48.6, 3.0, -357.8],
-    [48.6, 2.5, -366.8], [46.2, 2.1, -375.8], [39.6, 1.6, -382.4], [30.6, 1.2, -384.8], [21.6, 0.8, -384.8],
-    [-0.4, 0.0, -384.8], [-9.4, 0.0, -384.8],
+    [57.6, 0.7, -311.3],
+    [51.0, 1.4, -317.8],
+    [48.6, 2.0, -326.8],
+    [48.6, 2.7, -335.8],
+    [48.6, 3.0, -357.8],
+    [48.6, 2.5, -366.8],
+    [46.2, 2.1, -375.8],
+    [39.6, 1.6, -382.4],
+    [30.6, 1.2, -384.8],
+    [21.6, 0.8, -384.8],
+    [-0.4, 0.0, -384.8],
+    [-9.4, 0.0, -384.8],
     // Two hairpins out into the middle and back.
-    [-19.4, 0.0, -382.2], [-26.7, 0.0, -374.8], [-29.4, 0.0, -364.8], [-29.4, 0.0, -355.8], [-29.4, 0.0, -303.8],
-    [-29.4, 0.0, -294.8], [-31.8, 0.0, -285.8], [-38.4, 0.0, -279.3], [-47.4, 0.0, -276.8], [-56.4, 0.0, -279.3],
-    [-63.0, 0.0, -285.8], [-65.4, 0.0, -294.8], [-65.4, 0.0, -303.8], [-65.4, 0.0, -355.8], [-65.4, 0.0, -364.8],
-    [-68.1, 0.0, -374.8], [-75.4, 0.0, -382.2], [-85.4, 0.0, -384.8], [-100.4, 0.0, -384.8], [-115.4, 0.0, -384.8],
-    [-125.4, 0.0, -382.2], [-132.7, 0.0, -374.8], [-135.4, 0.0, -364.8], [-135.4, 0.0, -347.3], [-135.4, 0.0, -329.8],
-    [-137.8, 0.0, -320.8], [-144.4, 0.0, -314.3], [-153.4, 0.0, -311.8], [-162.4, 0.0, -314.3], [-169.0, 0.0, -320.8],
-    [-171.4, 0.0, -329.8], [-171.4, 0.0, -347.3], [-171.4, 0.0, -364.8], [-174.1, 0.0, -374.8], [-181.4, 0.0, -382.2],
+    [-19.4, 0.0, -382.2],
+    [-26.7, 0.0, -374.8],
+    [-29.4, 0.0, -364.8],
+    [-29.4, 0.0, -355.8],
+    [-29.4, 0.0, -303.8],
+    [-29.4, 0.0, -294.8],
+    [-31.8, 0.0, -285.8],
+    [-38.4, 0.0, -279.3],
+    [-47.4, 0.0, -276.8],
+    [-56.4, 0.0, -279.3],
+    [-63.0, 0.0, -285.8],
+    [-65.4, 0.0, -294.8],
+    [-65.4, 0.0, -303.8],
+    [-65.4, 0.0, -355.8],
+    [-65.4, 0.0, -364.8],
+    [-68.1, 0.0, -374.8],
+    [-75.4, 0.0, -382.2],
+    [-85.4, 0.0, -384.8],
+    [-100.4, 0.0, -384.8],
+    [-115.4, 0.0, -384.8],
+    [-125.4, 0.0, -382.2],
+    [-132.7, 0.0, -374.8],
+    [-135.4, 0.0, -364.8],
+    [-135.4, 0.0, -347.3],
+    [-135.4, 0.0, -329.8],
+    [-137.8, 0.0, -320.8],
+    [-144.4, 0.0, -314.3],
+    [-153.4, 0.0, -311.8],
+    [-162.4, 0.0, -314.3],
+    [-169.0, 0.0, -320.8],
+    [-171.4, 0.0, -329.8],
+    [-171.4, 0.0, -347.3],
+    [-171.4, 0.0, -364.8],
+    [-174.1, 0.0, -374.8],
+    [-181.4, 0.0, -382.2],
     [-191.4, 0.0, -384.8],
     // Esses.
-    [-201.4, 0.0, -384.8], [-211.4, 0.0, -384.8], [-222.9, 0.0, -382.6], [-232.6, 0.0, -376.1], [-242.3, 0.0, -369.6],
-    [-253.8, 0.0, -367.3], [-265.3, 0.0, -369.6], [-275.0, 0.0, -376.1], [-284.7, 0.0, -382.6], [-296.2, 0.0, -384.8],
+    [-201.4, 0.0, -384.8],
+    [-211.4, 0.0, -384.8],
+    [-222.9, 0.0, -382.6],
+    [-232.6, 0.0, -376.1],
+    [-242.3, 0.0, -369.6],
+    [-253.8, 0.0, -367.3],
+    [-265.3, 0.0, -369.6],
+    [-275.0, 0.0, -376.1],
+    [-284.7, 0.0, -382.6],
+    [-296.2, 0.0, -384.8],
     // Under the bridge, round a climbing loop and back over it.
-    [-305.2, 0.0, -384.8], [-323.2, 0.0, -384.8], [-349.1, 0.0, -384.8], [-367.1, 0.0, -384.8], [-376.1, 0.0, -384.8],
-    [-398.6, 1.3, -390.9], [-415.1, 2.6, -407.3], [-421.1, 3.9, -429.8], [-415.1, 5.2, -452.3], [-398.6, 6.5, -468.8],
-    [-376.1, 7.8, -474.8], [-353.6, 9.1, -468.8], [-337.2, 10.4, -452.3], [-331.1, 11.0, -429.8], [-331.1, 11.0, -420.8],
-    [-331.1, 11.0, -402.8], [-331.1, 11.0, -376.8], [-331.1, 11.0, -358.8], [-331.1, 11.0, -349.8],
+    [-305.2, 0.0, -384.8],
+    [-323.2, 0.0, -384.8],
+    [-349.1, 0.0, -384.8],
+    [-367.1, 0.0, -384.8],
+    [-376.1, 0.0, -384.8],
+    [-398.6, 1.3, -390.9],
+    [-415.1, 2.6, -407.3],
+    [-421.1, 3.9, -429.8],
+    [-415.1, 5.2, -452.3],
+    [-398.6, 6.5, -468.8],
+    [-376.1, 7.8, -474.8],
+    [-353.6, 9.1, -468.8],
+    [-337.2, 10.4, -452.3],
+    [-331.1, 11.0, -429.8],
+    [-331.1, 11.0, -420.8],
+    [-331.1, 11.0, -402.8],
+    [-331.1, 11.0, -376.8],
+    [-331.1, 11.0, -358.8],
+    [-331.1, 11.0, -349.8],
     // Down through esses, and through more in a tunnel.
-    [-329.1, 9.5, -334.3], [-323.1, 8.0, -319.8], [-316.0, 6.0, -300.3], [-316.0, 4.0, -279.4], [-323.1, 2.0, -259.8],
-    [-329.1, 0.5, -245.4], [-331.1, 0.0, -229.8], [-331.1, 0.0, -217.8], [-331.1, 0.0, -205.8], [-333.6, 0.0, -192.2],
-    [-340.5, 0.0, -180.1], [-347.4, 0.0, -168.1], [-349.9, 0.0, -154.4], [-347.4, 0.0, -140.7], [-340.5, 0.0, -128.7],
-    [-333.6, 0.0, -116.7], [-331.1, 0.0, -103.0],
+    [-329.1, 9.5, -334.3],
+    [-323.1, 8.0, -319.8],
+    [-316.0, 6.0, -300.3],
+    [-316.0, 4.0, -279.4],
+    [-323.1, 2.0, -259.8],
+    [-329.1, 0.5, -245.4],
+    [-331.1, 0.0, -229.8],
+    [-331.1, 0.0, -217.8],
+    [-331.1, 0.0, -205.8],
+    [-333.6, 0.0, -192.2],
+    [-340.5, 0.0, -180.1],
+    [-347.4, 0.0, -168.1],
+    [-349.9, 0.0, -154.4],
+    [-347.4, 0.0, -140.7],
+    [-340.5, 0.0, -128.7],
+    [-333.6, 0.0, -116.7],
+    [-331.1, 0.0, -103.0],
     // The barrels.
-    [-331.1, 0.0, -94.0], [-331.1, 0.0, -76.0], [-331.1, 0.0, -45.0], [-331.1, 0.0, -27.0], [-331.1, 0.0, -18.0],
-    [-328.7, 0.0, -9.0], [-322.1, 0.0, -2.4], [-313.1, 0.0, 0.0],
+    [-331.1, 0.0, -94.0],
+    [-331.1, 0.0, -76.0],
+    [-331.1, 0.0, -45.0],
+    [-331.1, 0.0, -27.0],
+    [-331.1, 0.0, -18.0],
+    [-328.7, 0.0, -9.0],
+    [-322.1, 0.0, -2.4],
+    [-313.1, 0.0, 0.0],
     // The pillar.
-    [-304.1, 0.0, 0.0], [-286.1, 0.0, 0.0], [-260.1, 0.0, 0.0], [-242.1, 0.0, 0.0], [-233.1, 0.0, 0.0],
+    [-304.1, 0.0, 0.0],
+    [-286.1, 0.0, 0.0],
+    [-260.1, 0.0, 0.0],
+    [-242.1, 0.0, 0.0],
+    [-233.1, 0.0, 0.0],
     // Esses.
-    [-224.9, 0.0, -1.4], [-217.7, 0.0, -5.6], [-212.4, 0.0, -12.0], [-205.7, 0.0, -19.4], [-196.6, 0.0, -23.5],
-    [-186.6, 0.0, -23.5], [-177.5, 0.0, -19.4], [-170.8, 0.0, -12.0], [-165.4, 0.0, -5.6], [-158.2, 0.0, -1.4],
+    [-224.9, 0.0, -1.4],
+    [-217.7, 0.0, -5.6],
+    [-212.4, 0.0, -12.0],
+    [-205.7, 0.0, -19.4],
+    [-196.6, 0.0, -23.5],
+    [-186.6, 0.0, -23.5],
+    [-177.5, 0.0, -19.4],
+    [-170.8, 0.0, -12.0],
+    [-165.4, 0.0, -5.6],
+    [-158.2, 0.0, -1.4],
     [-150.0, 0.0, 0.0],
     // The ark and the curse, and home.
-    [-141.0, 0.0, 0.0], [-123.0, 0.0, 0.0], [-87.0, 0.0, 0.0], [-63.0, 0.0, 0.0], [-27.0, 0.0, 0.0],
+    [-141.0, 0.0, 0.0],
+    [-123.0, 0.0, 0.0],
+    [-87.0, 0.0, 0.0],
+    [-63.0, 0.0, 0.0],
+    [-27.0, 0.0, 0.0],
     [-9.0, 0.0, 0.0],
 ];
 /// The gauntlet's tunnels: where each begins and ends, as (x, z).
-const GAUNTLET_TUNNELS: &[[[f32; 2]; 2]] = &[[[341.5, -308.8], [236.6, -308.8]], [[-331.1, -213.8], [-331.1, -95.0]]];
+const GAUNTLET_TUNNELS: &[[[f32; 2]; 2]] = &[
+    [[341.5, -308.8], [236.6, -308.8]],
+    [[-331.1, -213.8], [-331.1, -95.0]],
+];
 /// How high a tunnel's roof is over its road, and how thick its walls and roof are.
 const TUNNEL_HEIGHT: f32 = 8.5;
 const TUNNEL_THICK: f32 = 1.6;
@@ -183,18 +357,29 @@ impl Layout {
         };
         // Mirrored, the built-in circuits are turned over the same way the game's are.
         let side = if mirror { -1.0 } else { 1.0 };
-        points.iter().map(|c| Vec3::new(c[0] * scale, c[1], c[2] * scale * side)).collect()
+        points
+            .iter()
+            .map(|c| Vec3::new(c[0] * scale, c[1], c[2] * scale * side))
+            .collect()
     }
 
     /// Where its tunnels begin and end, as (x, z) on the unmirrored circuit.
     fn tunnels(self) -> &'static [[[f32; 2]; 2]] {
-        if self == Layout::Gauntlet { GAUNTLET_TUNNELS } else { &[] }
+        if self == Layout::Gauntlet {
+            GAUNTLET_TUNNELS
+        } else {
+            &[]
+        }
     }
 
     /// The ground the scenery is scattered over: (least x and z, greatest x and z).
     fn grounds(self) -> (Vec2, Vec2) {
         let (least, most) = self.plain_grounds();
-        if crate::scenery::mirror() { (Vec2::new(least.x, -most.y), Vec2::new(most.x, -least.y)) } else { (least, most) }
+        if crate::scenery::mirror() {
+            (Vec2::new(least.x, -most.y), Vec2::new(most.x, -least.y))
+        } else {
+            (least, most)
+        }
     }
 
     fn plain_grounds(self) -> (Vec2, Vec2) {
@@ -295,7 +480,9 @@ impl Course {
                 let mut at = branch;
                 while self.checkpoints[at].fraction < 0.0 && path.len() < count {
                     path.push(at);
-                    let Some(&next) = self.checkpoints[at].next.first() else { break };
+                    let Some(&next) = self.checkpoints[at].next.first() else {
+                        break;
+                    };
                     at = next;
                 }
                 let start = self.checkpoints[from].fraction;
@@ -351,7 +538,10 @@ impl Track {
         }
         // Tarmac, verges and the inner faces of the barriers.
         let n = track.n();
-        let grass = Surface { rolling_resistance: 20.0, ..default() };
+        let grass = Surface {
+            rolling_resistance: 20.0,
+            ..default()
+        };
         for i in 0..n {
             let j = (i + 1) % n;
             let at = |k: usize, lat: f32| track.pts[k] + track.right[k] * lat;
@@ -367,7 +557,13 @@ impl Track {
             strip(ROAD_HW + KERB, WALL, grass);
             for side in [-WALL, WALL] {
                 let (a, b) = (at(i, side), at(j, side));
-                quad(a - Vec3::Y, b - Vec3::Y, b + Vec3::Y * 3.0, a + Vec3::Y * 3.0, Surface::default());
+                quad(
+                    a - Vec3::Y,
+                    b - Vec3::Y,
+                    b + Vec3::Y * 3.0,
+                    a + Vec3::Y * 3.0,
+                    Surface::default(),
+                );
             }
         }
 
@@ -378,7 +574,10 @@ impl Track {
             let (p, r) = (track.pts[i], track.right[i] * (WALL + 1.0));
             let (low, high) = (Vec3::Y * -2.0, Vec3::Y * 8.0);
             let corners = [p - r + low, p + r + low, p + r + high, p - r + high];
-            for tri in [[corners[0], corners[1], corners[2]], [corners[0], corners[2], corners[3]]] {
+            for tri in [
+                [corners[0], corners[1], corners[2]],
+                [corners[0], corners[2], corners[3]],
+            ] {
                 track.course.gates.add_tagged(tri, Surface::default(), gate);
                 if gate == 0 {
                     track.course.finish.add(tri, Surface::default());
@@ -436,7 +635,10 @@ impl Track {
         let fwd: Vec<Vec3> = (0..n)
             .map(|i| (pts[(i + 1) % n] - pts[(i + n - 1) % n]).normalize())
             .collect();
-        let flat: Vec<Vec3> = fwd.iter().map(|f| Vec3::new(f.x, 0.0, f.z).normalize()).collect();
+        let flat: Vec<Vec3> = fwd
+            .iter()
+            .map(|f| Vec3::new(f.x, 0.0, f.z).normalize())
+            .collect();
         let right = flat.iter().map(|f| Vec3::new(-f.z, 0.0, f.x)).collect();
         let curv = (0..n)
             .map(|i| flat[i].angle_between(flat[(i + 1) % n]) / spacing)
@@ -462,7 +664,10 @@ impl Track {
     /// The lateral offset nearest `wanted` that is open at distance `s`.
     pub fn lane(&self, s: f32, wanted: f32) -> f32 {
         let s = s.rem_euclid(self.length);
-        self.lanes.iter().filter(|lane| s >= lane.from && s <= lane.to).fold(wanted, |lat, lane| lat.clamp(lane.least, lane.most))
+        self.lanes
+            .iter()
+            .filter(|lane| s >= lane.from && s <= lane.to)
+            .fold(wanted, |lat, lane| lat.clamp(lane.least, lane.most))
     }
 
     pub fn n(&self) -> usize {
@@ -473,7 +678,12 @@ impl Track {
     fn finish_distance(&self) -> f32 {
         let lift = Vec3::Y;
         (0..self.n())
-            .find(|&i| self.course.finish.any(self.pts[i] + lift, self.pts[(i + 1) % self.n()] + lift).is_some())
+            .find(|&i| {
+                self.course
+                    .finish
+                    .any(self.pts[i] + lift, self.pts[(i + 1) % self.n()] + lift)
+                    .is_some()
+            })
             .map_or(0.0, |i| i as f32 * self.spacing)
     }
 
@@ -488,7 +698,10 @@ impl Track {
                 // The first place on a grid is the one furthest back.
                 let s = finish + 8.0 + ((5 - place) / 2) as f32 * 6.0;
                 let lat = self.road * if place % 2 == 0 { 0.375 } else { -0.375 };
-                (self.surface_point(s, lat), -self.sample(s).1.with_y(0.0).normalize())
+                (
+                    self.surface_point(s, lat),
+                    -self.sample(s).1.with_y(0.0).normalize(),
+                )
             })
             .collect();
 
@@ -501,7 +714,9 @@ impl Track {
                 *v = -*v;
             }
         }
-        self.curv = (0..n).map(|i| self.flat[i].angle_between(self.flat[(i + 1) % n]) / self.spacing).collect();
+        self.curv = (0..n)
+            .map(|i| self.flat[i].angle_between(self.flat[(i + 1) % n]) / self.spacing)
+            .collect();
 
         // Each gate leads to the ones that led to it, the main route's first.
         let gates = &mut self.course.checkpoints;
@@ -527,7 +742,12 @@ impl Track {
         }
         // What was on the right is on the left, and as far from the line the other way.
         for lane in &mut self.lanes {
-            *lane = Lane { from: self.length - lane.to, to: self.length - lane.from, least: -lane.most, most: -lane.least };
+            *lane = Lane {
+                from: self.length - lane.to,
+                to: self.length - lane.from,
+                least: -lane.most,
+                most: -lane.least,
+            };
         }
         // The stretch after the line is now the one before it.
         for zone in &mut self.course.zones {
@@ -560,7 +780,9 @@ impl Track {
     /// The point on the driving surface at distance `s` and lateral offset `lat`.
     pub fn surface_point(&self, s: f32, lat: f32) -> Vec3 {
         let p = self.point(s, lat);
-        self.collision.ground(p + Vec3::Y * 4.0, 12.0).map_or(p, |hit| hit.point)
+        self.collision
+            .ground(p + Vec3::Y * 4.0, 12.0)
+            .map_or(p, |hit| hit.point)
     }
 
     /// The sample closest to `pos`, height included: where the road passes over
@@ -568,7 +790,9 @@ impl Track {
     pub fn nearest(&self, pos: Vec3) -> usize {
         (0..self.n())
             .min_by(|&a, &b| {
-                self.pts[a].distance_squared(pos).total_cmp(&self.pts[b].distance_squared(pos))
+                self.pts[a]
+                    .distance_squared(pos)
+                    .total_cmp(&self.pts[b].distance_squared(pos))
             })
             .unwrap()
     }
@@ -582,7 +806,9 @@ impl Track {
             .map(|i| {
                 self.pts.iter().any(|&below| {
                     self.pts[i].y - below.y > 6.0
-                        && edges.iter().any(|&lat| xz_dist2(self.pts[i] + self.right[i] * lat, below) < reach)
+                        && edges
+                            .iter()
+                            .any(|&lat| xz_dist2(self.pts[i] + self.right[i] * lat, below) < reach)
                 })
             })
             .collect()
@@ -602,7 +828,11 @@ impl Track {
             }
         }
         let d = pos - self.pts[best];
-        (best, best as f32 * self.spacing + d.dot(self.flat[best]), d.dot(self.right[best]))
+        (
+            best,
+            best as f32 * self.spacing + d.dot(self.flat[best]),
+            d.dot(self.right[best]),
+        )
     }
 
     pub fn build_mesh(&self) -> Mesh {
@@ -670,10 +900,25 @@ impl Track {
                 let across = (r0 + r1).normalize() * (WALL + 0.8 + TUNNEL_THICK / 2.0);
                 let wall = Vec3::new(TUNNEL_THICK / 2.0 + extra, TUNNEL_HEIGHT / 2.0, length);
                 for side in [-1.0, 1.0] {
-                    b.cuboid(mid + across * side + up * (TUNNEL_HEIGHT / 2.0 - 0.1), wall, rot, colour);
+                    b.cuboid(
+                        mid + across * side + up * (TUNNEL_HEIGHT / 2.0 - 0.1),
+                        wall,
+                        rot,
+                        colour,
+                    );
                 }
-                let roof = Vec3::new(WALL + 0.8 + TUNNEL_THICK + extra, TUNNEL_THICK / 2.0 + extra, length);
-                b.brick(mid + up * (TUNNEL_HEIGHT + TUNNEL_THICK / 2.0), roof, rot, colour, (8, 1));
+                let roof = Vec3::new(
+                    WALL + 0.8 + TUNNEL_THICK + extra,
+                    TUNNEL_THICK / 2.0 + extra,
+                    length,
+                );
+                b.brick(
+                    mid + up * (TUNNEL_HEIGHT + TUNNEL_THICK / 2.0),
+                    roof,
+                    rot,
+                    colour,
+                    (8, 1),
+                );
             }
             if span(i) != span((i + n - 1) % n) {
                 // Where the embankment stops for the bridge: its end, and a pier at
@@ -716,19 +961,40 @@ impl Track {
         let (least, most) = layout.grounds();
         for _ in 0..420 {
             let pos = Vec3::new(rng.range(least.x, most.x), 0.0, rng.range(least.y, most.y));
-            let clear = self.pts.iter().map(|&p| xz_dist2(p, pos)).fold(f32::MAX, f32::min).sqrt();
-            if clear < WALL + 7.0 || self.clearings.iter().any(|&(centre, radius)| xz_dist2(centre, pos) < radius * radius) {
+            let clear = self
+                .pts
+                .iter()
+                .map(|&p| xz_dist2(p, pos))
+                .fold(f32::MAX, f32::min)
+                .sqrt();
+            if clear < WALL + 7.0
+                || self
+                    .clearings
+                    .iter()
+                    .any(|&(centre, radius)| xz_dist2(centre, pos) < radius * radius)
+            {
                 continue;
             }
             let rot = Quat::from_rotation_y(rng.range(0.0, std::f32::consts::TAU));
             if rng.f() < 0.65 {
                 let s = rng.range(0.8, 1.7);
-                b.cuboid(pos + Vec3::Y * 1.5 * s, Vec3::new(0.6, 1.5, 0.6) * s, rot, BROWN);
+                b.cuboid(
+                    pos + Vec3::Y * 1.5 * s,
+                    Vec3::new(0.6, 1.5, 0.6) * s,
+                    rot,
+                    BROWN,
+                );
                 let leaf = rng.pick(&[GREEN, GREEN, LIME]);
                 for (k, studs) in [4u32, 3, 2, 1].into_iter().enumerate() {
                     let w = 0.6 * studs as f32 * s;
                     let y = (3.6 + 1.2 * k as f32) * s;
-                    b.brick(pos + Vec3::Y * y, Vec3::new(w, 0.6 * s, w), rot, leaf, (studs, studs));
+                    b.brick(
+                        pos + Vec3::Y * y,
+                        Vec3::new(w, 0.6 * s, w),
+                        rot,
+                        leaf,
+                        (studs, studs),
+                    );
                 }
             } else {
                 let s = rng.range(1.0, 2.5);
@@ -757,19 +1023,32 @@ mod tests {
         for layout in Layout::ALL {
             let t = Track::built(layout);
             let n = t.n();
-            let longest = if layout == Layout::Gauntlet { 3500.0 } else { 1400.0 };
-            assert!(t.length > 900.0 && t.length < longest, "{layout:?} length {}", t.length);
+            let longest = if layout == Layout::Gauntlet {
+                3500.0
+            } else {
+                1400.0
+            };
+            assert!(
+                t.length > 900.0 && t.length < longest,
+                "{layout:?} length {}",
+                t.length
+            );
             for i in 0..n {
                 let j = (i + 1) % n;
                 for side in [-1.0, 1.0] {
                     let a = t.pts[i] + t.right[i] * side * (WALL + 0.8);
                     let b = t.pts[j] + t.right[j] * side * (WALL + 0.8);
-                    assert!((b - a).dot(t.fwd[i]) > 0.2, "{layout:?} barrier folds at {i}");
+                    assert!(
+                        (b - a).dot(t.fwd[i]) > 0.2,
+                        "{layout:?} barrier folds at {i}"
+                    );
                 }
                 // Any other part of the track must be far away unless it's nearby along
                 // the lap, or passes well overhead.
                 for k in 0..n {
-                    let along = (i as i32 - k as i32).rem_euclid(n as i32).min((k as i32 - i as i32).rem_euclid(n as i32));
+                    let along = (i as i32 - k as i32)
+                        .rem_euclid(n as i32)
+                        .min((k as i32 - i as i32).rem_euclid(n as i32));
                     let apart = xz_dist2(t.pts[i], t.pts[k]).sqrt() > 2.0 * WALL + 4.0;
                     let level = (t.pts[i].y - t.pts[k].y).abs() < DECK - 1.0;
                     assert!(along <= 30 || apart || !level, "{layout:?} {i} near {k}");
@@ -783,18 +1062,27 @@ mod tests {
         let t = Track::built(Layout::FigureEight);
         let bridged = t.bridged();
         let n = t.n();
-        let starts = (0..n).filter(|&i| bridged[i] && !bridged[(i + n - 1) % n]).count();
+        let starts = (0..n)
+            .filter(|&i| bridged[i] && !bridged[(i + n - 1) % n])
+            .count();
         assert_eq!(starts, 1);
         assert!(Track::new().bridged().iter().all(|b| !b));
         // On the bridge and under it, the road found is the one the racing line is on,
         // and so is the sample.
         for i in (0..n).filter(|&i| bridged[i]) {
             let s = i as f32 * t.spacing;
-            assert!((t.surface_point(s, 0.0).y - t.pts[i].y).abs() < 0.2, "deck at {i}");
+            assert!(
+                (t.surface_point(s, 0.0).y - t.pts[i].y).abs() < 0.2,
+                "deck at {i}"
+            );
             assert_eq!(t.nearest(t.pts[i]), i);
-            let under = (0..n).find(|&k| t.pts[i].y - t.pts[k].y > 6.0 && xz_dist2(t.pts[i], t.pts[k]) < 4.0);
+            let under = (0..n)
+                .find(|&k| t.pts[i].y - t.pts[k].y > 6.0 && xz_dist2(t.pts[i], t.pts[k]) < 4.0);
             if let Some(k) = under {
-                assert!(t.surface_point(k as f32 * t.spacing, 0.0).y < 0.5, "road under {i}");
+                assert!(
+                    t.surface_point(k as f32 * t.spacing, 0.0).y < 0.5,
+                    "road under {i}"
+                );
                 assert_eq!(t.nearest(t.pts[k]), k);
             }
         }
@@ -813,7 +1101,12 @@ mod tests {
     fn the_gauntlet_has_two_tunnels_and_a_bridge_and_corners_sharper_than_the_others() {
         let t = Track::built(Layout::Gauntlet);
         let (n, bridged) = (t.n(), t.bridged());
-        assert_eq!((0..n).filter(|&i| bridged[i] && !bridged[(i + n - 1) % n]).count(), 1);
+        assert_eq!(
+            (0..n)
+                .filter(|&i| bridged[i] && !bridged[(i + n - 1) % n])
+                .count(),
+            1
+        );
         // Each tunnel is a good stretch of level road, clear of the bridge.
         assert_eq!(t.tunnels.len(), 2);
         for &(from, to) in &t.tunnels {
@@ -824,7 +1117,10 @@ mod tests {
         let mut back = Track::built(Layout::Gauntlet);
         back.reverse();
         for (&(from, to), &(back_from, back_to)) in t.tunnels.iter().zip(&back.tunnels) {
-            assert_eq!((back.pts[back_from], back.pts[back_to - 1]), (t.pts[to - 1], t.pts[from]));
+            assert_eq!(
+                (back.pts[back_from], back.pts[back_to - 1]),
+                (t.pts[to - 1], t.pts[from])
+            );
         }
         let sharpest = |t: &Track| t.curv.iter().copied().fold(0.0, f32::max);
         assert!(sharpest(&t) > 1.0 / 20.0 && sharpest(&t) > sharpest(&Track::new()));
@@ -864,7 +1160,10 @@ mod tests {
             let p = t.point(s, lat);
             let (_, s2, lat2) = t.project(p, t.nearest(p));
             let ds = (s2 - s + t.length / 2.0).rem_euclid(t.length) - t.length / 2.0;
-            assert!(ds.abs() < 0.3 && (lat2 - lat).abs() < 0.3, "{s} {lat} -> {s2} {lat2}");
+            assert!(
+                ds.abs() < 0.3 && (lat2 - lat).abs() < 0.3,
+                "{s} {lat} -> {s2} {lat2}"
+            );
         }
     }
 }

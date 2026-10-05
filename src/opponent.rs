@@ -81,7 +81,12 @@ impl RoutePlay {
     /// the recording, at full speed.
     pub fn at_loop(record: Arc<Record>, ahead: f32) -> Self {
         let time = record.loop_time + ahead;
-        RoutePlay { time, speed: 1.0, racing: true, ..RoutePlay::new(record) }
+        RoutePlay {
+            time,
+            speed: 1.0,
+            racing: true,
+            ..RoutePlay::new(record)
+        }
     }
 
     /// Where the lap part of a recording has the car `ahead` milliseconds in, and the
@@ -116,14 +121,21 @@ impl RoutePlay {
         let (from, to, along) = self.record.at(self.record.wrap(self.time));
         let position = Vec3::from(from.position).lerp(Vec3::from(to.position), along);
         // The same turn can be stored either way up; go between them the short way.
-        let (start, mut end) = (Quat::from_array(from.rotation).normalize(), Quat::from_array(to.rotation).normalize());
+        let (start, mut end) = (
+            Quat::from_array(from.rotation).normalize(),
+            Quat::from_array(to.rotation).normalize(),
+        );
         if start.dot(end) < 0.0 {
             end = -end;
         }
         let rotation = start.lerp(end, along);
         let width = [0, 1].map(|i| from.width[i] + (to.width[i] - from.width[i]) * along);
         // In the mirror, the room on the car's left is on its right.
-        let width = if crate::scenery::mirror() { [width[1], width[0]] } else { width };
+        let width = if crate::scenery::mirror() {
+            [width[1], width[0]]
+        } else {
+            width
+        };
         (to_world(position), facing(rotation), width)
     }
 }
@@ -135,7 +147,11 @@ pub(crate) fn facing(rotation: Quat) -> Quat {
     let car = Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y);
     // The game multiplies vectors from the other side, which turns the other way.
     let plain = Quat::from_mat3(&(world * Mat3::from_quat(rotation.conjugate()) * car.transpose()));
-    if crate::scenery::mirror() { crate::scenery::mirrored_car(plain) } else { plain }
+    if crate::scenery::mirror() {
+        crate::scenery::mirrored_car(plain)
+    } else {
+        plain
+    }
 }
 
 impl Kart {
@@ -166,7 +182,8 @@ impl Kart {
             if !warping && route.warping {
                 route.speed = route.base;
             }
-            (route.spinning, route.warping, route.boosting, route.cursed) = (spinning, warping, boosting, cursed);
+            (route.spinning, route.warping, route.boosting, route.cursed) =
+                (spinning, warping, boosting, cursed);
 
             // A pull (a grappling hook's, a magnet's, a shield's shove) is a push along
             // the way the car faces, for as long as it lasts (`StartRoutePush`).
@@ -174,8 +191,16 @@ impl Kart {
             let pull = self.external_force.dot(forward) / UNIT;
             let pushed = self.external_force != Vec3::ZERO;
             let target = if pushed {
-                let from = if spinning { SPIN_SPEED + 0.1_f32.copysign(pull) } else { route.speed + pull / PUSH_IMPULSE };
-                if pull >= 0.0 { from.min(SPEED_RANGE.1) } else { from.max(SPEED_RANGE.0) }
+                let from = if spinning {
+                    SPIN_SPEED + 0.1_f32.copysign(pull)
+                } else {
+                    route.speed + pull / PUSH_IMPULSE
+                };
+                if pull >= 0.0 {
+                    from.min(SPEED_RANGE.1)
+                } else {
+                    from.max(SPEED_RANGE.0)
+                }
             } else if self.magnet > 0.0 {
                 0.0
             } else if spinning {
@@ -186,10 +211,18 @@ impl Kart {
             // Spinning, boosting, cursed or in warp, the speed is left as it was set.
             if pushed || !(spinning || boosting || cursed || warping) {
                 if route.speed < target {
-                    let rate = if pushed { PUSHED_ACCELERATION } else { ACCELERATION };
+                    let rate = if pushed {
+                        PUSHED_ACCELERATION
+                    } else {
+                        ACCELERATION
+                    };
                     route.speed = (route.speed + rate * dt).min(target);
                 } else {
-                    let rate = if pushed { PUSHED_DECELERATION } else { DECELERATION };
+                    let rate = if pushed {
+                        PUSHED_DECELERATION
+                    } else {
+                        DECELERATION
+                    };
                     route.speed = (route.speed - rate * dt).max(target);
                 }
             }
@@ -218,7 +251,13 @@ impl Kart {
         let forward = self.rot * Vec3::NEG_Z;
         self.facing = forward.with_y(0.0).normalize_or(self.facing);
         self.ground_normal = self.rot * Vec3::Y;
-        (self.contacts, self.air_time, self.sliding, self.slipping, self.wall_contact) = (4, 0.0, false, false, false);
+        (
+            self.contacts,
+            self.air_time,
+            self.sliding,
+            self.slipping,
+            self.wall_contact,
+        ) = (4, 0.0, false, false, false);
     }
 
     /// Bumps a car on a recording: sideways off its line by `moved`, and on or back
@@ -229,13 +268,25 @@ impl Kart {
         let spinning = self.spin > 0.0;
         let Some(route) = &mut self.route else { return };
         route.side += moved.dot(right) / UNIT;
-        let (along, impulse) = if impulse < 0.0 { (-forward.dot(direction), -impulse) } else { (forward.dot(direction), impulse) };
+        let (along, impulse) = if impulse < 0.0 {
+            (-forward.dot(direction), -impulse)
+        } else {
+            (forward.dot(direction), impulse)
+        };
         let change = impulse.min(BUMP_IMPULSE) / BUMP_IMPULSE;
         route.speed = if along >= 0.0 {
-            let from = if spinning { SPIN_SPEED + 0.1 } else { route.speed + change };
+            let from = if spinning {
+                SPIN_SPEED + 0.1
+            } else {
+                route.speed + change
+            };
             (from + (1.0 - along) * 0.05).min(SPEED_RANGE.1)
         } else {
-            let from = if spinning { SPIN_SPEED - 0.1 } else { route.speed - change };
+            let from = if spinning {
+                SPIN_SPEED - 0.1
+            } else {
+                route.speed - change
+            };
             (from - (along + 1.0) * 0.25).max(SPEED_RANGE.0)
         };
     }
@@ -244,20 +295,31 @@ impl Kart {
 #[cfg(test)]
 #[test]
 fn recorded_cars_face_the_way_they_go() {
-    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
-    let record = Arc::new(Record::parse(jam.get("/GAMEDATA/RACEC0R0/R2_M_0.RRB").unwrap(), false).unwrap());
+    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
+    let record =
+        Arc::new(Record::parse(jam.get("/GAMEDATA/RACEC0R0/R2_M_0.RRB").unwrap(), false).unwrap());
     let mut kart = Kart::new(&crate::track::Track::new(), 0);
     kart.route = Some(RoutePlay::new(record.clone()));
     kart.play_route(0.016);
     assert_eq!(kart.vel, Vec3::ZERO);
-    assert!(kart.pos.distance(to_world(Vec3::from(record.points[0].position))) < 0.01);
+    assert!(
+        kart.pos
+            .distance(to_world(Vec3::from(record.points[0].position)))
+            < 0.01
+    );
     // Twenty seconds of racing: always moving the way it points, at a car's speed.
     kart.route.as_mut().unwrap().racing = true;
     let mut worst = 1.0f32;
     for step in 0..1200 {
         kart.play_route(1.0 / 60.0);
         if step > 300 {
-            assert!((5.0..70.0).contains(&kart.vel.length()), "{}", kart.vel.length());
+            assert!(
+                (5.0..70.0).contains(&kart.vel.length()),
+                "{}",
+                kart.vel.length()
+            );
             worst = worst.min(kart.vel.normalize().dot(kart.rot * Vec3::NEG_Z));
         }
     }
@@ -265,9 +327,16 @@ fn recorded_cars_face_the_way_they_go() {
     // Blown up, it leaves the ground and all but stops, and is over it when it lands.
     assert!(kart.launch(1.0));
     kart.play_route(0.05);
-    assert!(kart.route.as_ref().unwrap().jump > 0.0 && kart.route.as_ref().unwrap().speed < 0.2 && kart.spin_out > 0.0);
+    assert!(
+        kart.route.as_ref().unwrap().jump > 0.0
+            && kart.route.as_ref().unwrap().speed < 0.2
+            && kart.spin_out > 0.0
+    );
     for _ in 0..90 {
         kart.play_route(1.0 / 60.0);
     }
-    assert_eq!((kart.route.as_ref().unwrap().jump, kart.spin_out), (0.0, 0.0));
+    assert_eq!(
+        (kart.route.as_ref().unwrap().jump, kart.spin_out),
+        (0.0, 0.0)
+    );
 }

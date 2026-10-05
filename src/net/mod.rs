@@ -21,20 +21,24 @@ pub mod protocol;
 pub mod room;
 pub mod scene;
 pub mod state;
-pub mod transport;
 #[cfg(test)]
 mod tests;
+pub mod transport;
 
 use bevy::prelude::*;
 
 pub use host::Remote;
+pub use link::Quality;
 use link::{Event, Link};
+use protocol::{
+    HOST, Inputs, Peer, Refusal, Rules, Seat, Snapshot, TICKS, Tick, ToHost, ToPlayer, decode,
+    encode,
+};
 use room::{Room, Voter};
-use protocol::{HOST, Inputs, Peer, Refusal, Rules, Seat, Snapshot, TICKS, Tick, ToHost, ToPlayer, decode, encode};
 
-use crate::kart::{self, Controls, Player};
 #[cfg(test)]
 use crate::kart::Kart;
+use crate::kart::{self, Controls, Player};
 use crate::menu::{Circuits, Screen, Settings};
 use crate::{items, rules};
 
@@ -121,15 +125,32 @@ impl Lineup {
 
     /// The drivers players have chosen to race as, by grid slot.
     pub fn cast(&self) -> impl Iterator<Item = (usize, &str)> {
-        self.seats.iter().filter(|seat| !seat.car.is_empty()).map(|seat| (seat.slot as usize, seat.car.as_str()))
+        self.seats
+            .iter()
+            .filter(|seat| !seat.car.is_empty())
+            .map(|seat| (seat.slot as usize, seat.car.as_str()))
     }
 
     /// Players take the grid from the back, the host last of all as a player alone
     /// is, and the computer's cars fill it from the front.
     pub fn seat(players: &[(Peer, String, String)], opponents: usize) -> Vec<Seat> {
         let slots = kart::PLAYER_SLOT + 1;
-        let humans = players.iter().take(slots).enumerate().map(|(i, (peer, name, car))| Seat { slot: (slots - 1 - i) as u8, peer: Some(*peer), name: name.clone(), car: car.clone() });
-        let computers = (0..opponents.min(slots.saturating_sub(players.len()))).map(|slot| Seat { slot: slot as u8, peer: None, name: String::new(), car: String::new() });
+        let humans = players
+            .iter()
+            .take(slots)
+            .enumerate()
+            .map(|(i, (peer, name, car))| Seat {
+                slot: (slots - 1 - i) as u8,
+                peer: Some(*peer),
+                name: name.clone(),
+                car: car.clone(),
+            });
+        let computers = (0..opponents.min(slots.saturating_sub(players.len()))).map(|slot| Seat {
+            slot: slot as u8,
+            peer: None,
+            name: String::new(),
+            car: String::new(),
+        });
         humans.chain(computers).collect()
     }
 }
@@ -164,6 +185,19 @@ pub struct Session {
     pub left: bool,
     /// The player's own settings, put by while the session's are raced by.
     pub own: Option<Settings>,
+    /// The most players the host will have, if fewer than the game allows.
+    pub limit: Option<u8>,
+    /// Players the host wants out of the session.
+    pub removing: Vec<Peer>,
+}
+
+impl Session {
+    /// The most players the session takes, the host among them.
+    pub fn most(&self) -> u8 {
+        self.limit
+            .unwrap_or(lobby_api::MAX_PLAYERS)
+            .clamp(2, lobby_api::MAX_PLAYERS)
+    }
 }
 
 /// What has arrived since the game last looked.
@@ -200,10 +234,16 @@ fn pump(role: Res<Role>, wire: Option<ResMut<Wire>>, mut inbox: ResMut<Inbox>) {
                 inbox.failed = Some(why);
                 Ok(())
             }
-            Event::Message(peer, bytes) if hosting => decode(&bytes).map(|message| inbox.to_host.push((peer, message))),
+            Event::Message(peer, bytes) if hosting => {
+                decode(&bytes).map(|message| inbox.to_host.push((peer, message)))
+            }
             Event::Message(_, bytes) => decode(&bytes).map(|message| inbox.to_player.push(message)),
-            Event::Datagram(peer, bytes) if hosting => decode(&bytes).map(|inputs| inbox.inputs.push((peer, inputs))),
-            Event::Datagram(_, bytes) => decode(&bytes).map(|snapshot| inbox.snapshots.push(snapshot)),
+            Event::Datagram(peer, bytes) if hosting => {
+                decode(&bytes).map(|inputs| inbox.inputs.push((peer, inputs)))
+            }
+            Event::Datagram(_, bytes) => {
+                decode(&bytes).map(|snapshot| inbox.snapshots.push(snapshot))
+            }
         };
         if let Err(error) = read {
             warn!("{error}");
@@ -212,20 +252,39 @@ fn pump(role: Res<Role>, wire: Option<ResMut<Wire>>, mut inbox: ResMut<Inbox>) {
 }
 
 /// Starts the race for everyone in the session, to be run by `rules`.
-pub fn start(commands: &mut Commands, session: &mut Session, wire: &mut Wire, rules: &Rules, settings: &mut Settings, circuits: &Circuits, next: &mut NextState<Screen>) {
+pub fn start(
+    commands: &mut Commands,
+    session: &mut Session,
+    wire: &mut Wire,
+    rules: &Rules,
+    settings: &mut Settings,
+    circuits: &Circuits,
+    next: &mut NextState<Screen>,
+) {
     if !rules.apply(settings, circuits) {
         warn!("no circuit {} to race", rules.circuit);
         return;
     }
     let mut players = vec![(session.you, session.name.clone(), session.car.clone())];
-    players.extend(session.members.iter().map(|member| (member.peer, member.name.clone(), member.car.clone())));
+    players.extend(
+        session
+            .members
+            .iter()
+            .map(|member| (member.peer, member.name.clone(), member.car.clone())),
+    );
     let seats = Lineup::seat(&players, settings.opponents);
-    let start = encode(&ToPlayer::Start { rules: rules.clone(), seats: seats.clone() });
+    let start = encode(&ToPlayer::Start {
+        rules: rules.clone(),
+        seats: seats.clone(),
+    });
     for member in &mut session.members {
         member.loaded = false;
         wire.0.send(member.peer, start.clone());
     }
-    commands.insert_resource(Lineup { seats, you: session.you });
+    commands.insert_resource(Lineup {
+        seats,
+        you: session.you,
+    });
     next.set(Screen::Loading);
 }
 
@@ -233,21 +292,65 @@ pub fn start(commands: &mut Commands, session: &mut Session, wire: &mut Wire, ru
 /// settings would give.
 fn fresh_room(session: &Session, hosting: bool, settings: &Settings, circuits: &Circuits) -> Room {
     let ballot = Some(Rules::of(settings, circuits));
-    let voters = if hosting { vec![Voter { peer: HOST, name: session.name.clone(), ready: false, ballot: ballot.clone() }] } else { Vec::new() };
-    Room { voters, ballot, revision: 1, ..default() }
+    let voters = if hosting {
+        vec![Voter {
+            peer: HOST,
+            name: session.name.clone(),
+            ready: false,
+            ballot: ballot.clone(),
+            link: None,
+        }]
+    } else {
+        Vec::new()
+    };
+    Room {
+        voters,
+        ballot,
+        revision: 1,
+        ..default()
+    }
 }
 
 /// Begins hosting a session, which the lobby will list as `title`.
-pub fn host_session(commands: &mut Commands, session: &mut Session, settings: &Settings, circuits: &Circuits, title: &str, password: &str) {
-    *session = Session { title: title.into(), name: settings.name.clone(), car: settings.car_code(), password: password.into(), you: HOST, own: Some(settings.clone()), ..default() };
+pub fn host_session(
+    commands: &mut Commands,
+    session: &mut Session,
+    settings: &Settings,
+    circuits: &Circuits,
+    title: &str,
+    password: &str,
+) {
+    *session = Session {
+        title: title.into(),
+        name: settings.name.clone(),
+        car: settings.car_code(),
+        password: password.into(),
+        you: HOST,
+        own: Some(settings.clone()),
+        ..default()
+    };
     commands.insert_resource(fresh_room(session, true, settings, circuits));
     commands.insert_resource(Role::Host);
     commands.insert_resource(Wire(Box::new(transport::Transport::host())));
 }
 
 /// Dials the host of a session on the lobby's list.
-pub fn join_session(commands: &mut Commands, session: &mut Session, settings: &Settings, circuits: &Circuits, listed: &lobby_api::Session, password: &str) {
-    *session = Session { title: listed.name.clone(), name: settings.name.clone(), car: settings.car_code(), password: password.into(), own: Some(settings.clone()), ..default() };
+pub fn join_session(
+    commands: &mut Commands,
+    session: &mut Session,
+    settings: &Settings,
+    circuits: &Circuits,
+    listed: &lobby_api::Session,
+    password: &str,
+) {
+    *session = Session {
+        title: listed.name.clone(),
+        name: settings.name.clone(),
+        car: settings.car_code(),
+        password: password.into(),
+        own: Some(settings.clone()),
+        ..default()
+    };
     commands.insert_resource(fresh_room(session, false, settings, circuits));
     commands.insert_resource(Role::Client);
     commands.insert_resource(Wire(Box::new(transport::Transport::join(&listed.endpoint))));
@@ -264,9 +367,22 @@ pub fn call_off(session: &mut Session, wire: &mut Wire, next: &mut NextState<Scr
     next.set(Screen::Menu);
 }
 
+/// A player gives the race up and goes back to the room, still in the session: the
+/// host is told, and has the computer drive their car for what is left of the race.
+pub fn retire(wire: &mut Wire, next: &mut NextState<Screen>) {
+    wire.0.send(HOST, encode(&ToHost::Back));
+    next.set(Screen::Menu);
+}
+
 /// Ends the session here: the game is its own again, with its own settings. Letting
 /// go of the link is what tells the others.
-pub fn leave(commands: &mut Commands, session: &mut Session, settings: &mut Settings, why: Option<&str>, next: &mut NextState<Screen>) {
+pub fn leave(
+    commands: &mut Commands,
+    session: &mut Session,
+    settings: &mut Settings,
+    why: Option<&str>,
+    next: &mut NextState<Screen>,
+) {
     commands.insert_resource(Role::Offline);
     commands.remove_resource::<Wire>();
     commands.remove_resource::<Lineup>();
@@ -293,6 +409,7 @@ fn session(
     mut settings: ResMut<Settings>,
     mut next: ResMut<NextState<Screen>>,
     remotes: Query<(Entity, &Remote)>,
+    mut measured: Local<f32>,
 ) {
     let (inbox, room, session) = (&mut *inbox, &mut *room, &mut *session);
     // Nothing is listening for the race's own traffic outside a race.
@@ -305,25 +422,44 @@ fn session(
     for _ in inbox.joined.drain(..) {
         // A player's game has reached its host, and says who it is.
         if *role == Role::Client {
-            wire.0.send(HOST, encode(&ToHost::Hello { protocol: lobby_api::PROTOCOL, name: session.name.clone(), password: session.password.clone(), car: session.car.clone() }));
+            wire.0.send(
+                HOST,
+                encode(&ToHost::Hello {
+                    protocol: lobby_api::PROTOCOL,
+                    name: session.name.clone(),
+                    password: session.password.clone(),
+                    car: session.car.clone(),
+                }),
+            );
         }
     }
     if let Some(why) = inbox.failed.take() {
         warn!("the session is over: {why}");
-        leave(&mut commands, session, &mut settings, Some("The connection failed"), &mut next);
+        leave(
+            &mut commands,
+            session,
+            &mut settings,
+            Some("The connection failed"),
+            &mut next,
+        );
         return;
     }
     if *role == Role::Host {
         for (peer, message) in inbox.to_host.drain(..) {
             match message {
-                ToHost::Hello { protocol, name, password, car } => {
+                ToHost::Hello {
+                    protocol,
+                    name,
+                    password,
+                    car,
+                } => {
                     let refusal = if protocol != lobby_api::PROTOCOL {
                         Some(Refusal::Version)
                     // The game's lettering is all capitals, so a password can't be told
                     // from itself in another case, and isn't asked to be.
                     } else if !password.eq_ignore_ascii_case(&session.password) {
                         Some(Refusal::Password)
-                    } else if session.members.len() + 1 >= lobby_api::MAX_PLAYERS as usize {
+                    } else if session.members.len() + 1 >= session.most() as usize {
                         Some(Refusal::Full)
                     } else {
                         None
@@ -334,16 +470,31 @@ fn session(
                             info!("{name} has joined");
                             let name: String = name.chars().take(lobby_api::MAX_NAME).collect();
                             session.members.retain(|member| member.peer != peer);
-                            session.members.push(Member { peer, name: name.clone(), car: car.chars().take(8).collect(), loaded: false });
+                            session.members.push(Member {
+                                peer,
+                                name: name.clone(),
+                                car: car.chars().take(8).collect(),
+                                loaded: false,
+                            });
                             room.voters.retain(|voter| voter.peer != peer);
-                            room.voters.push(Voter { peer, name, ready: false, ballot: None });
+                            room.voters.push(Voter {
+                                peer,
+                                name,
+                                ready: false,
+                                ballot: None,
+                                link: None,
+                            });
                             ToPlayer::Welcome { you: peer }
                         }
                     };
                     wire.0.send(peer, encode(&answer));
                 }
                 ToHost::Loaded => {
-                    if let Some(member) = session.members.iter_mut().find(|member| member.peer == peer) {
+                    if let Some(member) = session
+                        .members
+                        .iter_mut()
+                        .find(|member| member.peer == peer)
+                    {
                         member.loaded = true;
                     }
                 }
@@ -357,7 +508,19 @@ fn session(
                         voter.ready = ready;
                     }
                 }
+                ToHost::Back => {
+                    for (entity, _) in remotes.iter().filter(|(_, remote)| remote.peer == peer) {
+                        commands.entity(entity).remove::<Remote>();
+                    }
+                }
             }
+        }
+        // A player the host wants gone is told so and let go of.
+        for peer in session.removing.drain(..) {
+            wire.0
+                .send(peer, encode(&ToPlayer::Refused(Refusal::Removed)));
+            wire.0.close(peer);
+            inbox.left.push(peer);
         }
         for peer in inbox.left.drain(..) {
             info!("player {peer} has gone");
@@ -366,6 +529,24 @@ fn session(
             // A car whose player has gone is the computer's to drive.
             for (entity, _) in remotes.iter().filter(|(_, remote)| remote.peer == peer) {
                 commands.entity(entity).remove::<Remote>();
+            }
+        }
+        // How good each player's way here is, looked at once a second (and at once
+        // for someone new) and told to the nearest five milliseconds, so that the
+        // room isn't forever changing.
+        *measured -= time.delta_secs();
+        if *measured <= 0.0
+            || room
+                .voters
+                .iter()
+                .any(|voter| voter.peer != HOST && voter.link.is_none())
+        {
+            *measured = 1.0;
+            for voter in room.voters.iter_mut().filter(|voter| voter.peer != HOST) {
+                voter.link = wire.0.quality(voter.peer).map(|link| Quality {
+                    ping: (link.ping + 2) / 5 * 5,
+                    ..link
+                });
             }
         }
         // The host's own wishes are in the room with everyone else's.
@@ -377,7 +558,15 @@ fn session(
             let fallback = Rules::of(&settings, &circuits);
             let mut dice = crate::meshgen::Rng(time.elapsed().subsec_nanos() | 1);
             if let Some(rules) = room.tick(time.delta_secs(), &fallback, &mut dice) {
-                start(&mut commands, session, &mut wire, &rules, &mut settings, &circuits, &mut next);
+                start(
+                    &mut commands,
+                    session,
+                    &mut wire,
+                    &rules,
+                    &mut settings,
+                    &circuits,
+                    &mut next,
+                );
             }
         }
         // The others are told how the room stands whenever it changes, the clock to
@@ -385,6 +574,7 @@ fn session(
         let telling = encode(&ToPlayer::Room {
             voters: room.voters.clone(),
             closing: room.closing.map(|left| left.ceil().max(0.0)),
+            racing: *screen.get() != Screen::Menu,
             last: room.last.clone(),
             results: room.results.clone(),
         });
@@ -396,11 +586,8 @@ fn session(
             room.revision += 1;
         }
     } else {
-        if !inbox.left.is_empty() {
-            inbox.left.clear();
-            leave(&mut commands, session, &mut settings, Some("The host has gone"), &mut next);
-            return;
-        }
+        // What the host said before it went is heard first: it may be why.
+        let gone = !std::mem::take(&mut inbox.left).is_empty();
         for message in std::mem::take(&mut inbox.to_player) {
             match message {
                 ToPlayer::Welcome { you } => {
@@ -413,29 +600,64 @@ fn session(
                         Refusal::Version => "The host has another version of the game",
                         Refusal::Password => "Wrong password",
                         Refusal::Full => "The session is full",
+                        Refusal::Removed => "The host removed you from the session",
                     };
                     leave(&mut commands, session, &mut settings, Some(why), &mut next);
                     return;
                 }
-                ToPlayer::Room { voters, closing, last, results } => {
-                    (room.voters, room.closing, room.last, room.results) = (voters, closing, last, results);
+                ToPlayer::Room {
+                    voters,
+                    closing,
+                    racing,
+                    last,
+                    results,
+                } => {
+                    room.fresh |= !results.is_empty() && results != room.results;
+                    (
+                        room.voters,
+                        room.closing,
+                        room.racing,
+                        room.last,
+                        room.results,
+                    ) = (voters, closing, racing, last, results);
                     room.revision += 1;
                 }
                 ToPlayer::Start { rules, seats } => {
                     if rules.apply(&mut settings, &circuits) {
                         info!("racing {} with {} cars", rules.circuit, seats.len());
                         room.ready = false;
-                        commands.insert_resource(Lineup { seats, you: session.you });
+                        commands.insert_resource(Lineup {
+                            seats,
+                            you: session.you,
+                        });
                         next.set(Screen::Loading);
                     } else {
-                        leave(&mut commands, session, &mut settings, Some("The host chose a circuit this game hasn't got"), &mut next);
+                        leave(
+                            &mut commands,
+                            session,
+                            &mut settings,
+                            Some("The host chose a circuit this game hasn't got"),
+                            &mut next,
+                        );
                         return;
                     }
                 }
+                // A player who gave the race up is in the room already.
+                ToPlayer::Over if *screen.get() == Screen::Menu => {}
                 ToPlayer::Over => next.set(Screen::Menu),
                 ToPlayer::Scene(scene) => inbox.scenes.push(scene),
                 ToPlayer::Events(notes) => inbox.events.extend(notes),
             }
+        }
+        if gone {
+            leave(
+                &mut commands,
+                session,
+                &mut settings,
+                Some("The host has gone"),
+                &mut next,
+            );
+            return;
         }
         // The host is told what the player here wants whenever that changes.
         let wishes = (room.ballot.clone(), room.ready);
@@ -456,16 +678,30 @@ fn session(
 /// `BRICK_CAR` who they race as and `BRICK_PASSWORD` the password set or given.
 #[derive(Resource)]
 pub enum Auto {
-    Host { players: usize, started: bool },
-    Join { title: String, asked: f32, dialled: bool },
+    Host {
+        players: usize,
+        started: bool,
+    },
+    Join {
+        title: String,
+        asked: f32,
+        dialled: bool,
+    },
 }
 
 impl Auto {
     pub fn from_env() -> Option<Self> {
         let wanted = std::env::var("BRICK_NET").ok()?;
         match wanted.split_once(':').unwrap_or((&wanted, "")) {
-            ("host", players) => Some(Auto::Host { players: players.parse().unwrap_or(2), started: false }),
-            ("join", title) => Some(Auto::Join { title: title.to_string(), asked: 0.0, dialled: false }),
+            ("host", players) => Some(Auto::Host {
+                players: players.parse().unwrap_or(2),
+                started: false,
+            }),
+            ("join", title) => Some(Auto::Join {
+                title: title.to_string(),
+                asked: 0.0,
+                dialled: false,
+            }),
             _ => None,
         }
     }
@@ -483,32 +719,65 @@ fn auto(
     mut wire: Option<ResMut<Wire>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let var = |name: &str, otherwise: &str| std::env::var(name).unwrap_or_else(|_| otherwise.to_string());
+    let var =
+        |name: &str, otherwise: &str| std::env::var(name).unwrap_or_else(|_| otherwise.to_string());
     if let Ok(name) = std::env::var("BRICK_NAME") {
         settings.name = name;
     }
     // `BRICK_CAR=PH`: who to race as, by the game's code for the driver.
-    if let Some(car) = std::env::var("BRICK_CAR").ok().and_then(|code| crate::roster::NAMES.iter().position(|driver| driver.0 == code)) {
+    if let Some(car) = std::env::var("BRICK_CAR").ok().and_then(|code| {
+        crate::roster::NAMES
+            .iter()
+            .position(|driver| driver.0 == code)
+    }) {
         settings.car = car + 1;
     }
     match &mut *auto {
         Auto::Host { .. } if *role == Role::Offline => {
-            host_session(&mut commands, &mut session, &settings, &circuits, &var("BRICK_SESSION", "Demo"), &var("BRICK_PASSWORD", ""));
+            host_session(
+                &mut commands,
+                &mut session,
+                &settings,
+                &circuits,
+                &var("BRICK_SESSION", "Demo"),
+                &var("BRICK_PASSWORD", ""),
+            );
         }
         Auto::Host { players, started } => {
-            if let Some(wire) = wire.as_mut().filter(|_| !*started && session.members.len() + 1 >= *players && *screen.get() == Screen::Menu) {
+            if let Some(wire) = wire.as_mut().filter(|_| {
+                !*started && session.members.len() + 1 >= *players && *screen.get() == Screen::Menu
+            }) {
                 *started = true;
                 let rules = Rules::of(&settings, &circuits);
-                start(&mut commands, &mut session, wire, &rules, &mut settings, &circuits, &mut next);
+                start(
+                    &mut commands,
+                    &mut session,
+                    wire,
+                    &rules,
+                    &mut settings,
+                    &circuits,
+                    &mut next,
+                );
             }
         }
-        Auto::Join { title, asked, dialled } => {
+        Auto::Join {
+            title,
+            asked,
+            dialled,
+        } => {
             if *dialled {
                 return;
             }
             if let Some(listed) = lobby.sessions.iter().find(|listed| listed.name == *title) {
                 *dialled = true;
-                join_session(&mut commands, &mut session, &settings, &circuits, listed, &var("BRICK_PASSWORD", ""));
+                join_session(
+                    &mut commands,
+                    &mut session,
+                    &settings,
+                    &circuits,
+                    listed,
+                    &var("BRICK_PASSWORD", ""),
+                );
                 return;
             }
             *asked -= time.delta_secs();
@@ -529,7 +798,11 @@ fn latch(mut pending: ResMut<Pending>, own: Query<&Controls, With<Player>>) {
 }
 
 /// A step begins: it is counted, and the buttons pressed since the last are its own.
-fn begin_tick(mut clock: ResMut<Clock>, mut pending: ResMut<Pending>, mut own: Query<&mut Controls, With<Player>>) {
+fn begin_tick(
+    mut clock: ResMut<Clock>,
+    mut pending: ResMut<Pending>,
+    mut own: Query<&mut Controls, With<Player>>,
+) {
     clock.tick += 1;
     let pressed = std::mem::take(&mut *pending);
     if let Ok(mut c) = own.single_mut() {
@@ -545,7 +818,13 @@ fn end_tick(mut own: Query<&mut Controls, With<Player>>) {
 }
 
 /// A race online begins from nothing: no steps counted, nothing heard or guessed.
-pub fn enter_race(mut commands: Commands, role: Res<Role>, mut pause: ResMut<crate::Pause>, mut sfx: ResMut<crate::audio::Sfx>, events: Option<ResMut<crate::events::TrackEvents>>) {
+pub fn enter_race(
+    mut commands: Commands,
+    role: Res<Role>,
+    mut pause: ResMut<crate::Pause>,
+    mut sfx: ResMut<crate::audio::Sfx>,
+    events: Option<ResMut<crate::events::TrackEvents>>,
+) {
     // No question is left hanging over from the race before.
     pause.0 = None;
     // The circuit's events are the host's: it logs them and its players follow.
@@ -579,17 +858,40 @@ pub fn plugin(app: &mut App) {
         .add_systems(PreUpdate, pump)
         // The cars are where the race has them while it is stepped, and between
         // steps while a frame is drawn (`display`).
-        .add_systems(RunFixedMainLoop, display::unblend.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop).run_if(online))
-        .add_systems(Update, (session.run_if(online), lobby::keep, auto.run_if(resource_exists::<Auto>)))
+        .add_systems(
+            RunFixedMainLoop,
+            display::unblend
+                .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop)
+                .run_if(online),
+        )
+        .add_systems(
+            Update,
+            (
+                session.run_if(online),
+                lobby::keep,
+                auto.run_if(resource_exists::<Auto>),
+            ),
+        )
         .add_systems(Last, lobby::farewell)
         .add_systems(
             Update,
             (
-                (display::blend, kart::player_input, latch).chain().before(kart::sync_karts).before(crate::racer_sounds::racer_sounds),
+                (display::blend, kart::player_input, latch)
+                    .chain()
+                    .before(kart::sync_karts)
+                    .before(crate::racer_sounds::racer_sounds),
                 client::smooth.after(kart::sync_karts).run_if(joined),
-                scene::follow_events.before(crate::events::track_events).run_if(joined),
-                (scene::glide.before(crate::item_models::dress_actions), scene::sound_loops.before(crate::racer_sounds::racer_sounds)).run_if(joined),
-                scene::tell_events.after(crate::hazards::hazards).run_if(hosting),
+                scene::follow_events
+                    .before(crate::events::track_events)
+                    .run_if(joined),
+                (
+                    scene::glide.before(crate::item_models::dress_actions),
+                    scene::sound_loops.before(crate::racer_sounds::racer_sounds),
+                )
+                    .run_if(joined),
+                scene::tell_events
+                    .after(crate::hazards::hazards)
+                    .run_if(hosting),
             )
                 .run_if(in_state(Screen::Race))
                 .run_if(online),
@@ -601,13 +903,30 @@ pub fn plugin(app: &mut App) {
             (
                 begin_tick,
                 client::receive.run_if(joined),
-                (scene::listen, host::receive, host::flow, kart::ai_drive, host::drive_remotes).chain().run_if(hosting),
+                (
+                    scene::listen,
+                    host::receive,
+                    host::flow,
+                    kart::ai_drive,
+                    host::drive_remotes,
+                )
+                    .chain()
+                    .run_if(hosting),
                 client::send.run_if(joined),
                 (items::use_items, items::actions).chain().run_if(hosting),
                 kart::kart_physics,
                 client::bump.run_if(joined),
-                (kart::kart_collisions, kart::update_places, rules::elimination, items::pickups).chain().run_if(hosting),
-                (client::puppets, scene::take, items::show_pickups).chain().run_if(joined),
+                (
+                    kart::kart_collisions,
+                    kart::update_places,
+                    rules::elimination,
+                    items::pickups,
+                )
+                    .chain()
+                    .run_if(hosting),
+                (client::puppets, scene::take, items::show_pickups)
+                    .chain()
+                    .run_if(joined),
                 (host::send, scene::tell).chain().run_if(hosting),
                 (end_tick, display::note),
             )

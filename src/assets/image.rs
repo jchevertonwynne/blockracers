@@ -12,7 +12,9 @@ pub struct Pixels {
 /// copies a literal, a set bit copies a back-reference. The stream ends when the input
 /// runs out or at a back-reference with a distance of zero; `None` means corrupt data.
 fn decompress(src: &[u8], out: &mut Vec<u8>) -> Option<()> {
-    decompress_inner(src, out).or(Some(())).filter(|_| !src.is_empty())
+    decompress_inner(src, out)
+        .or(Some(()))
+        .filter(|_| !src.is_empty())
 }
 
 /// Returns `None` when the input is exhausted.
@@ -58,13 +60,21 @@ pub fn decode_bmp(d: &[u8], color_key: Option<[u8; 3]>) -> Option<Pixels> {
     let bpp = (d[0] & 0x3c) as usize;
     let width = u16::from_le_bytes([d[2], d[3]]) as usize;
     let height = u16::from_le_bytes([d[4], d[5]]) as usize;
-    let palette_len = if bpp > 8 || d[0] & 0x80 != 0 { 0 } else { d[1] as usize + 1 };
+    let palette_len = if bpp > 8 || d[0] & 0x80 != 0 {
+        0
+    } else {
+        d[1] as usize + 1
+    };
     let palette = d.get(6..6 + 3 * palette_len)?;
 
     // Chunks of (raw size, stored size, bytes); stored < raw means compressed.
     let mut raw = Vec::new();
     let mut at = 6 + 3 * palette_len;
-    let row_bytes = if bpp == 4 { (width * 4 + 4) >> 3 } else { (bpp * width) >> 3 };
+    let row_bytes = if bpp == 4 {
+        (width * 4 + 4) >> 3
+    } else {
+        (bpp * width) >> 3
+    };
     while raw.len() < row_bytes * height {
         let head = d.get(at..at + 4)?;
         let size = u16::from_le_bytes([head[0], head[1]]) as usize;
@@ -105,7 +115,11 @@ pub fn decode_bmp(d: &[u8], color_key: Option<[u8; 3]>) -> Option<Pixels> {
             }
         }
     }
-    Some(Pixels { width: width as u32, height: height as u32, rgba })
+    Some(Pixels {
+        width: width as u32,
+        height: height as u32,
+        rgba,
+    })
 }
 
 /// Decodes an uncompressed true-colour Targa, the only kind the archive holds. These
@@ -127,5 +141,9 @@ pub fn decode_tga(d: &[u8]) -> Option<Pixels> {
             rgba.extend_from_slice(&[p[2], p[1], p[0], if step == 4 { p[3] } else { 255 }]);
         }
     }
-    Some(Pixels { width: width as u32, height: height as u32, rgba })
+    Some(Pixels {
+        width: width as u32,
+        height: height as u32,
+        rgba,
+    })
 }

@@ -83,7 +83,9 @@ impl Lexer<'_> {
             0x16 => {
                 let index = self.u8()?.checked_sub(0x17)? as usize;
                 let count = self.u8()?;
-                let sequence = (0..count).map(|_| self.code()).collect::<Option<Vec<_>>>()?;
+                let sequence = (0..count)
+                    .map(|_| self.code())
+                    .collect::<Option<Vec<_>>>()?;
                 *self.sequences.get_mut(index)? = sequence;
                 return Some(());
             }
@@ -102,7 +104,12 @@ impl Lexer<'_> {
 
 /// Tokenises a whole file; a truncated or corrupt tail is dropped.
 pub fn tokenize(d: &[u8]) -> Vec<Token> {
-    let mut lexer = Lexer { d, at: 0, sequences: Default::default(), out: Vec::new() };
+    let mut lexer = Lexer {
+        d,
+        at: 0,
+        sequences: Default::default(),
+        out: Vec::new(),
+    };
     while let Some(code) = lexer.code() {
         if lexer.token(code).is_none() {
             break;
@@ -118,7 +125,10 @@ pub struct Reader {
 
 impl Reader {
     pub fn new(data: &[u8]) -> Self {
-        Reader { tokens: tokenize(data), at: 0 }
+        Reader {
+            tokens: tokenize(data),
+            at: 0,
+        }
     }
 
     pub fn next(&mut self) -> Option<Token> {

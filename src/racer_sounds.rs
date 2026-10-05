@@ -121,13 +121,22 @@ pub fn racer_sounds(
     let racing = matches!(race.phase, Phase::Racing | Phase::Finished);
     let others: Vec<Other> = racers
         .iter()
-        .map(|(entity, k, ..)| Other { entity, pos: k.pos, vel: k.vel, engine_pitch: k.engine_pitch, air_time: k.air_time })
+        .map(|(entity, k, ..)| Other {
+            entity,
+            pos: k.pos,
+            vel: k.vel,
+            engine_pitch: k.engine_pitch,
+            air_time: k.air_time,
+        })
         .collect();
 
     for (entity, mut kart, controls, mut audio, is_player) in &mut racers {
         let (k, a) = (&mut *kart, &mut *audio);
         if race.phase == Phase::Intro {
-            *a = RacerAudio { contacts: k.contacts, ..default() };
+            *a = RacerAudio {
+                contacts: k.contacts,
+                ..default()
+            };
             k.cues = Cues::default();
             continue;
         }
@@ -150,7 +159,12 @@ pub fn racer_sounds(
                 brake(a, controls, entity, here, speed, forward_speed, &mut sfx);
             }
             if k.boost > 0.0 && k.boost_level < 3 {
-                sfx.sustain(entity, slot::TURBO, id::TURBO_LOOP + k.boost_level as usize, here);
+                sfx.sustain(
+                    entity,
+                    slot::TURBO,
+                    id::TURBO_LOOP + k.boost_level as usize,
+                    here,
+                );
             }
             if k.warp > 0.0 {
                 // The original never tells this one where the racer is, so it stays
@@ -194,9 +208,18 @@ pub fn racer_sounds(
             a.skidding = k.sliding || aligned < SKID_ALIGNMENT_MAX;
         }
         if a.skidding {
-            let slide = if k.sliding { POWERSLIDE_FACTOR * 0.5 } else { 0.0 };
+            let slide = if k.sliding {
+                POWERSLIDE_FACTOR * 0.5
+            } else {
+                0.0
+            };
             let pitch = slide + 1.4 - (ENGINE_PITCH_SPEED_RANGE - forward_speed) * 4.0;
-            sfx.sustain(entity, slot::SKID, id::SKID, here.volume(SKID_VOLUME).pitch(pitch));
+            sfx.sustain(
+                entity,
+                slot::SKID,
+                id::SKID,
+                here.volume(SKID_VOLUME).pitch(pitch),
+            );
         }
         if k.spin > 0.0 && racing {
             sfx.sustain(entity, slot::SPIN, id::SPIN, Emitter::at(k.pos));
@@ -207,7 +230,12 @@ pub fn racer_sounds(
                 let age = a.surface.filter(|s| s.0 == sound).map_or(0.0, |s| s.1) + dt;
                 let pitch = (speed / SURFACE_PITCH_SPEED + 0.4).clamp(0.5, 2.0);
                 let volume = (age / SURFACE_FADE_IN).min(1.0);
-                sfx.sustain(entity, slot::SURFACE, sound, here.volume(volume).pitch(pitch));
+                sfx.sustain(
+                    entity,
+                    slot::SURFACE,
+                    sound,
+                    here.volume(volume).pitch(pitch),
+                );
                 Some((sound, age))
             }
             _ => None,
@@ -223,7 +251,10 @@ pub fn racer_sounds(
             let blocked = others.iter().any(|o| {
                 let to = (o.pos - k.pos) / UNIT;
                 let distance = to.length();
-                o.entity != entity && distance > 0.0 && distance < HORN_DISTANCE && to.dot(forward) / distance > HORN_CONE
+                o.entity != entity
+                    && distance > 0.0
+                    && distance < HORN_DISTANCE
+                    && to.dot(forward) / distance > HORN_CONE
             });
             a.horn_cooldown = HORN_RETRY;
             if blocked {
@@ -234,14 +265,28 @@ pub fn racer_sounds(
         let cues = std::mem::take(&mut k.cues);
         if cues.horn {
             k.honked = true;
-            let place = places.as_ref().and_then(|p| p.0.get(k.slot)).copied().unwrap_or(0);
-            sfx.play_at(if is_player { id::PLAYER_HORN } else { id::HORNS[place.min(5)] }, k.pos);
+            let place = places
+                .as_ref()
+                .and_then(|p| p.0.get(k.slot))
+                .copied()
+                .unwrap_or(0);
+            sfx.play_at(
+                if is_player {
+                    id::PLAYER_HORN
+                } else {
+                    id::HORNS[place.min(5)]
+                },
+                k.pos,
+            );
         }
         timer(&mut a.reaction_cooldown, dt);
         if let (Some(happy), true) = (cues.reaction, a.reaction_cooldown <= 0.0) {
             let remark = sfx.roll(6) as usize + if happy { 6 } else { 0 };
             let sound = id::VOICES + k.slot * id::VOICES_EACH + remark;
-            sfx.emit(sound, Emitter::at(k.pos).range(VOICE_RANGE.0, VOICE_RANGE.1));
+            sfx.emit(
+                sound,
+                Emitter::at(k.pos).range(VOICE_RANGE.0, VOICE_RANGE.1),
+            );
             a.reaction_cooldown = 5.0 + sfx.roll(1024) as f32 * 0.004;
         }
         if cues.shield_hit {
@@ -251,13 +296,26 @@ pub fn racer_sounds(
 
         // Power-ups at work on this racer.
         if k.shielded() {
-            sfx.sustain(entity, slot::SHIELD, id::SHIELDS[k.shield_level.min(3) as usize], here);
+            sfx.sustain(
+                entity,
+                slot::SHIELD,
+                id::SHIELDS[k.shield_level.min(3) as usize],
+                here,
+            );
         } else if a.shielded {
-            sfx.play_at(id::SHIELD_EXPIRE, k.pos + Vec3::Y * SHIELD_EXPIRE_HEIGHT * UNIT);
+            sfx.play_at(
+                id::SHIELD_EXPIRE,
+                k.pos + Vec3::Y * SHIELD_EXPIRE_HEIGHT * UNIT,
+            );
         }
         a.shielded = k.shielded();
         if k.cursed > 0.0 {
-            sfx.sustain(entity, slot::CURSE, id::CURSED_LOOP, Emitter::at(k.pos + Vec3::Y * CURSE_HEIGHT * UNIT));
+            sfx.sustain(
+                entity,
+                slot::CURSE,
+                id::CURSED_LOOP,
+                Emitter::at(k.pos + Vec3::Y * CURSE_HEIGHT * UNIT),
+            );
         }
         if k.boost > a.boost {
             sfx.play_at(id::TURBO_START + k.boost_level.min(2) as usize, k.pos);
@@ -314,21 +372,36 @@ fn engine(
         a.engine_on[wanted] = true;
         a.engine_note = wanted;
     }
-    let target = if k.finished.is_some() { ENGINE_VOLUME_FINISHED } else { ENGINE_VOLUME };
+    let target = if k.finished.is_some() {
+        ENGINE_VOLUME_FINISHED
+    } else {
+        ENGINE_VOLUME
+    };
     let step = dt * 1000.0 * ENGINE_FADE_RATE;
     let scale = k.engine_pitch;
     let pitches = [
         scale,
-        speed / ENGINE_PITCH_SPEED_RANGE * (1.0 - ENGINE_PITCH_FLOOR - ENGINE_PITCH_DRIVE_BAND) * scale
+        speed / ENGINE_PITCH_SPEED_RANGE
+            * (1.0 - ENGINE_PITCH_FLOOR - ENGINE_PITCH_DRIVE_BAND)
+            * scale
             + ENGINE_PITCH_FLOOR
-            + if k.air_time > ENGINE_AIRBORNE { ENGINE_PITCH_DRIVE_BAND } else { 0.0 },
+            + if k.air_time > ENGINE_AIRBORNE {
+                ENGINE_PITCH_DRIVE_BAND
+            } else {
+                0.0
+            },
         speed / ENGINE_PITCH_SPEED_RANGE * (1.0 - ENGINE_PITCH_FLOOR) * scale + ENGINE_PITCH_FLOOR,
     ];
     for note in 0..3 {
         let volume = &mut a.engine[note];
         if note == a.engine_note {
             if *volume < target {
-                *volume += step * if note == 0 { ENGINE_IDLE_FADE_SCALE } else { 1.0 };
+                *volume += step
+                    * if note == 0 {
+                        ENGINE_IDLE_FADE_SCALE
+                    } else {
+                        1.0
+                    };
             }
             *volume = volume.min(target);
         } else {
@@ -338,7 +411,11 @@ fn engine(
             a.engine_on[note] = false;
         }
         if a.engine_on[note] {
-            let heard = if *volume == target { target } else { (*volume * ENGINE_FADE_CURVE).sin() * target };
+            let heard = if *volume == target {
+                target
+            } else {
+                (*volume * ENGINE_FADE_CURVE).sin() * target
+            };
             let tone = here.volume(heard).pitch(pitches[note].clamp(0.0, 1.0));
             sfx.sustain(entity, slot::ENGINE + note as u16, ENGINE_NOTES[note], tone);
         }
@@ -369,8 +446,13 @@ fn brake(
 /// `RaceState`'s proximity sound: the engine of the nearest other racer.
 fn other_engine(me: Entity, from: Vec3, others: &[Other], sfx: &mut Sfx) {
     let distance = |o: &Other| o.pos.distance_squared(from);
-    let nearest = others.iter().filter(|o| o.entity != me).min_by(|a, b| distance(a).total_cmp(&distance(b)));
-    let Some(nearest) = nearest.filter(|o| distance(o).sqrt() / UNIT < OTHER_ENGINE_RANGE.1) else { return };
+    let nearest = others
+        .iter()
+        .filter(|o| o.entity != me)
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)));
+    let Some(nearest) = nearest.filter(|o| distance(o).sqrt() / UNIT < OTHER_ENGINE_RANGE.1) else {
+        return;
+    };
     let speed = nearest.vel.length() / UNIT / 1000.0;
     let mut pitch = (speed / ENGINE_PITCH_SPEED_RANGE
         * (1.0 - ENGINE_PITCH_FLOOR - ENGINE_PITCH_DRIVE_BAND)
@@ -401,12 +483,25 @@ mod tests {
         let mut sfx = Sfx::default();
         let entity = Entity::PLACEHOLDER;
         let here = Emitter::at(Vec3::ZERO);
-        let mut run = |audio: &mut RacerAudio, kart: &Kart, throttle: f32, speed: f32, seconds: f32| {
-            let controls = Controls { throttle, ..default() };
-            for _ in 0..(seconds * 60.0) as usize {
-                engine(kart, audio, &controls, entity, here, speed, 1.0 / 60.0, &mut sfx);
-            }
-        };
+        let mut run =
+            |audio: &mut RacerAudio, kart: &Kart, throttle: f32, speed: f32, seconds: f32| {
+                let controls = Controls {
+                    throttle,
+                    ..default()
+                };
+                for _ in 0..(seconds * 60.0) as usize {
+                    engine(
+                        kart,
+                        audio,
+                        &controls,
+                        entity,
+                        here,
+                        speed,
+                        1.0 / 60.0,
+                        &mut sfx,
+                    );
+                }
+            };
         // At rest only the idle note sounds, and it comes up to the normal volume.
         run(&mut audio, &kart, 0.0, 0.0, 1.0);
         assert_eq!(audio.engine, [ENGINE_VOLUME, 0.0, 0.0]);

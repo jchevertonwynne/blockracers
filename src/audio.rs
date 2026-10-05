@@ -122,11 +122,20 @@ pub struct Emitter {
 
 impl Emitter {
     pub fn at(pos: Vec3) -> Self {
-        Emitter { pos, vel: Vec3::ZERO, range: NEAR, volume: 1.0, pitch: 1.0 }
+        Emitter {
+            pos,
+            vel: Vec3::ZERO,
+            range: NEAR,
+            volume: 1.0,
+            pitch: 1.0,
+        }
     }
 
     pub fn range(self, min: f32, max: f32) -> Self {
-        Emitter { range: (min, max), ..self }
+        Emitter {
+            range: (min, max),
+            ..self
+        }
     }
 
     pub fn far(self) -> Self {
@@ -185,7 +194,15 @@ pub enum Looped {
 
 impl Default for Sfx {
     fn default() -> Self {
-        Sfx { shots: Vec::new(), loops: Vec::new(), nearest: Vec::new(), seed: 0x2545_f491, listening: false, heard: Vec::new(), looping: Vec::new() }
+        Sfx {
+            shots: Vec::new(),
+            loops: Vec::new(),
+            nearest: Vec::new(),
+            seed: 0x2545_f491,
+            listening: false,
+            heard: Vec::new(),
+            looping: Vec::new(),
+        }
     }
 }
 
@@ -209,7 +226,8 @@ impl Sfx {
 
     pub fn sustain(&mut self, owner: Entity, slot: u16, sound: usize, emitter: Emitter) {
         if self.listening {
-            self.looping.push(Looped::Owned(owner.to_bits(), slot, sound as u32, emitter));
+            self.looping
+                .push(Looped::Owned(owner.to_bits(), slot, sound as u32, emitter));
         }
         self.loops.push(((owner.to_bits(), slot), sound, emitter));
     }
@@ -223,14 +241,19 @@ impl Sfx {
     /// Asks again for a loop that was asked for somewhere else.
     pub fn again(&mut self, looped: Looped) {
         match looped {
-            Looped::Owned(owner, slot, sound, emitter) => self.loops.push(((owner, slot), sound as usize, emitter)),
-            Looped::Nearest(slot, sound, emitter, within) => self.nearest.push((slot, sound as usize, emitter, within)),
+            Looped::Owned(owner, slot, sound, emitter) => {
+                self.loops.push(((owner, slot), sound as usize, emitter))
+            }
+            Looped::Nearest(slot, sound, emitter, within) => {
+                self.nearest.push((slot, sound as usize, emitter, within))
+            }
         }
     }
 
     pub fn sustain_nearest(&mut self, slot: u16, sound: usize, emitter: Emitter, within: f32) {
         if self.listening {
-            self.looping.push(Looped::Nearest(slot, sound as u32, emitter, within));
+            self.looping
+                .push(Looped::Nearest(slot, sound as u32, emitter, within));
         }
         self.nearest.push((slot, sound, emitter, within));
     }
@@ -306,24 +329,39 @@ pub fn plugin(app: &mut App) {
 }
 
 fn jam_path() -> PathBuf {
-    std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()).into()
+    std::env::var("BRICK_JAM")
+        .unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into())
+        .into()
 }
 
 fn clip(data: &[u8], default_rate: u32) -> Arc<Clip> {
     let sound = sound::decode(data, default_rate);
-    Arc::new(Clip { samples: sound.samples, channels: sound.channels, rate: sound.rate })
+    Arc::new(Clip {
+        samples: sound.samples,
+        channels: sound.channels,
+        rate: sound.rate,
+    })
 }
 
 /// The file names listed in a sound bank: a folder, a count, then one name per line.
 fn bank_names(jam: &Jam, path: &str) -> Vec<String> {
-    let Some(bank) = jam.get(path) else { return Vec::new() };
+    let Some(bank) = jam.get(path) else {
+        return Vec::new();
+    };
     let text = String::from_utf8_lossy(bank);
-    text.lines().map(str::trim).filter(|l| l.to_lowercase().ends_with(".pcm")).map(String::from).collect()
+    text.lines()
+        .map(str::trim)
+        .filter(|l| l.to_lowercase().ends_with(".pcm"))
+        .map(String::from)
+        .collect()
 }
 
 /// Loads a bank whose sounds are in `dir`. Missing files keep their place in the numbering.
 fn load_bank(jam: &Jam, path: &str, dir: &str) -> Bank {
-    let sound = |name: &String| jam.get(&format!("{dir}/{name}")).map(|data| clip(data, 11025));
+    let sound = |name: &String| {
+        jam.get(&format!("{dir}/{name}"))
+            .map(|data| clip(data, 11025))
+    };
     bank_names(jam, path).iter().map(sound).collect()
 }
 
@@ -338,13 +376,31 @@ fn load_voices(jam: &Jam, racers: &[[String; 2]]) -> (Bank, Vec<usize>) {
     let (mut voices, mut places) = (Bank::new(), Vec::new());
     for names in racers {
         // By the figure's name, or failing that the car's.
-        let listed = |prefix: &String| banks.iter().any(|bank| bank.iter().any(|name| name.to_lowercase().starts_with(&format!("{}_", prefix.to_lowercase()))));
-        let prefix = names.iter().find(|prefix| listed(prefix)).unwrap_or(&names[0]);
-        let own = |name: &String| name.to_lowercase().starts_with(&format!("{}_", prefix.to_lowercase()));
-        let found = banks.iter().find_map(|names| Some((names, names.iter().position(own)?)));
+        let listed = |prefix: &String| {
+            banks.iter().any(|bank| {
+                bank.iter().any(|name| {
+                    name.to_lowercase()
+                        .starts_with(&format!("{}_", prefix.to_lowercase()))
+                })
+            })
+        };
+        let prefix = names
+            .iter()
+            .find(|prefix| listed(prefix))
+            .unwrap_or(&names[0]);
+        let own = |name: &String| {
+            name.to_lowercase()
+                .starts_with(&format!("{}_", prefix.to_lowercase()))
+        };
+        let found = banks
+            .iter()
+            .find_map(|names| Some((names, names.iter().position(own)?)));
         let (names, start) = found.map_or((&[][..], 0), |(names, start)| (&names[..], start));
         for n in 0..id::VOICES_EACH {
-            let data = names.get(start + n).filter(|name| own(name)).and_then(|name| jam.get(&format!("{DIR}/{name}")));
+            let data = names
+                .get(start + n)
+                .filter(|name| own(name))
+                .and_then(|name| jam.get(&format!("{DIR}/{name}")));
             voices.push(data.map(|data| clip(data, 11025)));
         }
         places.push(start / id::VOICES_EACH);
@@ -357,7 +413,9 @@ fn load_voices(jam: &Jam, racers: &[[String; 2]]) -> (Bank, Vec<usize>) {
 pub struct VoicePlaces(pub Vec<usize>);
 
 fn load_banks(mut library: ResMut<Library>) {
-    let Some(jam) = Jam::open(jam_path()) else { return };
+    let Some(jam) = Jam::open(jam_path()) else {
+        return;
+    };
     library.music_dir = jam_path().parent().map(PathBuf::from);
     library.general = load_bank(&jam, "/GAMEDATA/COMMON/GENERAL.SBK", "/GAMEDATA/COMMON");
     library.menu = load_bank(&jam, "/MENUDATA/GENC0R0.SBK", "/MENUDATA/SOUNDS");
@@ -372,11 +430,22 @@ fn load_circuit_bank(
 ) {
     playing.cued = None;
     library.ambient = Bank::new();
-    let Some(race) = circuits.0[settings.circuit].race.as_deref() else { return };
-    let Some(jam) = Jam::open(jam_path()) else { return };
+    let Some(race) = circuits.0[settings.circuit].race.as_deref() else {
+        return;
+    };
+    let Some(jam) = Jam::open(jam_path()) else {
+        return;
+    };
     // The voices of whoever is racing here.
-    let circuit = settings.championship.clone().or_else(|| crate::roster::circuit_of(&jam, race)).unwrap_or("c0".into());
-    let racers: Vec<[String; 2]> = crate::roster::field(&jam, &circuit).iter().map(crate::roster::Driver::voices).collect();
+    let circuit = settings
+        .championship
+        .clone()
+        .or_else(|| crate::roster::circuit_of(&jam, race))
+        .unwrap_or("c0".into());
+    let racers: Vec<[String; 2]> = crate::roster::field(&jam, &circuit)
+        .iter()
+        .map(crate::roster::Driver::voices)
+        .collect();
     let (voices, places) = load_voices(&jam, &racers);
     library.voices = voices;
     places_out.0 = places;
@@ -386,30 +455,59 @@ fn load_circuit_bank(
     }
 }
 
-fn start_mixer(mut commands: Commands, mixer: Res<Mixer>, mut outputs: ResMut<Assets<MixerOutput>>) {
+fn start_mixer(
+    mut commands: Commands,
+    mixer: Res<Mixer>,
+    mut outputs: ResMut<Assets<MixerOutput>>,
+) {
     commands.spawn(AudioPlayer(outputs.add(MixerOutput(mixer.clone()))));
 }
 
 /// Replaces whatever music is playing with `tune` (a `.tun` file name).
-fn play_music(mixer: &Mixer, playing: &mut Playing, library: &Library, settings: &Settings, tune: &str, looped: bool) {
+fn play_music(
+    mixer: &Mixer,
+    playing: &mut Playing,
+    library: &Library,
+    settings: &Settings,
+    tune: &str,
+    looped: bool,
+) {
     if let Some(voice) = playing.music.take() {
         mixer.stop(voice);
     }
-    let Some(data) = library.music_dir.as_ref().and_then(|dir| std::fs::read(dir.join(tune)).ok()) else {
+    let Some(data) = library
+        .music_dir
+        .as_ref()
+        .and_then(|dir| std::fs::read(dir.join(tune)).ok())
+    else {
         return;
     };
-    let tone = Tone { volume: settings.music_volume(), ..default() };
+    let tone = Tone {
+        volume: settings.music_volume(),
+        ..default()
+    };
     playing.music = Some(mixer.play(&clip(&data, 22050), looped, tone));
 }
 
-fn menu_music(mixer: Res<Mixer>, mut playing: ResMut<Playing>, library: Res<Library>, settings: Res<Settings>) {
+fn menu_music(
+    mixer: Res<Mixer>,
+    mut playing: ResMut<Playing>,
+    library: Res<Library>,
+    settings: Res<Settings>,
+) {
     play_music(&mixer, &mut playing, &library, &settings, "theme.tun", true);
 }
 
 /// Applies the music volume setting as it is changed.
 fn music_volume(settings: Res<Settings>, mixer: Res<Mixer>, playing: Res<Playing>) {
     if let (true, Some(voice)) = (settings.is_changed(), playing.music) {
-        mixer.set(voice, Tone { volume: settings.music_volume(), ..default() });
+        mixer.set(
+            voice,
+            Tone {
+                volume: settings.music_volume(),
+                ..default()
+            },
+        );
     }
 }
 
@@ -422,8 +520,15 @@ fn tunes(circuits: &Circuits, settings: &Settings) -> Vec<String> {
         Some(String::from_utf8_lossy(jam.get(&format!("/GAMEDATA/{race}/LEGOMSC"))?).into_owned())
     });
     match list {
-        Some(list) => list.lines().map(str::trim).filter(|l| l.ends_with(".tun")).map(String::from).collect(),
-        None => ["start.tun", "circuit1.tun", "lose.tun", "win.tun"].map(String::from).to_vec(),
+        Some(list) => list
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with(".tun"))
+            .map(String::from)
+            .collect(),
+        None => ["start.tun", "circuit1.tun", "lose.tun", "win.tun"]
+            .map(String::from)
+            .to_vec(),
     }
 }
 
@@ -442,19 +547,31 @@ fn race_cues(
     let before = playing.cued.replace((race.phase, second));
     let entered = before.map(|b| b.0) != Some(race.phase);
     let mut music = |index: usize, looped: bool| {
-        let tune = tunes(&circuits, &settings).get(index).cloned().unwrap_or_default();
+        let tune = tunes(&circuits, &settings)
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
         play_music(&mixer, &mut playing, &library, &settings, &tune, looped);
     };
     match race.phase {
         Phase::Intro if entered => music(0, false),
         // A beep for each of three, two and one.
-        Phase::Countdown if entered || before.map(|b| b.1) != Some(second) => sfx.play(id::COUNTDOWN),
+        Phase::Countdown if entered || before.map(|b| b.1) != Some(second) => {
+            sfx.play(id::COUNTDOWN)
+        }
         Phase::Racing if entered => {
             sfx.play(id::GO);
             // A single race picks one of the circuit's tunes, if it has a choice.
             let count = tunes(&circuits, &settings).len();
-            let choice = if count > 4 { sfx.roll(count as u32 - 3) } else { 0 };
-            music([1, 4, 5, 6].get(choice as usize).copied().unwrap_or(1), true);
+            let choice = if count > 4 {
+                sfx.roll(count as u32 - 3)
+            } else {
+                0
+            };
+            music(
+                [1, 4, 5, 6].get(choice as usize).copied().unwrap_or(1),
+                true,
+            );
         }
         Phase::Finished if entered => music(if player.place == 1 { 3 } else { 2 }, false),
         _ => {}
@@ -466,10 +583,19 @@ fn race_cues(
 /// is, and pitch shifts with the speed the two are closing at.
 fn place(emitter: &Emitter, listener: Option<&Listener>, scale: f32) -> Tone {
     let volume = emitter.volume * scale;
-    let Some(listener) = listener else { return Tone { volume, pan: 0.0, pitch: emitter.pitch } };
+    let Some(listener) = listener else {
+        return Tone {
+            volume,
+            pan: 0.0,
+            pitch: emitter.pitch,
+        };
+    };
     let offset = (emitter.pos - listener.pos) / UNIT;
     let distance_squared = offset.length_squared();
-    let (min, max) = (emitter.range.0 * emitter.range.0, emitter.range.1 * emitter.range.1);
+    let (min, max) = (
+        emitter.range.0 * emitter.range.0,
+        emitter.range.1 * emitter.range.1,
+    );
     let volume = if distance_squared <= min {
         volume
     } else if distance_squared >= max {
@@ -478,14 +604,24 @@ fn place(emitter: &Emitter, listener: Option<&Listener>, scale: f32) -> Tone {
         (1.0 - (distance_squared - min) / (max - min)) * volume
     };
     if volume == 0.0 || distance_squared == 0.0 {
-        return Tone { volume, pan: 0.0, pitch: emitter.pitch };
+        return Tone {
+            volume,
+            pan: 0.0,
+            pitch: emitter.pitch,
+        };
     }
     let side = offset.dot(listener.left);
     let pan = -side.signum() * PAN_SCALE * side * side / distance_squared;
     // Speeds are in the original's units per millisecond, as it feeds them in.
     let towards = -offset / distance_squared.sqrt();
-    let closing = ((emitter.vel - listener.vel) / UNIT / 1000.0).dot(towards).min(SPEED_OF_SOUND * 0.5);
-    Tone { volume, pan, pitch: emitter.pitch * SPEED_OF_SOUND / (SPEED_OF_SOUND - closing) }
+    let closing = ((emitter.vel - listener.vel) / UNIT / 1000.0)
+        .dot(towards)
+        .min(SPEED_OF_SOUND * 0.5);
+    Tone {
+        volume,
+        pan,
+        pitch: emitter.pitch * SPEED_OF_SOUND / (SPEED_OF_SOUND - closing),
+    }
 }
 
 fn audible(tone: &Tone) -> bool {
@@ -514,7 +650,14 @@ fn flush(
         match shot {
             Shot::Flat(sound) => {
                 if let Some(clip) = library.clip(sound) {
-                    mixer.play(clip, false, Tone { volume: scale, ..default() });
+                    mixer.play(
+                        clip,
+                        false,
+                        Tone {
+                            volume: scale,
+                            ..default()
+                        },
+                    );
                 }
             }
             Shot::Placed(sound, emitter) => {
@@ -542,9 +685,15 @@ fn flush(
     slots.sort();
     slots.dedup();
     for slot in slots {
-        let distance = |emitter: &Emitter| listener.map_or(0.0, |l| l.pos.distance(emitter.pos) / UNIT);
-        let candidates = sfx.nearest.iter().filter(|n| n.0 == slot && distance(&n.2) < n.3);
-        if let Some(&(_, sound, emitter, _)) = candidates.min_by(|a, b| distance(&a.2).total_cmp(&distance(&b.2))) {
+        let distance =
+            |emitter: &Emitter| listener.map_or(0.0, |l| l.pos.distance(emitter.pos) / UNIT);
+        let candidates = sfx
+            .nearest
+            .iter()
+            .filter(|n| n.0 == slot && distance(&n.2) < n.3);
+        if let Some(&(_, sound, emitter, _)) =
+            candidates.min_by(|a, b| distance(&a.2).total_cmp(&distance(&b.2)))
+        {
             wanted.push(((RACE, slot), sound, emitter));
         }
     }
@@ -569,7 +718,9 @@ fn flush(
             Some((voice, _)) => mixer.set(*voice, tone),
             None => {
                 if let Some(clip) = library.clip(sound) {
-                    playing.loops.insert(key, (mixer.play(clip, true, tone), sound));
+                    playing
+                        .loops
+                        .insert(key, (mixer.play(clip, true, tone), sound));
                 }
             }
         }
@@ -582,7 +733,9 @@ mod tests {
 
     #[test]
     fn sound_ids_line_up_with_the_sound_bank() {
-        let Some(jam) = Jam::open(jam_path()) else { return };
+        let Some(jam) = Jam::open(jam_path()) else {
+            return;
+        };
         let names = bank_names(&jam, "/GAMEDATA/COMMON/GENERAL.SBK");
         for (sound, file) in [
             (id::COUNTDOWN, "321.pcm"),
@@ -618,23 +771,41 @@ mod tests {
         ] {
             assert_eq!(names[sound], file, "sound {sound:#x}");
         }
-        assert!(load_bank(&jam, "/GAMEDATA/COMMON/GENERAL.SBK", "/GAMEDATA/COMMON").iter().all(Option::is_some));
+        assert!(
+            load_bank(&jam, "/GAMEDATA/COMMON/GENERAL.SBK", "/GAMEDATA/COMMON")
+                .iter()
+                .all(Option::is_some)
+        );
 
         let menu = bank_names(&jam, "/MENUDATA/GENC0R0.SBK");
         assert_eq!(menu[id::MENU_HIGHLIGHT - id::MENU], "hilight1.pcm");
         assert_eq!(menu[id::MENU_SLIDER - id::MENU], "slider2.pcm");
-        assert!(load_bank(&jam, "/MENUDATA/GENC0R0.SBK", "/MENUDATA/SOUNDS").iter().all(Option::is_some));
+        assert!(
+            load_bank(&jam, "/MENUDATA/GENC0R0.SBK", "/MENUDATA/SOUNDS")
+                .iter()
+                .all(Option::is_some)
+        );
     }
 
     #[test]
     fn every_racer_has_a_voice() {
-        let Some(jam) = Jam::open(jam_path()) else { return };
+        let Some(jam) = Jam::open(jam_path()) else {
+            return;
+        };
         // Every circuit's field, by the names their figures' files go by.
         for (circuit, _) in crate::roster::circuits(&jam) {
-            let racers: Vec<[String; 2]> = crate::roster::field(&jam, &circuit).iter().map(crate::roster::Driver::voices).collect();
+            let racers: Vec<[String; 2]> = crate::roster::field(&jam, &circuit)
+                .iter()
+                .map(crate::roster::Driver::voices)
+                .collect();
             let (voices, places) = load_voices(&jam, &racers);
             assert_eq!(voices.len(), racers.len() * id::VOICES_EACH);
-            let missing: Vec<&[String; 2]> = racers.iter().enumerate().filter(|r| voices[r.0 * id::VOICES_EACH].is_none()).map(|r| r.1).collect();
+            let missing: Vec<&[String; 2]> = racers
+                .iter()
+                .enumerate()
+                .filter(|r| voices[r.0 * id::VOICES_EACH].is_none())
+                .map(|r| r.1)
+                .collect();
             assert!(missing.is_empty(), "{circuit}: no voice for {missing:?}");
             assert!(places.iter().all(|&p| p < 6), "{places:?}");
         }
@@ -642,8 +813,18 @@ mod tests {
 
     #[test]
     fn sounds_fade_with_distance_and_pan_to_their_side() {
-        let listener = Listener { pos: Vec3::ZERO, vel: Vec3::ZERO, left: Vec3::NEG_X };
-        let hear = |x: f32, z: f32| place(&Emitter::at(Vec3::new(x, 0.0, z) * UNIT), Some(&listener), 1.0);
+        let listener = Listener {
+            pos: Vec3::ZERO,
+            vel: Vec3::ZERO,
+            left: Vec3::NEG_X,
+        };
+        let hear = |x: f32, z: f32| {
+            place(
+                &Emitter::at(Vec3::new(x, 0.0, z) * UNIT),
+                Some(&listener),
+                1.0,
+            )
+        };
         assert_eq!(hear(0.0, -20.0).volume, 1.0);
         assert_eq!(hear(0.0, -300.0).volume, 0.0);
         let halfway = hear(0.0, -200.0).volume;

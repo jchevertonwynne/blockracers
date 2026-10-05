@@ -62,13 +62,11 @@ impl Championship {
         let series: Vec<Series> = roster::circuits(&jam)
             .into_iter()
             .filter(|(_, rounds)| !rounds.is_empty())
-            .map(|(code, rounds)| {
-                Series {
-                    champion: roster::field(&jam, &code).first().map_or("", |d| d.name),
-                    code,
-                    mirrored: rounds.iter().map(|r| r.mirrored).collect(),
-                    rounds: rounds.into_iter().map(|r| r.folder).collect(),
-                }
+            .map(|(code, rounds)| Series {
+                champion: roster::field(&jam, &code).first().map_or("", |d| d.name),
+                code,
+                mirrored: rounds.iter().map(|r| r.mirrored).collect(),
+                rounds: rounds.into_iter().map(|r| r.folder).collect(),
             })
             .collect();
         let saved = save_file()
@@ -131,7 +129,11 @@ impl Championship {
     /// better place (`CircuitStandings::GetRank`).
     pub fn standing(&self, slot: usize) -> usize {
         let Some(run) = &self.run else { return 1 };
-        1 + run.points.iter().filter(|&&points| points > run.points[slot]).count()
+        1 + run
+            .points
+            .iter()
+            .filter(|&&points| points > run.points[slot])
+            .count()
     }
 
     /// Whether the race just run was the circuit's last.
@@ -223,7 +225,16 @@ fn a_circuit_is_scored_race_by_race() {
     assert!(championship.begin().is_some());
     championship.score(&[(0, 1), (1, 1), (2, 3), (5, 4), (3, 5), (4, 6)]);
     // The two level on points are both first, and the car behind them third.
-    assert_eq!((championship.standing(0), championship.standing(1), championship.standing(2)), (1, 1, 3));
-    assert!(!championship.over() && championship.advance(5).is_none() && championship.run.is_none());
+    assert_eq!(
+        (
+            championship.standing(0),
+            championship.standing(1),
+            championship.standing(2)
+        ),
+        (1, 1, 3)
+    );
+    assert!(
+        !championship.over() && championship.advance(5).is_none() && championship.run.is_none()
+    );
     assert_eq!(championship.unlocked, 2);
 }

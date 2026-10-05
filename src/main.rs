@@ -14,8 +14,8 @@ mod kart;
 mod kart_effects;
 mod menu;
 mod meshgen;
-mod net;
 mod mixer;
+mod net;
 mod opponent;
 mod particles;
 mod physics;
@@ -57,15 +57,30 @@ const STANDINGS_WAIT: f32 = 5.0;
 /// Ends the race for cars still out on the circuit: they take the places left in the
 /// order of the grid, as `RaceSession::UpdateFinishedState` gives them, and the race's
 /// points are handed out.
-fn settle(karts: &mut Query<(&mut Kart, Has<Player>)>, time: f32, championship: &mut championship::Championship) {
-    let mut waiting: Vec<Mut<Kart>> = karts.iter_mut().map(|(k, _)| k).filter(|k| k.finished.is_none() && k.out.is_none()).collect();
+fn settle(
+    karts: &mut Query<(&mut Kart, Has<Player>)>,
+    time: f32,
+    championship: &mut championship::Championship,
+) {
+    let mut waiting: Vec<Mut<Kart>> = karts
+        .iter_mut()
+        .map(|(k, _)| k)
+        .filter(|k| k.finished.is_none() && k.out.is_none())
+        .collect();
     waiting.sort_by_key(|k| k.slot);
     for (i, k) in waiting.iter_mut().enumerate() {
         k.finished = Some(time + i as f32 * 1e-3);
     }
-    let mut order: Vec<(bool, f32, usize)> = karts.iter().map(|(k, _)| (k.out.is_some(), k.finished.unwrap_or(f32::MAX), k.slot)).collect();
+    let mut order: Vec<(bool, f32, usize)> = karts
+        .iter()
+        .map(|(k, _)| (k.out.is_some(), k.finished.unwrap_or(f32::MAX), k.slot))
+        .collect();
     order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let places: Vec<(usize, usize)> = order.iter().enumerate().map(|(i, &(_, _, slot))| (slot, i + 1)).collect();
+    let places: Vec<(usize, usize)> = order
+        .iter()
+        .enumerate()
+        .map(|(i, &(_, _, slot))| (slot, i + 1))
+        .collect();
     championship.score(&places);
 }
 
@@ -119,15 +134,24 @@ impl Dialog {
     const SURE: usize = 44;
 
     fn paused() -> Self {
-        Dialog { prompt: Self::PAUSED, options: vec![Self::CONTINUE, Self::RESTART, Self::EXIT], selected: 0, pending: None }
+        Dialog {
+            prompt: Self::PAUSED,
+            options: vec![Self::CONTINUE, Self::RESTART, Self::EXIT],
+            selected: 0,
+            pending: None,
+        }
     }
 
     /// Starts on "no".
     fn sure(pending: Pending) -> Self {
-        Dialog { prompt: Self::SURE, options: vec![Self::YES, Self::YES + 1], selected: 1, pending: Some(pending) }
+        Dialog {
+            prompt: Self::SURE,
+            options: vec![Self::YES, Self::YES + 1],
+            selected: 1,
+            pending: Some(pending),
+        }
     }
 }
-
 
 /// `BRICK_DEMO=<seconds>:<png path>` goes straight into a race in attract mode, saves a
 /// screenshot and quits. Add `:menu` to photograph the menu instead, or `:cycle` to
@@ -159,7 +183,10 @@ fn main() {
         let mode = parts.next();
         let numbers = |name: &str| -> Vec<f32> {
             let value = std::env::var(name).unwrap_or_default();
-            value.split([',', '@']).filter_map(|n| n.parse().ok()).collect()
+            value
+                .split([',', '@'])
+                .filter_map(|n| n.parse().ok())
+                .collect()
         };
         let camera = match numbers("BRICK_CAM")[..] {
             [x, y, z, tx, ty, tz] => Some((Vec3::new(x, y, z), Vec3::new(tx, ty, tz))),
@@ -169,7 +196,12 @@ fn main() {
             [back, up, right] => Some(Vec3::new(back, up, right)),
             _ => None,
         };
-        let events = numbers("BRICK_EVENTS").as_chunks::<2>().0.iter().map(|pair| (pair[0] as i32, pair[1])).collect();
+        let events = numbers("BRICK_EVENTS")
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| (pair[0] as i32, pair[1]))
+            .collect();
         let keys = std::env::var("BRICK_KEYS").unwrap_or_default();
         let keys = keys.split(',').filter_map(|press| {
             let (key, at) = press.split_once('@')?;
@@ -205,10 +237,26 @@ fn main() {
                     "green" => items::Power::Green,
                     _ => return None,
                 };
-                Some((colour, what.chars().last()?.to_digit(10)? as u8, at.parse().ok()?))
+                Some((
+                    colour,
+                    what.chars().last()?.to_digit(10)? as u8,
+                    at.parse().ok()?,
+                ))
             })
             .collect();
-        Some((DemoShot { at, path, cycle: mode == Some("cycle"), camera, view, events, keys, powers }, mode == Some("menu")))
+        Some((
+            DemoShot {
+                at,
+                path,
+                cycle: mode == Some("cycle"),
+                camera,
+                view,
+                events,
+                keys,
+                powers,
+            },
+            mode == Some("menu"),
+        ))
     });
     let circuits = Circuits::find();
     let mut settings = Settings::new(&circuits);
@@ -218,7 +266,9 @@ fn main() {
     }
     let keeping = demo.is_none();
     // `BRICK_LAPS=1`: how long a demo's race is.
-    let laps = std::env::var("BRICK_LAPS").ok().and_then(|laps| laps.parse::<i32>().ok());
+    let laps = std::env::var("BRICK_LAPS")
+        .ok()
+        .and_then(|laps| laps.parse::<i32>().ok());
     if let Some(choice) = laps.and_then(|laps| menu::LAP_CHOICES.iter().position(|&l| l == laps)) {
         settings.lap_choice = choice;
     }
@@ -230,23 +280,40 @@ fn main() {
     // `BRICK_MIRROR`, `BRICK_REVERSE`, `BRICK_ELIMINATION` and `BRICK_BRICKS=red` (or
     // yellow, blue, green, none, random) turn on the port's own ways of racing.
     let set = |name: &str| std::env::var(name).is_ok();
-    (settings.mirror, settings.reverse, settings.elimination) = (set("BRICK_MIRROR"), set("BRICK_REVERSE"), set("BRICK_ELIMINATION"));
+    (settings.mirror, settings.reverse, settings.elimination) = (
+        set("BRICK_MIRROR"),
+        set("BRICK_REVERSE"),
+        set("BRICK_ELIMINATION"),
+    );
     if let Ok(colour) = std::env::var("BRICK_BRICKS") {
-        settings.bricks = ["normal", "red", "yellow", "blue", "green", "none", "random"].iter().position(|&c| c == colour).unwrap_or(0);
+        settings.bricks = ["normal", "red", "yellow", "blue", "green", "none", "random"]
+            .iter()
+            .position(|&c| c == colour)
+            .unwrap_or(0);
     }
     // `BRICK_OPPONENTS=1`: how many of the computer's cars a demo races.
-    if let Some(opponents) = std::env::var("BRICK_OPPONENTS").ok().and_then(|n| n.parse::<usize>().ok()) {
+    if let Some(opponents) = std::env::var("BRICK_OPPONENTS")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+    {
         settings.opponents = opponents.min(menu::MAX_OPPONENTS);
     }
     // `BRICK_TIME=1`: a demo's race is against the clock.
     settings.time_race = std::env::var("BRICK_TIME").is_ok();
     // `BRICK_SERIES=0`: a demo races this circuit's races rather than one on its own.
     let mut championship = championship::Championship::load();
-    if let Some(series) = std::env::var("BRICK_SERIES").ok().and_then(|s| s.parse().ok()) {
+    if let Some(series) = std::env::var("BRICK_SERIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
         (championship.chosen, championship.unlocked) = (series, championship.series.len());
         if let Some((code, folder)) = championship.begin() {
             settings.championship = Some(code);
-            settings.circuit = circuits.0.iter().position(|c| c.race.as_deref() == Some(folder.as_str())).unwrap_or(0);
+            settings.circuit = circuits
+                .0
+                .iter()
+                .position(|c| c.race.as_deref() == Some(folder.as_str()))
+                .unwrap_or(0);
         }
     }
 
@@ -257,22 +324,35 @@ fn main() {
         app.insert_resource(auto);
     }
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window { title: "Brick Racers".into(), ..default() }),
+        primary_window: Some(Window {
+            title: "Brick Racers".into(),
+            ..default()
+        }),
         ..default()
     }));
     match demo {
         Some((shot, on_menu)) => {
-            app.insert_resource(shot).add_systems(Update, demo_shot.after(kart::ai_drive).before(items::use_items));
+            app.insert_resource(shot).add_systems(
+                Update,
+                demo_shot.after(kart::ai_drive).before(items::use_items),
+            );
             app.add_systems(PreUpdate, demo_keys.after(bevy::input::InputSystems));
             // A demo online waits at the menu for its session's race to begin.
-            app.insert_state(if on_menu || auto.is_some() { Screen::Menu } else { Screen::Race });
+            app.insert_state(if on_menu || auto.is_some() {
+                Screen::Menu
+            } else {
+                Screen::Race
+            });
         }
         None => {
             app.init_state::<Screen>();
         }
     }
     app.insert_resource(ClearColor(SKY))
-        .insert_resource(GlobalAmbientLight { brightness: 500.0, ..default() })
+        .insert_resource(GlobalAmbientLight {
+            brightness: 500.0,
+            ..default()
+        })
         .insert_resource(circuits)
         .insert_resource(settings)
         .init_resource::<camera::Rig>()
@@ -281,12 +361,26 @@ fn main() {
         .init_resource::<replay::Replay>()
         .init_resource::<replay::Photo>()
         // Online the settings are the session's, and not the player's to be kept.
-        .add_systems(Update, (video::apply, menu::keep.run_if(move || keeping).run_if(not(net::online))))
+        .add_systems(
+            Update,
+            (
+                video::apply,
+                menu::keep.run_if(move || keeping).run_if(not(net::online)),
+            ),
+        )
         .init_resource::<time_race::TimeRace>()
         .insert_resource(championship)
-        .add_systems(OnEnter(Screen::Loading), |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race))
+        .add_systems(
+            OnEnter(Screen::Loading),
+            |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race),
+        )
         .add_plugins((menu::plugin, frontend::plugin, audio::plugin, net::plugin))
-        .add_systems(Update, leave_online.run_if(in_state(Screen::Race)).run_if(net::online))
+        .add_systems(
+            Update,
+            leave_online
+                .run_if(in_state(Screen::Race))
+                .run_if(net::online),
+        )
         .add_systems(Startup, setup_scene)
         .add_systems(
             OnEnter(Screen::Race),
@@ -320,7 +414,12 @@ fn main() {
                     items::actions,
                     kart::kart_physics,
                     kart::kart_collisions,
-                    (kart::update_places, rules::elimination, time_race::time_race).chain(),
+                    (
+                        kart::update_places,
+                        rules::elimination,
+                        time_race::time_race,
+                    )
+                        .chain(),
                     items::pickups,
                     replay::record,
                 )
@@ -348,9 +447,17 @@ fn main() {
                     .chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
-                (chase_camera.run_if(not(replay::shooting)), replay::photo.run_if(not(net::online)), sky::follow, particles::particles).chain(),
+                (
+                    chase_camera.run_if(not(replay::shooting)),
+                    replay::photo.run_if(not(net::online)),
+                    sky::follow,
+                    particles::particles,
+                )
+                    .chain(),
                 hud::update_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
-                hud::original::draw.run_if(resource_exists::<hud::original::Art>).run_if(not(replay::shooting)),
+                hud::original::draw
+                    .run_if(resource_exists::<hud::original::Art>)
+                    .run_if(not(replay::shooting)),
                 tag_race_entities,
             )
                 .chain()
@@ -363,15 +470,26 @@ fn setup_scene(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         // Far enough to take in the sky, which is drawn large and a long way off.
-        Projection::Perspective(PerspectiveProjection { far: 5000.0, ..default() }),
+        Projection::Perspective(PerspectiveProjection {
+            far: 5000.0,
+            ..default()
+        }),
         Transform::from_xyz(0.0, 10.0, 20.0),
         // The original's colours are baked in and meant to reach the screen as they are.
         Tonemapping::None,
     ));
     commands.spawn((
-        DirectionalLight { illuminance: 11_000.0, shadow_maps_enabled: true, ..default() },
+        DirectionalLight {
+            illuminance: 11_000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
         Transform::from_xyz(60.0, 100.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
-        CascadeShadowConfigBuilder { maximum_distance: 160.0, ..default() }.build(),
+        CascadeShadowConfigBuilder {
+            maximum_distance: 160.0,
+            ..default()
+        }
+        .build(),
     ));
 }
 
@@ -395,13 +513,21 @@ fn load_race(
     let mut events = circuit.race.as_deref().and_then(events::load);
     let mut hazards = circuit.race.as_deref().and_then(hazards::load);
     commands.remove_resource::<gauntlet::Stands>();
-    match circuit.race.as_deref().and_then(|race| world::load_in(race, settings.championship.as_deref(), settings.time_race)) {
+    match circuit
+        .race
+        .as_deref()
+        .and_then(|race| world::load_in(race, settings.championship.as_deref(), settings.time_race))
+    {
         Some((mut track, mut loaded)) => {
             if variant.reverse {
                 track.reverse();
             }
             // Online, players race as whoever they chose to.
-            for (slot, code) in lineup.iter().filter(|_| *role != net::Role::Offline).flat_map(|lineup| lineup.cast()) {
+            for (slot, code) in lineup
+                .iter()
+                .filter(|_| *role != net::Role::Offline)
+                .flat_map(|lineup| lineup.cast())
+            {
                 if !world::recast(&mut loaded, slot, code) {
                     warn!("nobody to race as {code}");
                 }
@@ -418,7 +544,11 @@ fn load_race(
             // The gauntlet has hazards of the game's to stand round its road, where
             // the game's data is there to take them from.
             let gauntlet = circuit.race.is_none() && circuit.layout == track::Layout::Gauntlet;
-            let furnished = if gauntlet { gauntlet::load(&mut track, settings.championship.as_deref()) } else { None };
+            let furnished = if gauntlet {
+                gauntlet::load(&mut track, settings.championship.as_deref())
+            } else {
+                None
+            };
             if variant.reverse {
                 track.reverse();
             }
@@ -497,11 +627,23 @@ fn setup_brick_world(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Everything static is vertex-coloured and shares one plastic material.
-    let plastic = materials.add(StandardMaterial { perceptual_roughness: 0.5, ..default() });
-    commands.spawn((Mesh3d(meshes.add(track.build_mesh())), MeshMaterial3d(plastic.clone())));
-    commands.spawn((Mesh3d(meshes.add(track.build_scenery(circuits.0[settings.circuit].layout, &mut rng))), MeshMaterial3d(plastic.clone())));
+    let plastic = materials.add(StandardMaterial {
+        perceptual_roughness: 0.5,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(track.build_mesh())),
+        MeshMaterial3d(plastic.clone()),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(track.build_scenery(circuits.0[settings.circuit].layout, &mut rng))),
+        MeshMaterial3d(plastic.clone()),
+    ));
     if let Some(stands) = stands {
-        commands.spawn((Mesh3d(meshes.add(stands.0.clone())), MeshMaterial3d(plastic)));
+        commands.spawn((
+            Mesh3d(meshes.add(stands.0.clone())),
+            MeshMaterial3d(plastic),
+        ));
     }
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(3000.0, 3000.0))),
@@ -515,13 +657,22 @@ fn setup_brick_world(
 }
 
 /// Presses the keys a demo asks for, each for one frame.
-fn demo_keys(time: Res<Time<Real>>, demo: Res<DemoShot>, mut keys: ResMut<ButtonInput<KeyCode>>, mut pressed: Local<usize>) {
+fn demo_keys(
+    time: Res<Time<Real>>,
+    demo: Res<DemoShot>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut pressed: Local<usize>,
+) {
     for &(key, at, held) in demo.keys.iter().take(*pressed) {
         if time.elapsed_secs() >= at + held {
             keys.release(key);
         }
     }
-    if let Some(&(key, ..)) = demo.keys.get(*pressed).filter(|k| time.elapsed_secs() >= k.1) {
+    if let Some(&(key, ..)) = demo
+        .keys
+        .get(*pressed)
+        .filter(|k| time.elapsed_secs() >= k.1)
+    {
         keys.press(key);
         *pressed += 1;
     }
@@ -542,15 +693,23 @@ fn demo_shot(
     mut player: Query<(&mut Kart, &mut kart::Controls), With<Player>>,
     mut pending: ResMut<net::Pending>,
 ) {
-    if let Some(&(power, level, _)) = demo.powers.get(*used).filter(|p| time.elapsed_secs() >= p.2)
-        && let Ok((mut kart, mut controls)) = player.single_mut() {
-            (kart.held, kart.whites, controls.use_item) = (Some(power), level, true);
-            // Online the press is taken by the next step of the race.
-            pending.use_item();
-            *used += 1;
-        }
+    if let Some(&(power, level, _)) = demo
+        .powers
+        .get(*used)
+        .filter(|p| time.elapsed_secs() >= p.2)
+        && let Ok((mut kart, mut controls)) = player.single_mut()
+    {
+        (kart.held, kart.whites, controls.use_item) = (Some(power), level, true);
+        // Online the press is taken by the next step of the race.
+        pending.use_item();
+        *used += 1;
+    }
     if let Some(mut events) = events {
-        while let Some(&(event, _)) = demo.events.get(*fired).filter(|e| time.elapsed_secs() >= e.1) {
+        while let Some(&(event, _)) = demo
+            .events
+            .get(*fired)
+            .filter(|e| time.elapsed_secs() >= e.1)
+        {
             events.fire(event, None, &mut sfx);
             *fired += 1;
         }
@@ -560,12 +719,18 @@ fn demo_shot(
         let stage = (time.elapsed_secs() / demo.at * 3.0) as u8;
         if stage > *cycled && stage < 3 {
             *cycled = stage;
-            next.set(if stage == 1 { Screen::Menu } else { Screen::Race });
+            next.set(if stage == 1 {
+                Screen::Menu
+            } else {
+                Screen::Race
+            });
         }
     }
     if time.elapsed_secs() > demo.at && !*taken {
         *taken = true;
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(demo.path.clone()));
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(demo.path.clone()));
     }
     if time.elapsed_secs() > demo.at + 1.0 {
         exit.write(AppExit::Success);
@@ -598,7 +763,8 @@ fn race_flow(
     if let Some(dialog) = &mut pause.0 {
         // Paused: the keys work the menu and nothing else moves.
         let count = dialog.options.len();
-        let step = keys.just_pressed(KeyCode::ArrowDown) as usize + keys.just_pressed(KeyCode::ArrowUp) as usize * (count - 1);
+        let step = keys.just_pressed(KeyCode::ArrowDown) as usize
+            + keys.just_pressed(KeyCode::ArrowUp) as usize * (count - 1);
         if step > 0 {
             dialog.selected = (dialog.selected + step) % count;
             sfx.play(audio::id::MENU_HIGHLIGHT);
@@ -663,17 +829,37 @@ fn race_flow(
     // `RaceSession::UpdateFinishedState` and `UpdateResultsState`: the race is left by
     // itself, ten seconds after the player finishes, or after five more with a
     // circuit's standings to show. A time race waits to be asked, and so does a demo.
-    let since_finish = karts.iter().find(|(_, player)| *player).and_then(|(k, _)| k.finished).map(|at| race.time - at);
-    let wait = if championship.run.is_some() { FINISH_WAIT + STANDINGS_WAIT } else { FINISH_WAIT };
-    let over = race.phase == Phase::Finished && !race.demo && !settings.time_race && !restart && since_finish.is_some_and(|since| since >= wait);
+    let since_finish = karts
+        .iter()
+        .find(|(_, player)| *player)
+        .and_then(|(k, _)| k.finished)
+        .map(|at| race.time - at);
+    let wait = if championship.run.is_some() {
+        FINISH_WAIT + STANDINGS_WAIT
+    } else {
+        FINISH_WAIT
+    };
+    let over = race.phase == Phase::Finished
+        && !race.demo
+        && !settings.time_race
+        && !restart
+        && since_finish.is_some_and(|since| since >= wait);
     // After a race of a circuit comes the next, or the way out.
-    if race.phase == Phase::Finished && (keys.just_pressed(KeyCode::Enter) || over) && championship.run.is_some() && !restart {
+    if race.phase == Phase::Finished
+        && (keys.just_pressed(KeyCode::Enter) || over)
+        && championship.run.is_some()
+        && !restart
+    {
         settle(&mut karts, race.time, &mut championship);
         let player = karts.iter().find(|k| k.1).map_or(0, |k| k.0.slot);
         sfx.play(audio::id::MENU_CONFIRM);
         match championship.advance(player) {
             Some(folder) => {
-                settings.circuit = circuits.0.iter().position(|c| c.race.as_deref() == Some(folder.as_str())).unwrap_or(settings.circuit);
+                settings.circuit = circuits
+                    .0
+                    .iter()
+                    .position(|c| c.race.as_deref() == Some(folder.as_str()))
+                    .unwrap_or(settings.circuit);
                 next.set(Screen::Loading);
             }
             None => {
@@ -715,7 +901,10 @@ fn race_flow(
         }
         Phase::Racing => {
             race.time += time.delta_secs();
-            if karts.iter().any(|(k, player)| player && k.finished.is_some()) {
+            if karts
+                .iter()
+                .any(|(k, player)| player && k.finished.is_some())
+            {
                 race.phase = Phase::Finished;
             }
         }
@@ -723,9 +912,16 @@ fn race_flow(
         // after a while those still out are placed as they stand on the grid.
         Phase::Finished => {
             race.time += time.delta_secs();
-            let finished = karts.iter().find(|(_, player)| *player).and_then(|(k, _)| k.finished);
-            let waiting = karts.iter().any(|(k, _)| k.finished.is_none() && k.out.is_none());
-            if finished.is_some_and(|at| race.time - at >= FINISH_WAIT) && (waiting || championship.run.as_ref().is_some_and(|run| !run.scored)) {
+            let finished = karts
+                .iter()
+                .find(|(_, player)| *player)
+                .and_then(|(k, _)| k.finished);
+            let waiting = karts
+                .iter()
+                .any(|(k, _)| k.finished.is_none() && k.out.is_none());
+            if finished.is_some_and(|at| race.time - at >= FINISH_WAIT)
+                && (waiting || championship.run.as_ref().is_some_and(|run| !run.scored))
+            {
                 settle(&mut karts, race.time, &mut championship);
             }
         }
@@ -734,23 +930,22 @@ fn race_flow(
 
 /// Online, Escape asks whether to leave, as the original asks before giving up a
 /// race; the race goes on behind the question, since others are in it. A player who
-/// leaves is out of the session. The host leaving a race calls it off for everyone,
-/// and they are all back in the session's room.
+/// leaves is back in the session's room, and the computer drives their car for the
+/// rest of the race. The host leaving a race calls it off for everyone, and they are
+/// all back in the room.
 fn leave_online(
-    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     art: Option<Res<hud::original::Art>>,
     mut pause: ResMut<Pause>,
     mut sfx: ResMut<audio::Sfx>,
     mut session: ResMut<net::Session>,
-    mut settings: ResMut<Settings>,
     mut next: ResMut<NextState<Screen>>,
     role: Res<net::Role>,
     mut wire: ResMut<net::Wire>,
 ) {
-    let mut leave = |commands: &mut Commands, next: &mut NextState<Screen>| match *role {
+    let mut leave = |next: &mut NextState<Screen>| match *role {
         net::Role::Host => net::call_off(&mut session, &mut wire, next),
-        _ => net::leave(commands, &mut session, &mut settings, None, next),
+        _ => net::retire(&mut wire, next),
     };
     let Some(dialog) = &mut pause.0 else {
         if keys.just_pressed(KeyCode::Escape) {
@@ -758,24 +953,29 @@ fn leave_online(
             // Without the game's own lettering there is no question to show: just leave.
             match art {
                 Some(_) => pause.0 = Some(Dialog::sure(Pending::Exit)),
-                None => leave(&mut commands, &mut next),
+                None => leave(&mut next),
             }
         }
         return;
     };
     let count = dialog.options.len();
-    let step = keys.just_pressed(KeyCode::ArrowDown) as usize + keys.just_pressed(KeyCode::ArrowUp) as usize * (count - 1);
+    let step = keys.just_pressed(KeyCode::ArrowDown) as usize
+        + keys.just_pressed(KeyCode::ArrowUp) as usize * (count - 1);
     if step > 0 {
         dialog.selected = (dialog.selected + step) % count;
         sfx.play(audio::id::MENU_HIGHLIGHT);
     }
     // Backing out is "no".
-    let chosen = if keys.just_pressed(KeyCode::Escape) { Some(1) } else { keys.just_pressed(KeyCode::Enter).then_some(dialog.selected) };
+    let chosen = if keys.just_pressed(KeyCode::Escape) {
+        Some(1)
+    } else {
+        keys.just_pressed(KeyCode::Enter).then_some(dialog.selected)
+    };
     if let Some(chosen) = chosen {
         sfx.play(audio::id::MENU_SELECT);
         pause.0 = None;
         if chosen == 0 {
-            leave(&mut commands, &mut next);
+            leave(&mut next);
         }
     }
 }
@@ -792,11 +992,14 @@ fn chase_camera(
     mut replay: ResMut<replay::Replay>,
 ) {
     let (mut t, mut projection) = camera.into_inner();
-    let Some((own, _)) = karts.iter().find(|k| k.1) else { return };
+    let Some((own, _)) = karts.iter().find(|k| k.1) else {
+        return;
+    };
     // A replay may be watched over any car's shoulder, or from beside the road.
     let mut player = own;
     if replay.showing.is_some() {
-        let step = keys.just_pressed(KeyCode::ArrowRight) as isize - keys.just_pressed(KeyCode::ArrowLeft) as isize;
+        let step = keys.just_pressed(KeyCode::ArrowRight) as isize
+            - keys.just_pressed(KeyCode::ArrowLeft) as isize;
         if step != 0 {
             replay.watch_next(own.slot, step);
             rig.reset();
@@ -805,7 +1008,10 @@ fn chase_camera(
             replay.trackside = !replay.trackside;
             rig.reset();
         }
-        player = replay.subject.and_then(|slot| karts.iter().find(|k| k.0.slot == slot)).map_or(own, |k| k.0);
+        player = replay
+            .subject
+            .and_then(|slot| karts.iter().find(|k| k.0.slot == slot))
+            .map_or(own, |k| k.0);
         if replay.trackside {
             t.translation = replay::Replay::station(&track, player);
             t.look_at(player.pos + Vec3::Y * 0.8, Vec3::Y);
@@ -831,13 +1037,26 @@ fn chase_camera(
     }
     rig.look_back = keys.pressed(KeyCode::KeyV);
     // Its race run, the player's car is watched from in front.
-    rig.finished(player.finished.is_some() && player.warp <= 0.0 && player.warp_start <= 0.0 && replay.showing.is_none() && !race.demo);
+    rig.finished(
+        player.finished.is_some()
+            && player.warp <= 0.0
+            && player.warp_start <= 0.0
+            && replay.showing.is_none()
+            && !race.demo,
+    );
     // Down a warp's tunnel the camera is held still behind the car.
-    let (position, rotation) =
-        if player.warp > 0.0 { rig.fixed(player) } else { rig.follow(player, time.delta_secs()) };
+    let (position, rotation) = if player.warp > 0.0 {
+        rig.fixed(player)
+    } else {
+        rig.follow(player, time.delta_secs())
+    };
 
     // During the intro the camera drops in from high behind the grid.
-    let sweep = if race.phase == Phase::Intro { (race.intro / INTRO).clamp(0.0, 1.0).powi(2) } else { 0.0 };
+    let sweep = if race.phase == Phase::Intro {
+        (race.intro / INTRO).clamp(0.0, 1.0).powi(2)
+    } else {
+        0.0
+    };
     let back = rotation * Vec3::Z;
     t.translation = position + (back * 14.0 + Vec3::Y * 10.0) * sweep;
     if player.warp > 0.0 {
@@ -876,9 +1095,14 @@ mod tests {
         app.add_plugins((MinimalPlugins, StatesPlugin))
             .insert_state(Screen::Race)
             .add_systems(Update, tag_race_entities.run_if(in_state(Screen::Race)));
-        let brick = app.world_mut().spawn((scenery::Placed, Transform::default())).id();
+        let brick = app
+            .world_mut()
+            .spawn((scenery::Placed, Transform::default()))
+            .id();
         app.update();
-        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Loading);
+        app.world_mut()
+            .resource_mut::<NextState<Screen>>()
+            .set(Screen::Loading);
         app.update();
         assert!(app.world().get_entity(brick).is_err());
     }

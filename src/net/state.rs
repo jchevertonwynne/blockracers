@@ -21,11 +21,17 @@ pub struct Standing {
 
 impl Standing {
     pub fn of(k: &Kart) -> Self {
-        Standing { lap: k.lap, place: k.place as u8, progress: k.progress, finished: k.finished }
+        Standing {
+            lap: k.lap,
+            place: k.place as u8,
+            progress: k.progress,
+            finished: k.finished,
+        }
     }
 
     pub fn put(self, k: &mut Kart) {
-        (k.lap, k.place, k.progress, k.finished) = (self.lap, self.place as usize, self.progress, self.finished);
+        (k.lap, k.place, k.progress, k.finished) =
+            (self.lap, self.place as usize, self.progress, self.finished);
     }
 }
 
@@ -102,7 +108,15 @@ impl State {
             facing: k.facing,
             contacts: k.contacts,
             ground_normal: k.ground_normal,
-            surface: ([k.surface.rolling_resistance, k.surface.friction, k.surface.lateral_grip, k.surface.support], k.surface.force),
+            surface: (
+                [
+                    k.surface.rolling_resistance,
+                    k.surface.friction,
+                    k.surface.lateral_grip,
+                    k.surface.support,
+                ],
+                k.surface.force,
+            ),
             wall_contact: k.wall_contact,
             air_time: k.air_time,
             sliding: k.sliding,
@@ -157,21 +171,39 @@ impl State {
     pub fn put(&self, k: &mut Kart) {
         let s = self.clone();
         (k.pos, k.vel, k.rot, k.facing) = (s.pos, s.vel, s.rot, s.facing);
-        (k.contacts, k.ground_normal, k.wall_contact, k.air_time) = (s.contacts, s.ground_normal, s.wall_contact, s.air_time);
-        (k.sliding, k.slide_tight, k.drifting, k.slipping) = (s.sliding, s.slide_tight, s.drifting, s.slipping);
-        (k.slip_ratio, k.turn_radius, k.yaw_impulse, k.yaw_kick) = (s.slip_ratio, s.turn_radius, s.yaw_impulse, s.yaw_kick);
-        (k.turbo_weak, k.curse_timer, k.curse_throttle) = (s.turbo_weak, s.curse_timer, s.curse_throttle);
-        (k.safe, k.shove, k.noise, k.steer, k.top_factor) = (s.safe, s.shove, s.noise, s.steer, s.top_factor);
+        (k.contacts, k.ground_normal, k.wall_contact, k.air_time) =
+            (s.contacts, s.ground_normal, s.wall_contact, s.air_time);
+        (k.sliding, k.slide_tight, k.drifting, k.slipping) =
+            (s.sliding, s.slide_tight, s.drifting, s.slipping);
+        (k.slip_ratio, k.turn_radius, k.yaw_impulse, k.yaw_kick) =
+            (s.slip_ratio, s.turn_radius, s.yaw_impulse, s.yaw_kick);
+        (k.turbo_weak, k.curse_timer, k.curse_throttle) =
+            (s.turbo_weak, s.curse_timer, s.curse_throttle);
+        (k.safe, k.shove, k.noise, k.steer, k.top_factor) =
+            (s.safe, s.shove, s.noise, s.steer, s.top_factor);
         (k.idx, k.s, k.lat) = (s.track.0 as usize, s.track.1, s.track.2);
         (k.lap, k.progress, k.finished, k.out) = (s.lap, s.progress, s.finished, s.out);
         (k.held, k.whites) = (s.held, s.whites);
         (k.spin, k.spin_rate, k.spin_out) = (s.spin, s.spin_rate, s.spin_out);
-        (k.boost, k.boost_level, k.shield, k.shield_level) = (s.boost, s.boost_level, s.shield, s.shield_level);
-        (k.cursed, k.magnet, k.warp, k.warp_start, k.warp_to) = (s.cursed, s.magnet, s.warp, s.warp_start, s.warp_to);
-        (k.checkpoint, k.checkpoint_forward) = (s.checkpoint.map(|gate| gate as usize), s.checkpoint_forward);
-        (k.checkpoint_count, k.crossed_backward, k.zones) = (s.checkpoint_count, s.crossed_backward, s.zones);
-        (k.hover, k.hover_lift, k.hover_bank, k.ended) = (s.hover, s.hover_lift, s.hover_bank, s.ended);
-        ([k.surface.rolling_resistance, k.surface.friction, k.surface.lateral_grip, k.surface.support], k.surface.force) = s.surface;
+        (k.boost, k.boost_level, k.shield, k.shield_level) =
+            (s.boost, s.boost_level, s.shield, s.shield_level);
+        (k.cursed, k.magnet, k.warp, k.warp_start, k.warp_to) =
+            (s.cursed, s.magnet, s.warp, s.warp_start, s.warp_to);
+        (k.checkpoint, k.checkpoint_forward) =
+            (s.checkpoint.map(|gate| gate as usize), s.checkpoint_forward);
+        (k.checkpoint_count, k.crossed_backward, k.zones) =
+            (s.checkpoint_count, s.crossed_backward, s.zones);
+        (k.hover, k.hover_lift, k.hover_bank, k.ended) =
+            (s.hover, s.hover_lift, s.hover_bank, s.ended);
+        (
+            [
+                k.surface.rolling_resistance,
+                k.surface.friction,
+                k.surface.lateral_grip,
+                k.surface.support,
+            ],
+            k.surface.force,
+        ) = s.surface;
         let forward = k.rot * Vec3::NEG_Z;
         k.yaw = (-forward.x).atan2(-forward.z);
     }
@@ -188,7 +220,11 @@ mod tests {
     fn a_car_taken_up_from_its_state_drives_on_the_same() {
         let track = Track::new();
         let dt = 1.0 / 60.0;
-        let c = Controls { throttle: 1.0, steer: 0.6, ..default() };
+        let c = Controls {
+            throttle: 1.0,
+            steer: 0.6,
+            ..default()
+        };
         let mut driven = Kart::new(&track, 2);
         for _ in 0..90 {
             driven.advance(&c, &track, dt);
@@ -198,7 +234,12 @@ mod tests {
         State::of(&driven).put(&mut taken);
         for step in 0..240 {
             // Something of everything: a turn the other way, a slide, a curse's dice.
-            let c = Controls { throttle: 1.0, steer: if step < 120 { -1.0 } else { 1.0 }, drift: step > 60, ..default() };
+            let c = Controls {
+                throttle: 1.0,
+                steer: if step < 120 { -1.0 } else { 1.0 },
+                drift: step > 60,
+                ..default()
+            };
             if step == 30 {
                 driven.curse(2.0);
                 taken.curse(2.0);

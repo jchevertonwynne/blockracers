@@ -33,8 +33,14 @@ impl Variant {
     /// as the settings have it. `folder` is the race's, if it is one of the original's.
     pub fn of(settings: &Settings, championship: &Championship, folder: Option<&str>) -> Self {
         match championship.mirrored() {
-            Some(mirror) => Variant { mirror, reverse: false },
-            None => Variant { mirror: settings.mirror, reverse: settings.reverse && !folder.is_some_and(|f| ONE_WAY.contains(&f)) },
+            Some(mirror) => Variant {
+                mirror,
+                reverse: false,
+            },
+            None => Variant {
+                mirror: settings.mirror,
+                reverse: settings.reverse && !folder.is_some_and(|f| ONE_WAY.contains(&f)),
+            },
         }
     }
 

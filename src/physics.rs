@@ -118,7 +118,9 @@ const STEP_UP: f32 = 0.5;
 const CONTACT_PADDING: f32 = 0.4 * UNIT;
 
 fn tangent(v: Vec3, normal: Vec3, fallback: Vec3) -> Vec3 {
-    v.reject_from_normalized(normal).try_normalize().unwrap_or(fallback)
+    v.reject_from_normalized(normal)
+        .try_normalize()
+        .unwrap_or(fallback)
 }
 
 /// Advances one kart by `dt` (which should be small: a hundredth of a second or so).
@@ -130,7 +132,11 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, Vec3::NEG_Z);
     let mut facing = tangent(k.facing, up, body_fwd);
     let speed = k.vel.length();
-    let vel_dir = if speed > 1e-3 { k.vel / speed } else { body_fwd };
+    let vel_dir = if speed > 1e-3 {
+        k.vel / speed
+    } else {
+        body_fwd
+    };
     let vf = k.vel.dot(facing);
     let aligned = body_fwd.dot(vel_dir);
 
@@ -149,7 +155,10 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     // asked for with the accelerator down and the wheels turned, and has to be let go
     // of before another can begin.
     if c.drift && k.steer != 0.0 {
-        let can_slide = !k.wall_contact && (k.hover || k.contacts >= 3) && aligned > POWERSLIDE_ALIGNMENT_MIN && vf >= POWERSLIDE_MIN_SPEED;
+        let can_slide = !k.wall_contact
+            && (k.hover || k.contacts >= 3)
+            && aligned > POWERSLIDE_ALIGNMENT_MIN
+            && vf >= POWERSLIDE_MIN_SPEED;
         if !k.drifting && can_slide {
             (k.drifting, k.sliding, k.slide_tight) = (true, true, c.tight);
         }
@@ -160,7 +169,11 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     // --- DriveController::SetThrottleInput and ApplyThrust. A cursed driver's foot
     // is not their own.
     let cursed = k.cursed > 0.0;
-    let throttle = if cursed { (c.throttle + k.curse_throttle).clamp(-1.0, 1.0) } else { c.throttle };
+    let throttle = if cursed {
+        (c.throttle + k.curse_throttle).clamp(-1.0, 1.0)
+    } else {
+        c.throttle
+    };
     let mut thrust = THRUST * throttle;
     if throttle * vf < 0.0 {
         thrust *= BRAKE_SCALE;
@@ -183,7 +196,8 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     let mut input = k.steer * if cursed { -1.0 } else { 1.0 } * k.stats.handling;
     let mut radius = 0.0;
     if input != 0.0 {
-        radius = 1.0 / (INV_MAX_TURN_RADIUS + (INV_MIN_TURN_RADIUS - INV_MAX_TURN_RADIUS) * input.abs());
+        radius =
+            1.0 / (INV_MAX_TURN_RADIUS + (INV_MIN_TURN_RADIUS - INV_MAX_TURN_RADIUS) * input.abs());
     }
     // `UpdateReturnToPath` sets the turn and the thrust without the driver's controls.
     let mut thrust = thrust;
@@ -205,13 +219,21 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
 
     // --- DriveController::ApplySteering, with RacerPhysics::CanSteer.
     let against = input * k.turn_radius < 0.0;
-    let can_steer = aligned > 0.0 && !against && (k.slipping || aligned >= 0.9) && !k.wall_contact && speed <= STEER_MAX_SPEED;
+    let can_steer = aligned > 0.0
+        && !against
+        && (k.slipping || aligned >= 0.9)
+        && !k.wall_contact
+        && speed <= STEER_MAX_SPEED;
     let mut slip: Option<Slip> = None;
     if radius > 0.0 {
         if k.sliding {
             if can_steer {
                 let assist = (1.0 - radius / limit).max(0.05);
-                slip = Some(if k.slide_tight { (1.0 + 2.0 * assist, 0.25, PI) } else { (1.0 + assist, 0.85, PI) });
+                slip = Some(if k.slide_tight {
+                    (1.0 + 2.0 * assist, 0.25, PI)
+                } else {
+                    (1.0 + assist, 0.85, PI)
+                });
                 if radius < limit {
                     radius += (limit - radius) * 0.25;
                 }
@@ -224,7 +246,11 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
                 radius = (limit + radius) * 0.5;
             }
         }
-        radius = if radius > MAX_TURN_RADIUS { 0.0 } else { radius.max(MIN_TURN_RADIUS) };
+        radius = if radius > MAX_TURN_RADIUS {
+            0.0
+        } else {
+            radius.max(MIN_TURN_RADIUS)
+        };
     }
     let radius = radius * input.signum();
     k.turn_radius = radius;
@@ -272,7 +298,12 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
         } else {
             acc -= lateral_vel * LATERAL_DAMPING * contact_scale;
             if thrust != 0.0 {
-                acc += thrust * if k.contacts >= 3 && slip.is_none() { body_fwd } else { facing };
+                acc += thrust
+                    * if k.contacts >= 3 && slip.is_none() {
+                        body_fwd
+                    } else {
+                        facing
+                    };
             } else {
                 acc -= forward_vel * COAST_DAMPING;
             }
@@ -298,7 +329,11 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     } else if turned {
         yaw_rate = k.yaw_kick;
     }
-    let rolling = if k.hover { 0.0 } else { k.surface.rolling_resistance };
+    let rolling = if k.hover {
+        0.0
+    } else {
+        k.surface.rolling_resistance
+    };
     let drag = thrust.abs() / (max_speed * max_speed) + rolling / MASS / UNIT;
     acc -= k.vel * speed * drag;
 
@@ -308,7 +343,9 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     // --- RacerCarBody::UpdateFacingDirection.
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, body_fwd);
     match slip {
-        Some((_, _, max_lag)) if grounded && k.contacts > 2 && vf >= CREEP_SPEED && thrust > 0.0 => {
+        Some((_, _, max_lag))
+            if grounded && k.contacts > 2 && vf >= CREEP_SPEED && thrust > 0.0 =>
+        {
             let lag = facing.angle_between(body_fwd) + (facing_rate * dt).abs();
             facing = if lag > max_lag {
                 let side = up.dot(facing.cross(body_fwd)).signum();
@@ -343,7 +380,9 @@ fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
     k.wall_contact = false;
     let mut worst: Option<(f32, Vec3)> = None;
     let mut push_out = |k: &mut Kart, normal: Vec3, push: f32| {
-        let Some(flat) = normal.with_y(0.0).try_normalize() else { return };
+        let Some(flat) = normal.with_y(0.0).try_normalize() else {
+            return;
+        };
         k.pos += flat * (push + 0.01);
         if worst.is_none_or(|w| push > w.0) {
             worst = Some((push, normal));
@@ -377,7 +416,11 @@ fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
     // Nose to the wall, the car is turned away from it.
     if k.spin <= 0.0 && (k.rot * Vec3::NEG_Z).dot(normal) < 0.0 {
         let side = (k.rot * Vec3::NEG_X).dot(normal);
-        k.yaw_kick = if side < 0.0 { -WALL_YAW * ((side + 1.0) * 0.5 + 0.5) } else { WALL_YAW * ((1.0 - side) * 0.5 + 0.5) };
+        k.yaw_kick = if side < 0.0 {
+            -WALL_YAW * ((side + 1.0) * 0.5 + 0.5)
+        } else {
+            WALL_YAW * ((1.0 - side) * 0.5 + 0.5)
+        };
         k.yaw_impulse = YAW_IMPULSE_TIME;
     }
     if into < 0.0 {
@@ -401,10 +444,16 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     let mut force = Vec3::ZERO;
     for (wheel, hit_point) in k.wheels.iter().zip(&mut hits) {
         let foot = k.pos + k.rot * *wheel;
-        let Some(hit) = world.ground(foot + Vec3::Y * STEP_UP, STEP_UP + reach) else { continue };
+        let Some(hit) = world.ground(foot + Vec3::Y * STEP_UP, STEP_UP + reach) else {
+            continue;
+        };
         *hit_point = Some(hit.point);
         lift += hit.point.y - foot.y;
-        normal_sum += if hit.normal.y < 0.0 { -hit.normal } else { hit.normal };
+        normal_sum += if hit.normal.y < 0.0 {
+            -hit.normal
+        } else {
+            hit.normal
+        };
         force += Vec3::from(hit.surface.force);
         if k.contacts == 0 {
             k.surface = hit.surface;
@@ -445,7 +494,11 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     // `UpdateWheelContacts`: after a long enough fall a hard landing bounces the car
     // back into the air.
     // A floating car bounces off any landing, and harder (`UpdateSlideContacts`).
-    let (bounces, bounce) = if k.hover { (true, HOVER_BOUNCE) } else { (k.air_time > LANDING_AIR_TIME, LANDING_BOUNCE) };
+    let (bounces, bounce) = if k.hover {
+        (true, HOVER_BOUNCE)
+    } else {
+        (k.air_time > LANDING_AIR_TIME, LANDING_BOUNCE)
+    };
     if !was_grounded && bounces && into < -LANDING_BOUNCE_SPEED {
         k.vel.y -= into * bounce;
         k.contacts = 0;

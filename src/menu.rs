@@ -34,7 +34,12 @@ impl Circuits {
     pub fn find() -> Self {
         // In the order the circuits run them, which is not the order of their folders.
         let order = world::circuit_order();
-        let place = |race: &str| order.iter().position(|o| o.0 == race).unwrap_or(order.len());
+        let place = |race: &str| {
+            order
+                .iter()
+                .position(|o| o.0 == race)
+                .unwrap_or(order.len())
+        };
         let mut found = world::circuits();
         found.sort_by_key(|(race, _)| place(race));
         let sets = order.iter().map(|o| o.1 + 1).max().unwrap_or(0);
@@ -42,10 +47,20 @@ impl Circuits {
             .into_iter()
             .map(|(race, name)| {
                 let group = order.get(place(&race)).map_or(sets, |o| o.1);
-                Circuit { name, race: Some(race), layout: Layout::default(), group }
+                Circuit {
+                    name,
+                    race: Some(race),
+                    layout: Layout::default(),
+                    group,
+                }
             })
             .collect();
-        circuits.extend(Layout::ALL.map(|layout| Circuit { name: layout.name().into(), race: None, layout, group: sets }));
+        circuits.extend(Layout::ALL.map(|layout| Circuit {
+            name: layout.name().into(),
+            race: None,
+            layout,
+            group: sets,
+        }));
         Circuits(circuits)
     }
 }
@@ -96,7 +111,15 @@ pub struct Settings {
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
 /// same colour, none put out at all, or each coloured one a colour picked afresh every
 /// time it appears.
-pub const BRICK_RULES: [&str; 7] = ["Normal", "All red", "All yellow", "All blue", "All green", "None", "Random"];
+pub const BRICK_RULES: [&str; 7] = [
+    "Normal",
+    "All red",
+    "All yellow",
+    "All blue",
+    "All green",
+    "None",
+    "Random",
+];
 /// The rule that picks colours afresh.
 pub const RANDOM_BRICKS: usize = 6;
 
@@ -114,7 +137,13 @@ pub enum Extra {
 }
 
 impl Extra {
-    pub const RACE: [Extra; 5] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination, Extra::Steering];
+    pub const RACE: [Extra; 5] = [
+        Extra::Mirror,
+        Extra::Reverse,
+        Extra::Bricks,
+        Extra::Elimination,
+        Extra::Steering,
+    ];
     pub const VIDEO: [Extra; 3] = [Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
 
     pub fn label(self) -> &'static str {
@@ -182,7 +211,10 @@ impl Settings {
             ("smoothing", on(self.smoothing)),
             ("car", self.car),
         ];
-        let numbers: String = kept.iter().map(|(name, value)| format!("{name}={value}\n")).collect();
+        let numbers: String = kept
+            .iter()
+            .map(|(name, value)| format!("{name}={value}\n"))
+            .collect();
         format!("{numbers}name={}\n", self.name)
     }
 
@@ -190,11 +222,18 @@ impl Settings {
     /// mention or that is out of range.
     fn read(&mut self, text: &str) {
         for line in text.lines() {
-            if let Some(name) = line.strip_prefix("name=").map(str::trim).filter(|name| !name.is_empty()) {
+            if let Some(name) = line
+                .strip_prefix("name=")
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
                 self.name = name.chars().take(NAME_LENGTH).collect();
                 continue;
             }
-            let Some((name, Ok(value))) = line.split_once('=').map(|(name, value)| (name, value.trim().parse::<usize>())) else {
+            let Some((name, Ok(value))) = line
+                .split_once('=')
+                .map(|(name, value)| (name, value.trim().parse::<usize>()))
+            else {
                 continue;
             };
             let on = value != 0;
@@ -221,7 +260,10 @@ impl Settings {
     /// The code of the driver the player races as online; empty for whoever has the
     /// grid slot.
     pub fn car_code(&self) -> String {
-        self.car.checked_sub(1).and_then(|n| crate::roster::NAMES.get(n)).map_or(String::new(), |driver| driver.0.to_string())
+        self.car
+            .checked_sub(1)
+            .and_then(|n| crate::roster::NAMES.get(n))
+            .map_or(String::new(), |driver| driver.0.to_string())
     }
 
     /// Takes up the settings left by the last session, if there was one.
@@ -252,7 +294,10 @@ impl Settings {
         match extra {
             Extra::Mirror => flip(&mut self.mirror),
             Extra::Reverse => flip(&mut self.reverse),
-            Extra::Bricks => self.bricks = (self.bricks as i32 + change).rem_euclid(BRICK_RULES.len() as i32) as usize,
+            Extra::Bricks => {
+                self.bricks =
+                    (self.bricks as i32 + change).rem_euclid(BRICK_RULES.len() as i32) as usize
+            }
             Extra::Elimination => flip(&mut self.elimination),
             Extra::Steering => flip(&mut self.quick_steering),
             Extra::VSync => flip(&mut self.vsync),
@@ -269,7 +314,12 @@ impl Settings {
             Extra::Reverse => on(self.reverse),
             Extra::Bricks => BRICK_RULES[self.bricks].to_string(),
             Extra::Elimination => on(self.elimination),
-            Extra::Steering => if self.quick_steering { "Quick" } else { "Original" }.to_string(),
+            Extra::Steering => if self.quick_steering {
+                "Quick"
+            } else {
+                "Original"
+            }
+            .to_string(),
             Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
             Extra::Fullscreen => on(self.fullscreen),
             Extra::Smoothing => on(self.smoothing),
@@ -322,7 +372,9 @@ impl Settings {
 fn settings_file() -> Option<std::path::PathBuf> {
     match std::env::var_os("BRICK_SETTINGS") {
         Some(file) => Some(file.into()),
-        None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_settings")),
+        None => {
+            Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_settings"))
+        }
     }
 }
 
@@ -334,15 +386,25 @@ pub fn keep(settings: Res<Settings>, mut kept: Local<Option<String>>) {
     let text = settings.write();
     // The first look is at what was just restored, which is on file already.
     if kept.as_ref().is_some_and(|kept| *kept != text)
-        && let Some(Err(error)) = settings_file().map(|file| std::fs::write(file, &text)) {
-            warn!("could not keep the settings: {error}");
-        }
+        && let Some(Err(error)) = settings_file().map(|file| std::fs::write(file, &text))
+    {
+        warn!("could not keep the settings: {error}");
+    }
     *kept = Some(text);
 }
 
 pub const MAX_VOLUME: usize = 20;
 /// The plain menu's rows: the six settings it always had, the extras, and the start.
-const EXTRAS: [Extra; 8] = [Extra::Mirror, Extra::Reverse, Extra::Bricks, Extra::Elimination, Extra::Steering, Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
+const EXTRAS: [Extra; 8] = [
+    Extra::Mirror,
+    Extra::Reverse,
+    Extra::Bricks,
+    Extra::Elimination,
+    Extra::Steering,
+    Extra::VSync,
+    Extra::Fullscreen,
+    Extra::Smoothing,
+];
 const ROWS: usize = 7 + EXTRAS.len();
 const START: usize = ROWS - 1;
 
@@ -356,15 +418,27 @@ struct Cursor(usize);
 pub fn plugin(app: &mut App) {
     app.init_resource::<Cursor>()
         // The plain menu is only for when the original's menu data isn't there.
-        .add_systems(OnEnter(Screen::Menu), spawn_menu.run_if(not(resource_exists::<crate::frontend::Art>)))
+        .add_systems(
+            OnEnter(Screen::Menu),
+            spawn_menu.run_if(not(resource_exists::<crate::frontend::Art>)),
+        )
         .add_systems(
             Update,
-            menu.run_if(in_state(Screen::Menu)).run_if(not(resource_exists::<crate::frontend::Art>)),
+            menu.run_if(in_state(Screen::Menu))
+                .run_if(not(resource_exists::<crate::frontend::Art>)),
         );
 }
 
 fn spawn_menu(mut commands: Commands) {
-    let text = |size: f32| (TextFont { font_size: FontSize::Px(size), ..default() }, TextShadow::default());
+    let text = |size: f32| {
+        (
+            TextFont {
+                font_size: FontSize::Px(size),
+                ..default()
+            },
+            TextShadow::default(),
+        )
+    };
     commands
         .spawn((
             DespawnOnExit(Screen::Menu),
@@ -421,7 +495,9 @@ fn menu(
         - pressed([KeyCode::ArrowLeft, KeyCode::KeyA]) as usize as isize;
     if change != 0 {
         // Steps a choice round its `count` options.
-        let step = |value: usize, count: usize| (value as isize + change).rem_euclid(count as isize) as usize;
+        let step = |value: usize, count: usize| {
+            (value as isize + change).rem_euclid(count as isize) as usize
+        };
         match cursor.0 {
             0 => settings.circuit = step(settings.circuit, circuits.0.len()),
             1 => settings.lap_choice = step(settings.lap_choice, LAP_CHOICES.len()),
@@ -449,7 +525,10 @@ fn menu(
             0 => option("Circuit", circuits.0[settings.circuit].name.clone()),
             1 => option("Laps", settings.laps().to_string()),
             2 => option("Opponents", settings.opponents.to_string()),
-            3 => option("Difficulty", DIFFICULTIES[settings.difficulty].0.to_string()),
+            3 => option(
+                "Difficulty",
+                DIFFICULTIES[settings.difficulty].0.to_string(),
+            ),
             4 => option("Music", settings.music.to_string()),
             5 => option("Sound", settings.sound.to_string()),
             START => "Start race".to_string(),
@@ -458,7 +537,11 @@ fn menu(
         if text.0 != line {
             text.0 = line;
         }
-        let wanted = if row.0 == cursor.0 { YELLOW } else { Color::WHITE };
+        let wanted = if row.0 == cursor.0 {
+            YELLOW
+        } else {
+            Color::WHITE
+        };
         if colour.0 != wanted {
             colour.0 = wanted;
         }
@@ -469,21 +552,35 @@ fn menu(
 #[test]
 fn settings_come_back_as_they_were_kept() {
     let mut settings = Settings::new(&Circuits(Vec::new()));
-    (settings.lap_choice, settings.opponents, settings.music, settings.bricks) = (4, 2, 7, 3);
+    (
+        settings.lap_choice,
+        settings.opponents,
+        settings.music,
+        settings.bricks,
+    ) = (4, 2, 7, 3);
     (settings.mirror, settings.vsync, settings.elimination) = (true, false, true);
     let mut back = Settings::new(&Circuits(Vec::new()));
     back.read(&settings.write());
     assert_eq!(back.write(), settings.write());
-    assert_eq!((back.lap_choice, back.opponents, back.music, back.bricks), (4, 2, 7, 3));
+    assert_eq!(
+        (back.lap_choice, back.opponents, back.music, back.bricks),
+        (4, 2, 7, 3)
+    );
     assert!(back.mirror && !back.vsync && back.elimination && !back.reverse && back.smoothing);
     // A circuit race is three laps against a full field, and leaves the settings be.
     back.championship = Some("c0".into());
-    assert_eq!((back.laps(), back.field(), back.lap_choice, back.opponents), (3, MAX_OPPONENTS, 4, 2));
+    assert_eq!(
+        (back.laps(), back.field(), back.lap_choice, back.opponents),
+        (3, MAX_OPPONENTS, 4, 2)
+    );
     (back.championship, back.elimination) = (None, false);
     assert_eq!((back.laps(), back.field()), (LAP_CHOICES[4], 2));
     // Nonsense and things out of range are passed over.
     back.read("laps=99\nbricks=six\nfuel=3\nopponents=1\n\nmusic 4");
-    assert_eq!((back.lap_choice, back.bricks, back.opponents, back.music), (4, 3, 1, 7));
+    assert_eq!(
+        (back.lap_choice, back.bricks, back.opponents, back.music),
+        (4, 3, 1, 7)
+    );
 }
 
 #[cfg(test)]
@@ -494,10 +591,20 @@ fn single_races_are_listed_in_their_circuits_order() {
     if circuits.0.iter().all(|c| c.race.is_none()) {
         return;
     }
-    let listed: Vec<(&str, usize)> = circuits.0.iter().map(|c| (c.name.as_str(), c.group)).collect();
+    let listed: Vec<(&str, usize)> = circuits
+        .0
+        .iter()
+        .map(|c| (c.name.as_str(), c.group))
+        .collect();
     assert_eq!(
         listed[..5],
-        [("Imperial Grand Prix", 0), ("Dark Forest Dash", 0), ("Magma Moon Marathon", 0), ("Desert Adventure Dragway", 0), ("Tribal Island Trail", 1)]
+        [
+            ("Imperial Grand Prix", 0),
+            ("Dark Forest Dash", 0),
+            ("Magma Moon Marathon", 0),
+            ("Desert Adventure Dragway", 0),
+            ("Tribal Island Trail", 1)
+        ]
     );
     assert_eq!(listed[12], ("Rocket Racer Run", 3));
     // The built-in circuits come last, in a set of their own.

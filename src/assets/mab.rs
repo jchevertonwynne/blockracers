@@ -26,18 +26,26 @@ impl MaterialAnimation {
         let mut out = MaterialAnimation::default();
         r.next()?;
         for _ in 0..r.list_header()? {
-            out.frames.push((r.string()?.to_lowercase(), r.int()? as u32));
+            out.frames
+                .push((r.string()?.to_lowercase(), r.int()? as u32));
         }
         r.expect(Token::RCurly)?;
         r.next()?;
         for _ in 0..r.list_header()? {
             r.next()?;
             r.expect(Token::LCurly)?;
-            let mut track = Track { first: 0, count: 1, length: 1, rate: 30.0 };
+            let mut track = Track {
+                first: 0,
+                count: 1,
+                length: 1,
+                rate: 30.0,
+            };
             loop {
                 match r.next()? {
                     Token::RCurly => break,
-                    Token::Key(0x27) => (track.first, track.count) = (r.int()? as usize, r.int()? as usize),
+                    Token::Key(0x27) => {
+                        (track.first, track.count) = (r.int()? as usize, r.int()? as usize)
+                    }
                     Token::Key(0x29) => track.length = r.int()? as u32,
                     Token::Key(0x2a) => track.rate = r.int()? as f32,
                     _ => {}
@@ -62,7 +70,10 @@ impl Track {
     /// come, going round again once the track's length is up.
     pub fn sample(&self, frames: &[u32], seconds: f32) -> usize {
         let frame = (seconds * self.rate) as u32 % self.length.max(1);
-        frames.iter().rposition(|&from| frame >= from).unwrap_or(frames.len().saturating_sub(1))
+        frames
+            .iter()
+            .rposition(|&from| frame >= from)
+            .unwrap_or(frames.len().saturating_sub(1))
     }
 
     /// Seconds for one run through.
@@ -74,13 +85,29 @@ impl Track {
 #[cfg(test)]
 #[test]
 fn shared_emitter_animations_parse() {
-    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
+    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
     let mab = MaterialAnimation::parse(jam.get("/GAMEDATA/COMMON/EMITTER.MAB").unwrap()).unwrap();
     assert_eq!((mab.frames.len(), mab.tracks.len()), (28, 7));
-    assert_eq!(mab.tracks[2], Track { first: 8, count: 4, length: 15, rate: 30.0 });
+    assert_eq!(
+        mab.tracks[2],
+        Track {
+            first: 8,
+            count: 4,
+            length: 15,
+            rate: 30.0
+        }
+    );
     let sparks = mab.materials(2);
-    assert_eq!(sparks.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["carspar1", "carspar2", "carspar3", "carspar4"]);
+    assert_eq!(
+        sparks.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
+        ["carspar1", "carspar2", "carspar3", "carspar4"]
+    );
     let frames: Vec<u32> = sparks.iter().map(|f| f.1).collect();
     let at = |seconds| mab.tracks[2].sample(&frames, seconds);
-    assert_eq!((at(0.0), at(0.11), at(0.25), at(0.45), at(0.5)), (0, 1, 2, 3, 0));
+    assert_eq!(
+        (at(0.0), at(0.11), at(0.25), at(0.45), at(0.5)),
+        (0, 1, 2, 3, 0)
+    );
 }

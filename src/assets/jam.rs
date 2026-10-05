@@ -39,7 +39,10 @@ impl Jam {
             let count = u32_at(&data, at)?;
             at += 4;
             for _ in 0..count {
-                dirs.push((u32_at(&data, at + 12)?, format!("{prefix}/{}", name_at(&data, at)?)));
+                dirs.push((
+                    u32_at(&data, at + 12)?,
+                    format!("{prefix}/{}", name_at(&data, at)?),
+                ));
                 at += 16;
             }
         }
@@ -56,7 +59,10 @@ impl Jam {
         let prefix = format!("{}/", dir.to_uppercase());
         self.files
             .keys()
-            .filter(move |p| p.strip_prefix(prefix.as_str()).is_some_and(|rest| !rest.contains('/')))
+            .filter(move |p| {
+                p.strip_prefix(prefix.as_str())
+                    .is_some_and(|rest| !rest.contains('/'))
+            })
             .map(String::as_str)
     }
 }

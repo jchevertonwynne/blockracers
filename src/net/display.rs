@@ -32,7 +32,11 @@ pub fn note(mut commands: Commands, mut karts: Query<(Entity, &Kart, Option<&mut
         let now = (kart.pos, kart.rot);
         match shown {
             Some(mut shown) => (shown.before, shown.now) = (shown.now, now),
-            None => drop(commands.entity(entity).insert(Shown { before: now, now, drawn: None })),
+            None => drop(commands.entity(entity).insert(Shown {
+                before: now,
+                now,
+                drawn: None,
+            })),
         }
     }
 }
@@ -42,7 +46,11 @@ pub fn blend(time: Res<Time<Fixed>>, mut karts: Query<(&mut Kart, &mut Shown)>) 
     let along = time.overstep_fraction().clamp(0.0, 1.0);
     for (mut kart, mut shown) in &mut karts {
         let (before, now) = (shown.before, shown.now);
-        let drawn = if before.0.distance_squared(now.0) > PUT * PUT { now } else { (before.0.lerp(now.0, along), before.1.slerp(now.1, along)) };
+        let drawn = if before.0.distance_squared(now.0) > PUT * PUT {
+            now
+        } else {
+            (before.0.lerp(now.0, along), before.1.slerp(now.1, along))
+        };
         (kart.pos, kart.rot) = drawn;
         shown.drawn = Some(drawn);
     }
@@ -52,7 +60,9 @@ pub fn blend(time: Res<Time<Fixed>>, mut karts: Query<(&mut Kart, &mut Shown)>) 
 /// moved a car while it was being drawn (a hazard, say) has moved it for the race too.
 pub fn unblend(mut karts: Query<(&mut Kart, &mut Shown)>) {
     for (mut kart, mut shown) in &mut karts {
-        let Some(drawn) = shown.drawn.take() else { continue };
+        let Some(drawn) = shown.drawn.take() else {
+            continue;
+        };
         shown.now.0 += kart.pos - drawn.0;
         if kart.rot != drawn.1 {
             shown.now.1 = kart.rot;

@@ -31,19 +31,34 @@ fn gone_by(lap: i32) -> usize {
 }
 
 /// Puts the last car out each time the leader finishes a lap.
-pub fn elimination(race: Res<Race>, settings: Res<Settings>, mut karts: Query<(&mut Kart, Has<Player>)>) {
+pub fn elimination(
+    race: Res<Race>,
+    settings: Res<Settings>,
+    mut karts: Query<(&mut Kart, Has<Player>)>,
+) {
     if !settings.eliminating() || race.phase != Phase::Racing {
         return;
     }
     let running = karts.iter().filter(|(kart, _)| kart.out.is_none()).count();
     let gone = karts.iter().count() - running;
-    let leader = karts.iter().filter(|(kart, _)| kart.out.is_none()).map(|(kart, _)| kart.lap).max().unwrap_or(0);
+    let leader = karts
+        .iter()
+        .filter(|(kart, _)| kart.out.is_none())
+        .map(|(kart, _)| kart.lap)
+        .max()
+        .unwrap_or(0);
     if running < 2 || gone >= gone_by(leader) {
         return;
     }
-    let last = karts.iter_mut().filter(|(kart, _)| kart.out.is_none()).max_by_key(|(kart, _)| kart.place);
+    let last = karts
+        .iter_mut()
+        .filter(|(kart, _)| kart.out.is_none())
+        .max_by_key(|(kart, _)| kart.place);
     if let Some((mut kart, player)) = last {
-        debug!("{} is out in place {} at {:.1}s", kart.name, kart.place, race.time);
+        debug!(
+            "{} is out in place {} at {:.1}s",
+            kart.name, kart.place, race.time
+        );
         kart.out = Some(race.time);
         kart.pos += PARKED;
         kart.vel = Vec3::ZERO;
@@ -63,7 +78,10 @@ fn bricks_follow_the_rule_and_cars_go_a_lap_at_a_time() {
     assert_eq!(brick(4, None), Some(None));
     assert_eq!(brick(5, Some(Power::Red)), None);
     assert_eq!(brick(5, None), None);
-    assert_eq!(brick(crate::menu::RANDOM_BRICKS, Some(Power::Red)), Some(Some(Power::Red)));
+    assert_eq!(
+        brick(crate::menu::RANDOM_BRICKS, Some(Power::Red)),
+        Some(Some(Power::Red))
+    );
     assert_eq!(crate::menu::BRICK_RULES.len(), 7);
     // Nobody goes on the grid or during the first lap; one has gone once the leader
     // starts the second, and with six cars the fifth lap's end leaves one.

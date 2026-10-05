@@ -30,7 +30,10 @@ pub struct Driver {
 impl Driver {
     /// What the driver's voice clips may go by: the figure's name, or the car's.
     pub fn voices(&self) -> [String; 2] {
-        [self.figure.trim_end_matches("PELVIS").to_string(), self.car.clone()]
+        [
+            self.figure.trim_end_matches("PELVIS").to_string(),
+            self.car.clone(),
+        ]
     }
 }
 
@@ -82,7 +85,9 @@ fn entries(tokens: &[Token]) -> Vec<(String, &[Token])> {
     let mut out = Vec::new();
     let mut at = 0;
     while at + 2 < tokens.len() {
-        if let (Token::Key(0x27), Token::Str(name), Token::LCurly) = (&tokens[at], &tokens[at + 1], &tokens[at + 2]) {
+        if let (Token::Key(0x27), Token::Str(name), Token::LCurly) =
+            (&tokens[at], &tokens[at + 1], &tokens[at + 2])
+        {
             // Fields may hold a braced list of their own.
             let mut depth = 0;
             let end = tokens[at + 2..].iter().position(|t| {
@@ -139,7 +144,11 @@ pub fn circuits(jam: &Jam) -> Vec<(String, Vec<RaceEntry>)> {
     entries(&tokens)
         .into_iter()
         .map(|(circuit, _)| {
-            let mut rounds: Vec<RaceEntry> = races.iter().filter(|r| r.circuit == circuit).cloned().collect();
+            let mut rounds: Vec<RaceEntry> = races
+                .iter()
+                .filter(|r| r.circuit == circuit)
+                .cloned()
+                .collect();
             rounds.sort_by_key(|r| r.round);
             (circuit, rounds)
         })
@@ -149,10 +158,14 @@ pub fn circuits(jam: &Jam) -> Vec<(String, Vec<RaceEntry>)> {
 /// One driver, by the game's short name for them.
 pub fn driver(jam: &Jam, code: &str) -> Option<Driver> {
     let drivers = tokenize(jam.get("/GAMEDATA/COMMON/DRIVERS.DDB")?);
-    let (_, fields) = entries(&drivers).into_iter().find(|(name, _)| name.eq_ignore_ascii_case(code))?;
+    let (_, fields) = entries(&drivers)
+        .into_iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(code))?;
     let champion = text(fields, 0x2b)?;
     let champions = tokenize(jam.get("/GAMEDATA/COMMON/CHAMPS.CCB")?);
-    let (_, car) = entries(&champions).into_iter().find(|(name, _)| name.eq_ignore_ascii_case(&champion))?;
+    let (_, car) = entries(&champions)
+        .into_iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(&champion))?;
     let code = code.to_uppercase();
     Some(Driver {
         name: NAMES.iter().find(|n| n.0 == code).map_or("Racer", |n| n.1),
@@ -180,34 +193,91 @@ pub fn field(jam: &Jam, circuit: &str) -> Vec<Driver> {
     let codes: Vec<String> = entries(&tokens)
         .into_iter()
         .find(|(name, _)| name == circuit)
-        .map(|(_, fields)| fields.iter().filter_map(|t| if let Token::Str(code) = t { Some(code.clone()) } else { None }).collect())
+        .map(|(_, fields)| {
+            fields
+                .iter()
+                .filter_map(|t| {
+                    if let Token::Str(code) = t {
+                        Some(code.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
         .unwrap_or_default();
     // The list's first names are the driver the player replaces and the next circuit.
-    let codes = codes.iter().filter(|c| c.chars().all(|ch| ch.is_ascii_uppercase())).skip(1);
-    codes.chain([&PLAYER.to_string()]).filter_map(|code| driver(jam, code)).collect()
+    let codes = codes
+        .iter()
+        .filter(|c| c.chars().all(|ch| ch.is_ascii_uppercase()))
+        .skip(1);
+    codes
+        .chain([&PLAYER.to_string()])
+        .filter_map(|code| driver(jam, code))
+        .collect()
 }
 
 /// The circuit a folder's race is run in when raced on its own.
 pub fn circuit_of(jam: &Jam, folder: &str) -> Option<String> {
-    races(jam).into_iter().find(|r| r.folder.eq_ignore_ascii_case(folder) && !r.mirrored).map(|r| r.circuit)
+    races(jam)
+        .into_iter()
+        .find(|r| r.folder.eq_ignore_ascii_case(folder) && !r.mirrored)
+        .map(|r| r.circuit)
 }
 
 #[cfg(test)]
 #[test]
 fn the_first_circuit_is_captain_redbeard_s() {
-    let Some(jam) = Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
+    let Some(jam) = Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
     let circuits = circuits(&jam);
     assert_eq!(circuits.len(), 7);
-    let rounds = |n: usize| circuits[n].1.iter().map(|r| (r.folder.as_str(), r.mirrored)).collect::<Vec<_>>();
-    assert_eq!(rounds(0), [("RACEC0R1", false), ("RACEC1R0", false), ("RACEC0R3", false), ("RACEC0R2", false)]);
-    assert_eq!(rounds(3), [("RACEC0R2", true), ("RACEC0R3", true), ("RACEC1R0", true), ("RACEC0R1", true)]);
+    let rounds = |n: usize| {
+        circuits[n]
+            .1
+            .iter()
+            .map(|r| (r.folder.as_str(), r.mirrored))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        rounds(0),
+        [
+            ("RACEC0R1", false),
+            ("RACEC1R0", false),
+            ("RACEC0R3", false),
+            ("RACEC0R2", false)
+        ]
+    );
+    assert_eq!(
+        rounds(3),
+        [
+            ("RACEC0R2", true),
+            ("RACEC0R3", true),
+            ("RACEC1R0", true),
+            ("RACEC0R1", true)
+        ]
+    );
     assert_eq!(rounds(6), [("RACEC3R0", false)]);
     assert_eq!(circuit_of(&jam, "RACEC0R0").as_deref(), Some("c1"));
     let field = field(&jam, "c0");
-    assert_eq!(field.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(), ["CR", "GB", "RH", "AD", "PH", "VV"]);
-    assert_eq!((field[0].name, field[0].car.as_str(), field[0].chassis.as_str()), ("Captain Redbeard", "CR", "crchas0"));
+    assert_eq!(
+        field.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(),
+        ["CR", "GB", "RH", "AD", "PH", "VV"]
+    );
+    assert_eq!(
+        (
+            field[0].name,
+            field[0].car.as_str(),
+            field[0].chassis.as_str()
+        ),
+        ("Captain Redbeard", "CR", "crchas0")
+    );
     // Lesser drivers share a car; some cars go by another name than their driver's.
-    assert_eq!((field[3].car.as_str(), field[3].chassis.as_str()), ("BK", "bkchas0"));
+    assert_eq!(
+        (field[3].car.as_str(), field[3].chassis.as_str()),
+        ("BK", "bkchas0")
+    );
     assert_eq!(driver(&jam, "SB").unwrap().car, "SS");
     assert_eq!(driver(&jam, "GM").unwrap().chassis, "gm_chas0");
     for (circuit, _) in &circuits {

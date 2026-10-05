@@ -18,13 +18,37 @@ struct View {
 }
 
 const VIEWS: [View; 3] = [
-    View { pitch: 5.0, height: 35.0, distance: 20.0, position_lag: 0.1, rotation_lag: 0.25 },
-    View { pitch: 8.0, height: 25.0, distance: 30.0, position_lag: 0.1, rotation_lag: 0.25 },
-    View { pitch: 8.0, height: 45.0, distance: 10.0, position_lag: 0.05, rotation_lag: 0.25 },
+    View {
+        pitch: 5.0,
+        height: 35.0,
+        distance: 20.0,
+        position_lag: 0.1,
+        rotation_lag: 0.25,
+    },
+    View {
+        pitch: 8.0,
+        height: 25.0,
+        distance: 30.0,
+        position_lag: 0.1,
+        rotation_lag: 0.25,
+    },
+    View {
+        pitch: 8.0,
+        height: 45.0,
+        distance: 10.0,
+        position_lag: 0.05,
+        rotation_lag: 0.25,
+    },
 ];
 /// The view a finished race is watched from: over two seconds the camera swings
 /// round to the front of the car (`c_modeFinish`).
-const FINISH: View = View { pitch: 20.0, height: 15.0, distance: 32.0, position_lag: 0.18, rotation_lag: 0.35 };
+const FINISH: View = View {
+    pitch: 20.0,
+    height: 15.0,
+    distance: 32.0,
+    position_lag: 0.18,
+    rotation_lag: 0.35,
+};
 const FINISH_SWING: f32 = 2000.0;
 /// The fourth view is the driver's.
 const COCKPIT: usize = 3;
@@ -69,7 +93,10 @@ pub struct Rig {
 impl Rig {
     /// Forgets where it was: the next frame starts behind the car.
     pub fn reset(&mut self) {
-        *self = Rig { view: self.view, ..default() };
+        *self = Rig {
+            view: self.view,
+            ..default()
+        };
     }
 
     /// Where the camera sits fixed behind the car, turning and tilting with it, with
@@ -81,7 +108,10 @@ impl Rig {
         let back = Vec3::new(0.0, pitch.sin() + lift, pitch.cos()) * distance;
         // The next frame out of the tunnel starts from behind the car again.
         self.settled = false;
-        (kart.pos + kart.rot * back, kart.rot * Quat::from_rotation_x(-pitch))
+        (
+            kart.pos + kart.rot * back,
+            kart.rot * Quat::from_rotation_x(-pitch),
+        )
     }
 
     /// A lag as the fraction of the old value kept after `ms` milliseconds.
@@ -104,10 +134,17 @@ impl Rig {
         let ms = dt * 1000.0;
         let wrap = |angle: f32| (angle + PI).rem_euclid(TAU) - PI;
         if !self.settled {
-            (self.heading, self.lead, self.target, self.reach, self.car_yaw) = (kart.yaw, 0.0, kart.pos, 1.0, kart.yaw);
+            (
+                self.heading,
+                self.lead,
+                self.target,
+                self.reach,
+                self.car_yaw,
+            ) = (kart.yaw, 0.0, kart.pos, 1.0, kart.yaw);
         } else if kart.spin <= 0.0 && dt > 0.0 {
             // Swing ahead into the turn, and bring the heading round after the car's.
-            let lead = (wrap(kart.yaw - self.car_yaw) / dt * TURN_LEAD).clamp(-TURN_LEAD_MAX, TURN_LEAD_MAX);
+            let lead = (wrap(kart.yaw - self.car_yaw) / dt * TURN_LEAD)
+                .clamp(-TURN_LEAD_MAX, TURN_LEAD_MAX);
             self.lead = lead + (self.lead - lead) / (LEAD_RATE * ms + 1.0);
             let wanted = kart.yaw + self.lead;
             let off = wrap(self.heading - wanted);
@@ -133,30 +170,57 @@ impl Rig {
         }
         let (raw_position, raw_rotation, lags) = if let Some(since) = self.finish {
             // From the view it had, which for the driver's is none at all.
-            let from = VIEWS.get(self.view).map_or((0.0f32, 0.0f32, 0.0), |view| (view.pitch, view.height, view.distance));
+            let from = VIEWS.get(self.view).map_or((0.0f32, 0.0f32, 0.0), |view| {
+                (view.pitch, view.height, view.distance)
+            });
             let left = 1.0 - since / FINISH_SWING;
             let mix = |from: f32, to: f32| to + (from - to) * left;
             let distance = mix(from.2, FINISH.distance) * UNIT;
             let pitch_sine = mix(from.0.to_radians().sin(), FINISH.pitch.to_radians().sin());
             let pitch_cosine = mix(from.0.to_radians().cos(), FINISH.pitch.to_radians().cos());
             let lift = mix(from.1.to_radians().sin(), FINISH.height.to_radians().sin());
-            let level = Quat::from_rotation_y(since / FINISH_SWING * PI) * Vec3::new(-self.heading.sin(), 0.0, -self.heading.cos());
+            let level = Quat::from_rotation_y(since / FINISH_SWING * PI)
+                * Vec3::new(-self.heading.sin(), 0.0, -self.heading.cos());
             let look = level * pitch_cosine - Vec3::Y * pitch_sine;
-            let back = if self.settled { self.rotation * Vec3::NEG_Z } else { look };
+            let back = if self.settled {
+                self.rotation * Vec3::NEG_Z
+            } else {
+                look
+            };
             let position = self.target - back * distance + Vec3::Y * lift * distance;
-            (position, Transform::IDENTITY.looking_to(look, Vec3::Y).rotation, (FINISH.position_lag, FINISH.rotation_lag))
+            (
+                position,
+                Transform::IDENTITY.looking_to(look, Vec3::Y).rotation,
+                (FINISH.position_lag, FINISH.rotation_lag),
+            )
         } else if self.view == COCKPIT {
-            (kart.pos + kart.rot * Vec3::Y * EYE_HEIGHT, kart.rot, COCKPIT_LAG)
+            (
+                kart.pos + kart.rot * Vec3::Y * EYE_HEIGHT,
+                kart.rot,
+                COCKPIT_LAG,
+            )
         } else {
             let view = &VIEWS[self.view.min(VIEWS.len() - 1)];
-            let distance = if self.reach >= 1.0 { view.distance } else { (self.reach.abs() * view.distance).max(MIN_DISTANCE) } * UNIT;
+            let distance = if self.reach >= 1.0 {
+                view.distance
+            } else {
+                (self.reach.abs() * view.distance).max(MIN_DISTANCE)
+            } * UNIT;
             let (pitch, lift) = (view.pitch.to_radians(), view.height.to_radians().sin());
             let level = Vec3::new(-self.heading.sin(), 0.0, -self.heading.cos());
             let look = level * pitch.cos() - Vec3::Y * pitch.sin();
             // Back along the way it was last looking, which is what makes it swing.
-            let back = if self.settled { self.rotation * Vec3::NEG_Z } else { look };
+            let back = if self.settled {
+                self.rotation * Vec3::NEG_Z
+            } else {
+                look
+            };
             let position = self.target - back * distance + Vec3::Y * lift * distance;
-            (position, Transform::IDENTITY.looking_to(look, Vec3::Y).rotation, (view.position_lag, view.rotation_lag))
+            (
+                position,
+                Transform::IDENTITY.looking_to(look, Vec3::Y).rotation,
+                (view.position_lag, view.rotation_lag),
+            )
         };
         if self.settled {
             self.position = raw_position + (self.position - raw_position) * Self::kept(lags.0, ms);
@@ -175,9 +239,16 @@ impl Rig {
         let position = if self.view == COCKPIT {
             self.position
         } else {
-            Vec3::new(2.0 * self.target.x - self.position.x, self.position.y, 2.0 * self.target.z - self.position.z)
+            Vec3::new(
+                2.0 * self.target.x - self.position.x,
+                self.position.y,
+                2.0 * self.target.z - self.position.z,
+            )
         };
-        (position, Transform::IDENTITY.looking_to(behind, Vec3::Y).rotation)
+        (
+            position,
+            Transform::IDENTITY.looking_to(behind, Vec3::Y).rotation,
+        )
     }
 }
 
@@ -192,13 +263,27 @@ fn the_camera_settles_behind_the_car_and_closes_in_for_a_turbo() {
         for _ in 0..240 {
             at = rig.follow(kart, 1.0 / 60.0);
         }
-        ((kart.pos - at.0).dot(forward), at.0.y - kart.pos.y, (at.1 * Vec3::NEG_Z).dot(forward))
+        (
+            (kart.pos - at.0).dot(forward),
+            at.0.y - kart.pos.y,
+            (at.1 * Vec3::NEG_Z).dot(forward),
+        )
     };
     // The first view: twenty units back less the tilt, lifted by its two angles.
     let (back, up, facing) = behind(&mut rig, &kart);
     let view = &VIEWS[0];
-    assert!((back - view.distance * view.pitch.to_radians().cos() * UNIT).abs() < 0.05, "{back}");
-    assert!((up - view.distance * (view.pitch.to_radians().sin() + view.height.to_radians().sin()) * UNIT).abs() < 0.05, "{up}");
+    assert!(
+        (back - view.distance * view.pitch.to_radians().cos() * UNIT).abs() < 0.05,
+        "{back}"
+    );
+    assert!(
+        (up - view.distance
+            * (view.pitch.to_radians().sin() + view.height.to_radians().sin())
+            * UNIT)
+            .abs()
+            < 0.05,
+        "{up}"
+    );
     assert!(facing > 0.99);
     // A turbo brings it in to the least distance at once.
     (kart.boost, kart.boost_level) = (1.0, 0);

@@ -23,8 +23,10 @@ pub struct Dressing {
 }
 
 /// Materials of the power-ups whose pictures are put on things by hand.
-pub const PICTURES: [&str; 9] =
-    ["pbrickp", "pbrickm", "pbricks", "pbrickt", "ptrailp", "ptrailm", "ptrails", "ptrailt", "oilslck"];
+pub const PICTURES: [&str; 9] = [
+    "pbrickp", "pbrickm", "pbricks", "pbrickt", "ptrailp", "ptrailm", "ptrails", "ptrailt",
+    "oilslck",
+];
 
 /// The turbo pack sits this far up and back from the car's middle.
 const TURBO_PACK: Vec3 = Vec3::new(0.0, 3.0 * UNIT, 2.0 * UNIT);
@@ -49,9 +51,17 @@ pub fn dress_actions(
     actions: Query<&Transform, (With<Action>, Without<Dressing>)>,
     mut dressings: Query<(Entity, &mut Dressing, &mut Transform), Without<Action>>,
 ) {
-    let (Some(models), Some(emitters)) = (models, emitters) else { return };
+    let (Some(models), Some(emitters)) = (models, emitters) else {
+        return;
+    };
     for (of, action, at) in &new {
-        let dressing = |offset: Vec3, aimed: bool, sized: Option<f32>| Dressing { of, offset, last: at.translation, aimed, sized };
+        let dressing = |offset: Vec3, aimed: bool, sized: Option<f32>| Dressing {
+            of,
+            offset,
+            last: at.translation,
+            aimed,
+            sized,
+        };
         // What stands for it, what it gives off, how far up from where `items` has it,
         // and whether it points along its path.
         let (parts, particles, lift, aimed): (&[&str], &[&str], f32, bool) = match action {
@@ -62,34 +72,55 @@ pub fn dress_actions(
             Action::Dynamite { .. } => (&["barrel"], &["dynsprk"], -0.45, false),
             Action::Magnet { .. } => (&["magnet", "magring", "insd"], &[], MAGNET_HEIGHT, false),
             Action::Curse { .. } => (&["curse", "cgreen", "cgreen2"], &[], CURSE_HEIGHT, false),
-            Action::Explosion { radius, .. } if *radius > SPIKED_BLAST => (&["spikexp"], &["explode"], 0.0, false),
+            Action::Explosion { radius, .. } if *radius > SPIKED_BLAST => {
+                (&["spikexp"], &["explode"], 0.0, false)
+            }
             Action::Explosion { .. } => (&["explsn"], &["explode"], 0.0, false),
             Action::Lightning { .. } => (&[], &[], 0.0, false),
         };
         let offset = Vec3::Y * lift;
         let place = Transform::from_translation(at.translation + offset);
         // `CurseAction::Activate`: only the skull hovers; its auras stand on the road.
-        let grounded: &[&str] = if matches!(action, Action::Curse { .. }) { &["cgreen", "cgreen2"] } else { &[] };
+        let grounded: &[&str] = if matches!(action, Action::Curse { .. }) {
+            &["cgreen", "cgreen2"]
+        } else {
+            &[]
+        };
         let sized = match action {
             Action::Explosion { radius, .. } => Some(*radius),
             _ => None,
         };
-        let motion = if matches!(action, Action::Missile { .. }) { MISSILE_POSE } else { Motion::Loop };
+        let motion = if matches!(action, Action::Missile { .. }) {
+            MISSILE_POSE
+        } else {
+            Motion::Loop
+        };
         let mut dressed = false;
         for part in parts {
-            let (place, offset) = if grounded.contains(part) { (Transform::from_translation(at.translation), Vec3::ZERO) } else { (place, offset) };
+            let (place, offset) = if grounded.contains(part) {
+                (Transform::from_translation(at.translation), Vec3::ZERO)
+            } else {
+                (place, offset)
+            };
             if let Some(model) = models.spawn(&mut commands, part, place, motion) {
-                commands.entity(model).insert(dressing(offset, aimed, sized));
+                commands
+                    .entity(model)
+                    .insert(dressing(offset, aimed, sized));
                 dressed = true;
             }
         }
-        debug!("power-up at {}: {parts:?} {particles:?}, dressed {dressed}", at.translation);
+        debug!(
+            "power-up at {}: {parts:?} {particles:?}, dressed {dressed}",
+            at.translation
+        );
         if dressed {
             commands.entity(of).remove::<Mesh3d>();
         }
         for name in particles {
             if let Some(emitter) = emitters.spawn(&mut commands, name, place) {
-                commands.entity(emitter).insert(dressing(offset, false, None));
+                commands
+                    .entity(emitter)
+                    .insert(dressing(offset, false, None));
             }
         }
     }
@@ -137,7 +168,9 @@ pub fn dress_karts(
     children: Query<&Children>,
     mut animated: Query<&mut Animated>,
 ) {
-    let (Some(models), Some(emitters)) = (models, emitters) else { return };
+    let (Some(models), Some(emitters)) = (models, emitters) else {
+        return;
+    };
     for kart in &bare {
         commands.entity(kart).insert(Worn::default());
     }
@@ -148,7 +181,11 @@ pub fn dress_karts(
     }
     for (entity, k, mut worn, is_player) in &mut karts {
         // Puts on, changes or takes off a set of models as the level they show changes.
-        let mut wear = |slot: &mut Option<(u8, Vec<Entity>)>, level: Option<u8>, at: Transform, motion: Motion, names: &dyn Fn(u8) -> Vec<String>| {
+        let mut wear = |slot: &mut Option<(u8, Vec<Entity>)>,
+                        level: Option<u8>,
+                        at: Transform,
+                        motion: Motion,
+                        names: &dyn Fn(u8) -> Vec<String>| {
             if slot.as_ref().map(|s| s.0) == level {
                 return;
             }
@@ -156,19 +193,33 @@ pub fn dress_karts(
                 commands.entity(part).despawn();
             }
             let Some(level) = level else { return };
-            let parts: Vec<Entity> = names(level).iter().filter_map(|name| models.spawn(&mut commands, name, at, motion)).collect();
+            let parts: Vec<Entity> = names(level)
+                .iter()
+                .filter_map(|name| models.spawn(&mut commands, name, at, motion))
+                .collect();
             commands.entity(entity).add_children(&parts);
             *slot = Some((level, parts));
         };
         let shield = (k.shield > 0.0).then_some(k.shield_level.min(3));
-        wear(&mut worn.shield, shield, Transform::IDENTITY, Motion::Loop, &|level| vec![format!("shield{level}"), format!("shldin{level}")]);
+        wear(
+            &mut worn.shield,
+            shield,
+            Transform::IDENTITY,
+            Motion::Loop,
+            &|level| vec![format!("shield{level}"), format!("shldin{level}")],
+        );
         // The turbo pack lights, burns, and burns down as the turbo gives out.
         let turbo = (k.boost > 0.0).then_some(k.boost_level.min(2));
         let lit = worn.turbo.is_some();
         // The pack's own forward is the car's left.
-        let pack = Transform::from_translation(TURBO_PACK).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        let pack = Transform::from_translation(TURBO_PACK)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
         wear(&mut worn.turbo, turbo, pack, Motion::Then(1), &|level| {
-            vec![format!("turbol{level}"), format!("turb{level}f1"), format!("turb{level}f2")]
+            vec![
+                format!("turbol{level}"),
+                format!("turb{level}f1"),
+                format!("turb{level}f2"),
+            ]
         });
         if !lit {
             worn.fading = false;
@@ -183,7 +234,11 @@ pub fn dress_karts(
         let on = k.shield > 1.0 || (k.shield * 10.0) as i32 % 2 == 0;
         for &part in worn.shield.iter().flat_map(|s| &s.1) {
             if let Ok(mut visibility) = seen.get_mut(part) {
-                visibility.set_if_neq(if on { Visibility::Inherited } else { Visibility::Hidden });
+                visibility.set_if_neq(if on {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                });
             }
         }
 
@@ -191,14 +246,21 @@ pub fn dress_karts(
         // watching from behind it sees the tunnel it goes down.
         match (k.warp_start > 0.0, worn.portal) {
             (true, None) => {
-                let above = Transform::from_translation(k.pos + k.rot * Vec3::Y * PORTAL_HEIGHT).with_rotation(k.rot);
-                worn.portal = models.spawn(&mut commands, "warpprt", above.with_scale(Vec3::splat(0.001)), Motion::Loop);
+                let above = Transform::from_translation(k.pos + k.rot * Vec3::Y * PORTAL_HEIGHT)
+                    .with_rotation(k.rot);
+                worn.portal = models.spawn(
+                    &mut commands,
+                    "warpprt",
+                    above.with_scale(Vec3::splat(0.001)),
+                    Motion::Loop,
+                );
             }
             (true, Some(portal)) => {
                 if let Ok(mut transform) = placed.get_mut(portal) {
                     // Swelling and shrinking away again over the time it takes.
                     let size = (std::f32::consts::PI * (1.0 - k.warp_start / WARP_START)).sin();
-                    transform.translation = k.pos + k.rot * Vec3::Y * PORTAL_HEIGHT * (k.warp_start / WARP_START);
+                    transform.translation =
+                        k.pos + k.rot * Vec3::Y * PORTAL_HEIGHT * (k.warp_start / WARP_START);
                     transform.scale = Vec3::splat(size.max(0.001));
                 }
             }
@@ -213,8 +275,10 @@ pub fn dress_karts(
             // The tunnel's own forward is the game's -Y; the car's is ours.
             let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
             for name in ["dtube", "dbricks"] {
-                let place = Transform::from_translation(turn * models.placed(name)).with_rotation(turn);
-                worn.tunnel.extend(models.spawn(&mut commands, name, place, Motion::Loop));
+                let place =
+                    Transform::from_translation(turn * models.placed(name)).with_rotation(turn);
+                worn.tunnel
+                    .extend(models.spawn(&mut commands, name, place, Motion::Loop));
             }
             commands.entity(entity).add_children(&worn.tunnel);
         } else if !tunnelled {
@@ -226,10 +290,17 @@ pub fn dress_karts(
         // Smoke from the turbo for as long as it burns.
         let exhaust = k.pos + k.rot * TURBO_PACK;
         match (k.boost > 0.0, worn.smoke) {
-            (true, None) => worn.smoke = emitters.spawn(&mut commands, "trbsmke", Transform::from_translation(exhaust)),
+            (true, None) => {
+                worn.smoke = emitters.spawn(
+                    &mut commands,
+                    "trbsmke",
+                    Transform::from_translation(exhaust),
+                )
+            }
             (true, Some(entity)) => match smoke.get_mut(entity) {
                 Ok((mut emitter, mut transform)) => {
-                    (transform.translation, transform.rotation, emitter.velocity) = (exhaust, k.rot, k.vel * 0.6);
+                    (transform.translation, transform.rotation, emitter.velocity) =
+                        (exhaust, k.rot, k.vel * 0.6);
                 }
                 Err(_) => worn.smoke = None,
             },

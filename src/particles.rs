@@ -61,7 +61,8 @@ pub fn parse(data: &[u8]) -> Vec<(String, EmitterDef)> {
     let tokens = tokenize(data);
     let mut out = Vec::new();
     for (i, token) in tokens.iter().enumerate().skip(1) {
-        let (Token::Key(0x27), Some(Token::Str(name)), Some(Token::LCurly)) = (token, tokens.get(i + 1), tokens.get(i + 2))
+        let (Token::Key(0x27), Some(Token::Str(name)), Some(Token::LCurly)) =
+            (token, tokens.get(i + 1), tokens.get(i + 2))
         else {
             continue;
         };
@@ -89,7 +90,9 @@ pub fn parse(data: &[u8]) -> Vec<(String, EmitterDef)> {
                 Token::Key(0x2b) => {
                     // `[count] { x y z ... }`
                     let count = value(1) as usize;
-                    def.velocities = (0..count).map(|n| Vec3::new(value(4 + n * 3), value(5 + n * 3), value(6 + n * 3))).collect();
+                    def.velocities = (0..count)
+                        .map(|n| Vec3::new(value(4 + n * 3), value(5 + n * 3), value(6 + n * 3)))
+                        .collect();
                     at += 5 + count * 3;
                 }
                 Token::Key(0x2e) => def.track = Some(value(0) as usize),
@@ -145,8 +148,18 @@ impl Emitters {
         images: &mut Assets<Image>,
     ) -> Self {
         let mut image = |width: u32, height: u32, rgba: Vec<u8>| {
-            let size = Extent3d { width, height, depth_or_array_layers: 1 };
-            images.add(Image::new(size, TextureDimension::D2, rgba, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default()))
+            let size = Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            };
+            images.add(Image::new(
+                size,
+                TextureDimension::D2,
+                rgba,
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::default(),
+            ))
         };
         // A round, soft-edged grey blob.
         let puff: Vec<u8> = (0..32 * 32)
@@ -159,7 +172,11 @@ impl Emitters {
         let puff = image(32, 32, puff);
         let mut kinds = HashMap::new();
         for (name, def, look) in defs {
-            let alpha_mode = if look.additive { AlphaMode::Add } else { AlphaMode::Blend };
+            let alpha_mode = if look.additive {
+                AlphaMode::Add
+            } else {
+                AlphaMode::Blend
+            };
             let mut material = |texture| {
                 materials.add(StandardMaterial {
                     base_color_texture: Some(texture),
@@ -171,20 +188,42 @@ impl Emitters {
                 })
             };
             let frames: Vec<u32> = look.frames.iter().map(|f| f.0).collect();
-            let mut pictures: Vec<_> = look.frames.into_iter().map(|(_, p)| material(image(p.width, p.height, p.rgba))).collect();
+            let mut pictures: Vec<_> = look
+                .frames
+                .into_iter()
+                .map(|(_, p)| material(image(p.width, p.height, p.rgba)))
+                .collect();
             if pictures.is_empty() {
                 pictures.push(material(puff.clone()));
             }
-            kinds.insert(name, Arc::new(Kind { def, materials: pictures, frames, track: look.track }));
+            kinds.insert(
+                name,
+                Arc::new(Kind {
+                    def,
+                    materials: pictures,
+                    frames,
+                    track: look.track,
+                }),
+            );
         }
-        Emitters { kinds, quad: meshes.add(Rectangle::new(1.0, 1.0)) }
+        Emitters {
+            kinds,
+            quad: meshes.add(Rectangle::new(1.0, 1.0)),
+        }
     }
 
     /// An emitter of the named kind, to spawn with a `Transform` saying where it is.
     pub fn emitter(&self, name: &str) -> Option<Emitter> {
         let kind = self.kinds.get(name)?.clone();
         // Due at once.
-        Some(Emitter { timer: kind.def.interval, kind, age: 0.0, seed: 0x9e37_79b9, velocity: Vec3::ZERO, spawned: 0 })
+        Some(Emitter {
+            timer: kind.def.interval,
+            kind,
+            age: 0.0,
+            seed: 0x9e37_79b9,
+            velocity: Vec3::ZERO,
+            spawned: 0,
+        })
     }
 
     /// Starts an emitter of the named kind at a place; those with a duration end themselves.
@@ -226,7 +265,12 @@ pub struct Particle {
     life: f32,
 }
 
-pub fn emit(mut commands: Commands, time: Res<Time>, emitters: Option<Res<Emitters>>, mut sources: Query<(Entity, &mut Emitter, &Transform)>) {
+pub fn emit(
+    mut commands: Commands,
+    time: Res<Time>,
+    emitters: Option<Res<Emitters>>,
+    mut sources: Query<(Entity, &mut Emitter, &Transform)>,
+) {
     let Some(emitters) = emitters else { return };
     let dt = time.delta_secs().min(0.05);
     for (entity, mut emitter, transform) in &mut sources {
@@ -268,7 +312,12 @@ pub fn particles(
     mut commands: Commands,
     time: Res<Time>,
     camera: Single<&Transform, (With<Camera3d>, Without<Particle>)>,
-    mut all: Query<(Entity, &mut Particle, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut all: Query<(
+        Entity,
+        &mut Particle,
+        &mut Transform,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
 ) {
     let dt = time.delta_secs().min(0.05);
     for (entity, mut particle, mut transform, mut material) in &mut all {
@@ -287,7 +336,8 @@ pub fn particles(
                 material.0 = now;
             }
         }
-        let size = (particle.size + particle.growth * (particle.age / particle.life)).max(Vec2::splat(MIN_SIZE));
+        let size = (particle.size + particle.growth * (particle.age / particle.life))
+            .max(Vec2::splat(MIN_SIZE));
         transform.scale = Vec3::new(size.x, size.y, 1.0);
     }
 }
@@ -295,14 +345,22 @@ pub fn particles(
 #[cfg(test)]
 #[test]
 fn snow_and_smoke_are_defined_on_the_ice_circuit() {
-    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
+    let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
     let emitters = parse(jam.get("/GAMEDATA/RACEC1R3/RACEC1R3.EMB").unwrap());
     let snow = &emitters.iter().find(|e| e.0 == "snow").unwrap().1;
-    assert_eq!((snow.interval, snow.life, snow.velocities.len()), (1.0 / 12.0, 1.5, 3));
+    assert_eq!(
+        (snow.interval, snow.life, snow.velocities.len()),
+        (1.0 / 12.0, 1.5, 3)
+    );
     assert_eq!(snow.material.as_deref(), Some("snowflak"));
     assert!(snow.velocities.iter().all(|v| v.z < -20.0) && snow.duration.is_none());
     let smoke = &emitters.iter().find(|e| e.0 == "smoke").unwrap().1;
-    assert_eq!((smoke.size, smoke.growth, smoke.velocities.len()), (Vec2::splat(5.0), Vec2::splat(5.0), 4));
+    assert_eq!(
+        (smoke.size, smoke.growth, smoke.velocities.len()),
+        (Vec2::splat(5.0), Vec2::splat(5.0), 4)
+    );
     assert_eq!((smoke.material.as_deref(), smoke.track), (None, Some(0)));
     assert!(parse(jam.get("/GAMEDATA/COMMON/EMITTER.EMB").unwrap()).len() >= 10);
 }
@@ -311,11 +369,22 @@ fn snow_and_smoke_are_defined_on_the_ice_circuit() {
 #[test]
 fn every_emitter_has_its_pictures() {
     for (race, _) in crate::world::circuits() {
-        let Some((_, world)) = crate::world::load(&race) else { return };
+        let Some((_, world)) = crate::world::load(&race) else {
+            return;
+        };
         for (name, def, look) in &world.emitters {
             assert!(!look.frames.is_empty(), "{race} {name}");
-            assert_eq!(def.track.is_some() && def.material.is_none(), look.track.is_some(), "{race} {name}");
+            assert_eq!(
+                def.track.is_some() && def.material.is_none(),
+                look.track.is_some(),
+                "{race} {name}"
+            );
         }
-        assert!(world.emitters.iter().any(|e| e.0 == "dust" && e.2.frames.len() == 4));
+        assert!(
+            world
+                .emitters
+                .iter()
+                .any(|e| e.0 == "dust" && e.2.frames.len() == 4)
+        );
     }
 }

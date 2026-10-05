@@ -17,15 +17,27 @@ pub fn apply(
     if !settings.is_changed() {
         return;
     }
-    let present = if settings.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync };
+    let present = if settings.vsync {
+        PresentMode::AutoVsync
+    } else {
+        PresentMode::AutoNoVsync
+    };
     if window.present_mode != present {
         window.present_mode = present;
     }
-    let mode = if settings.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
+    let mode = if settings.fullscreen {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+    } else {
+        WindowMode::Windowed
+    };
     if window.mode != mode {
         window.mode = mode;
     }
-    let msaa = if settings.smoothing { Msaa::Sample4 } else { Msaa::Off };
+    let msaa = if settings.smoothing {
+        Msaa::Sample4
+    } else {
+        Msaa::Off
+    };
     let (entity, current) = *camera;
     if current != Some(&msaa) {
         commands.entity(entity).insert(msaa);

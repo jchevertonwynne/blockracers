@@ -55,7 +55,10 @@ pub struct Looks {
 
 impl Effects {
     fn coin(&mut self) -> bool {
-        self.toss = self.toss.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.toss = self
+            .toss
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         self.toss >> 16 & 1 == 1
     }
 }
@@ -79,7 +82,13 @@ pub fn kart_effects(
     }
     let looks = looks.get_or_insert_with(|| {
         let mut flat = |colour: Color, alpha_mode: AlphaMode| {
-            materials.add(StandardMaterial { base_color: colour, unlit: true, alpha_mode, cull_mode: None, ..default() })
+            materials.add(StandardMaterial {
+                base_color: colour,
+                unlit: true,
+                alpha_mode,
+                cull_mode: None,
+                ..default()
+            })
         };
         Looks {
             square: meshes.add(Plane3d::default().mesh().size(1.0, 1.0)),
@@ -88,7 +97,9 @@ pub fn kart_effects(
             burn: flat(Color::srgba(1.0, 0.45, 0.05, 0.6), AlphaMode::Add),
         }
     });
-    let (Some(emitters), Ok((mut k, mut fx))) = (emitters, player.single_mut()) else { return };
+    let (Some(emitters), Ok((mut k, mut fx))) = (emitters, player.single_mut()) else {
+        return;
+    };
     let fx = &mut *fx;
     let sparks = k.sparks.take();
     let k = &*k;
@@ -96,17 +107,27 @@ pub fn kart_effects(
     let carried = k.vel * CARRIED_SPEED;
     let start = |commands: &mut Commands, name: &str, at: Vec3| {
         debug!("{name} at {at}");
-        emitters.spawn(commands, name, Transform::from_translation(at).with_rotation(k.rot))
+        emitters.spawn(
+            commands,
+            name,
+            Transform::from_translation(at).with_rotation(k.rot),
+        )
     };
     // Keeps an emitter with the car; false once it has gone.
     let mut follow = |entity: Entity, at: Vec3| {
-        let Ok((mut emitter, mut transform)) = sources.get_mut(entity) else { return None };
+        let Ok((mut emitter, mut transform)) = sources.get_mut(entity) else {
+            return None;
+        };
         (transform.translation, transform.rotation, emitter.velocity) = (at, k.rot, carried);
         Some(emitter.spawned)
     };
 
     // Spray from whatever the wheels are on.
-    let spraying = k.contacts > 0 && !k.sliding && k.spin <= 0.0 && k.spin_out <= 0.0 && k.vel.dot(k.rot * Vec3::NEG_Z) > SPRAY_SPEED;
+    let spraying = k.contacts > 0
+        && !k.sliding
+        && k.spin <= 0.0
+        && k.spin_out <= 0.0
+        && k.vel.dot(k.rot * Vec3::NEG_Z) > SPRAY_SPEED;
     let name = k.surface.particle;
     for i in 0..4 {
         if let Some((entity, current)) = fx.wheels[i] {
@@ -117,7 +138,9 @@ pub fn kart_effects(
             fx.wheels[i] = None;
         }
         if spraying && name[0] != 0 {
-            let text = String::from_utf8_lossy(&name).trim_end_matches('\0').to_lowercase();
+            let text = String::from_utf8_lossy(&name)
+                .trim_end_matches('\0')
+                .to_lowercase();
             fx.wheels[i] = start(&mut commands, &text, wheel(i)).map(|e| (e, name));
         }
     }
@@ -142,13 +165,15 @@ pub fn kart_effects(
         fx.smoke = start(&mut commands, "carsmke", exhaust);
     }
     if let Some(entity) = fx.smoke
-        && follow(entity, exhaust).is_none_or(|puffs| puffs >= SMOKE_PUFFS) {
-            commands.entity(entity).try_despawn();
-            fx.smoke = None;
-        }
+        && follow(entity, exhaust).is_none_or(|puffs| puffs >= SMOKE_PUFFS)
+    {
+        commands.entity(entity).try_despawn();
+        fx.smoke = None;
+    }
 
     // Tyre smoke for as long as the tyres are skidding.
-    let skidding = k.contacts > 0 && (k.sliding || k.spin > 0.0 || k.magnet > 0.0 || (boosting && k.boost_level > 0));
+    let skidding = k.contacts > 0
+        && (k.sliding || k.spin > 0.0 || k.magnet > 0.0 || (boosting && k.boost_level > 0));
     match (skidding, fx.tyre_smoke) {
         (true, None) => fx.tyre_smoke = start(&mut commands, "tiresmk", wheel(3)),
         (true, Some(entity)) => {
@@ -185,7 +210,12 @@ pub fn kart_effects(
         let piece = Transform::from_translation(from + along / 2.0)
             .looking_to(along, up)
             .with_scale(Vec3::new(MARK_WIDTH, 1.0, along.length()));
-        commands.spawn((Mark(0.0), Mesh3d(looks.square.clone()), MeshMaterial3d(material.clone()), piece));
+        commands.spawn((
+            Mark(0.0),
+            Mesh3d(looks.square.clone()),
+            MeshMaterial3d(material.clone()),
+            piece,
+        ));
     }
 
     // A puff where the car comes back down.
@@ -213,7 +243,10 @@ pub fn tints(
     mut commands: Commands,
     karts: Query<(Entity, &Kart, Option<&Tinted>)>,
     children: Query<&Children>,
-    parts: Query<&MeshMaterial3d<StandardMaterial>, (Without<Shadow>, Without<crate::kart::Shield>)>,
+    parts: Query<
+        &MeshMaterial3d<StandardMaterial>,
+        (Without<Shadow>, Without<crate::kart::Shield>),
+    >,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (entity, kart, tinted) in &karts {
@@ -222,7 +255,9 @@ pub fn tints(
         }
         commands.entity(entity).insert(Tinted(kart.tint));
         for part in children.iter_descendants(entity) {
-            let Ok(handle) = parts.get(part) else { continue };
+            let Ok(handle) = parts.get(part) else {
+                continue;
+            };
             // The original's cars, which are drawn unlit; the brick-built ones share
             // their materials and are left alone.
             if let Some(mut material) = materials.get_mut(&handle.0).filter(|m| m.unlit) {
@@ -256,20 +291,31 @@ pub fn shadows(
             ..default()
         };
         // A round blot, lying flat.
-        let blot = Mesh::from(Circle::new(0.5)).rotated_by(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+        let blot = Mesh::from(Circle::new(0.5))
+            .rotated_by(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
         (meshes.add(blot), materials.add(material))
     });
     for (entity, kart) in &bare {
         let [width, front, rear] = kart.outline;
         let size = Vec3::new(width * 2.6, 1.0, (rear - front) * 1.25);
         let place = Transform::from_xyz(0.0, MARK_LIFT, (front + rear) / 2.0).with_scale(size);
-        commands.entity(entity).with_child((Shadow, Mesh3d(blot.clone()), MeshMaterial3d(material.clone()), place));
+        commands.entity(entity).with_child((
+            Shadow,
+            Mesh3d(blot.clone()),
+            MeshMaterial3d(material.clone()),
+            place,
+        ));
     }
     for (child_of, mut transform, mut visibility) in &mut shadows {
-        let Ok(kart) = karts.get(child_of.parent()) else { continue };
+        let Ok(kart) = karts.get(child_of.parent()) else {
+            continue;
+        };
         // In the air the shadow stays on the road below, while there is one near.
         let down = kart.rot.inverse() * Vec3::NEG_Y;
-        let ground = track.collision.ground(kart.pos + Vec3::Y, 12.0).map(|hit| kart.pos.y - hit.point.y);
+        let ground = track
+            .collision
+            .ground(kart.pos + Vec3::Y, 12.0)
+            .map(|hit| kart.pos.y - hit.point.y);
         match ground.filter(|_| kart.warp <= 0.0) {
             Some(drop) => {
                 transform.translation.y = MARK_LIFT - drop * down.y.abs();

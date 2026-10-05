@@ -81,8 +81,12 @@ pub fn parse_skeleton(data: &[u8]) -> Option<Vec<Bone>> {
 impl Model {
     pub fn parse(data: &[u8]) -> Option<Model> {
         let mut r = Reader::new(data);
-        let mut model =
-            Model { materials: Vec::new(), vertices: Vec::new(), batches: Vec::new(), scale: 1.0 };
+        let mut model = Model {
+            materials: Vec::new(),
+            vertices: Vec::new(),
+            batches: Vec::new(),
+            scale: 1.0,
+        };
         let mut triangles: Vec<[u8; 3]> = Vec::new();
         while let Some(token) = r.next() {
             let Token::Key(key) = token else { return None };
@@ -124,13 +128,17 @@ impl Model {
                     let mut material = 0;
                     let mut bones: Vec<usize> = Vec::new();
                     for _ in 0..r.list_header()? {
-                        let Token::Key(command) = r.next()? else { return None };
+                        let Token::Key(command) = r.next()? else {
+                            return None;
+                        };
                         match command {
                             LOAD_VERTICES => {
                                 let slot = r.int()? as usize;
                                 let first = r.int()? as u32;
                                 let count = r.int()? as usize;
-                                for (i, entry) in cache.get_mut(slot..slot + count)?.iter_mut().enumerate() {
+                                for (i, entry) in
+                                    cache.get_mut(slot..slot + count)?.iter_mut().enumerate()
+                                {
                                     *entry = first + i as u32;
                                 }
                             }
@@ -138,8 +146,16 @@ impl Model {
                                 let first = r.int()? as usize;
                                 let count = r.int()? as usize;
                                 let bone = bones.last().copied();
-                                if model.batches.last().is_none_or(|b| b.material != material || b.bone != bone) {
-                                    model.batches.push(Batch { material, bone, indices: Vec::new() });
+                                if model
+                                    .batches
+                                    .last()
+                                    .is_none_or(|b| b.material != material || b.bone != bone)
+                                {
+                                    model.batches.push(Batch {
+                                        material,
+                                        bone,
+                                        indices: Vec::new(),
+                                    });
                                 }
                                 let batch = &mut model.batches.last_mut()?.indices;
                                 for tri in triangles.get(first..first + count)? {

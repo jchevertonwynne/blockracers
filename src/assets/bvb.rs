@@ -13,7 +13,11 @@ pub struct Volume {
 impl Volume {
     pub fn parse(data: &[u8]) -> Option<Volume> {
         let mut r = Reader::new(data);
-        let mut volume = Volume { materials: Vec::new(), vertices: Vec::new(), triangles: Vec::new() };
+        let mut volume = Volume {
+            materials: Vec::new(),
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+        };
         while let Some(token) = r.next() {
             match token {
                 Token::Key(0x27) => {
@@ -49,11 +53,24 @@ impl Volume {
 #[cfg(test)]
 #[test]
 fn loads_collision_volume() {
-    let Some(jam) = super::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
+    let Some(jam) = super::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
     let v = Volume::parse(jam.get("/GAMEDATA/RACEC0R0/COLLIDE.BVB").unwrap()).unwrap();
-    println!("{} verts {} tris, materials {:?}", v.vertices.len(), v.triangles.len(), v.materials);
+    println!(
+        "{} verts {} tris, materials {:?}",
+        v.vertices.len(),
+        v.triangles.len(),
+        v.materials
+    );
     let mut per = vec![0; v.materials.len().max(1)];
-    for t in &v.triangles { per[t[3] as usize] += 1; }
+    for t in &v.triangles {
+        per[t[3] as usize] += 1;
+    }
     println!("triangles per material {per:?}");
-    assert!(v.triangles.iter().all(|t| t[..3].iter().all(|&i| (i as usize) < v.vertices.len())));
+    assert!(
+        v.triangles
+            .iter()
+            .all(|t| t[..3].iter().all(|&i| (i as usize) < v.vertices.len()))
+    );
 }

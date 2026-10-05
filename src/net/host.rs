@@ -5,11 +5,12 @@
 //! players' cars are driven by what their games say they are pressing, a step at a
 //! time, and thirty times a second each player is told how everything stands.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use bevy::prelude::*;
 
 use super::protocol::{Drive, Peer, SNAPSHOT_EVERY, Snapshot, Stage, Tick, ToPlayer, encode};
+use super::room::Finish;
 use super::state::{Standing, State};
 use super::{Clock, Inbox, Session, Wire};
 use crate::kart::{Controls, Kart, Player};
@@ -41,14 +42,21 @@ pub struct Remote {
 
 impl Remote {
     pub fn new(peer: Peer) -> Self {
-        Remote { peer, queue: VecDeque::new(), newest: None, used: 0 }
+        Remote {
+            peer,
+            queue: VecDeque::new(),
+            newest: None,
+            used: 0,
+        }
     }
 
     /// Takes in what a player's game says it pressed, less what was heard before.
     fn hear(&mut self, last: Tick, drives: Vec<Drive>) {
         let count = drives.len() as Tick;
         for (i, drive) in drives.into_iter().enumerate() {
-            let Some(tick) = (last + 1 + i as Tick).checked_sub(count) else { continue };
+            let Some(tick) = (last + 1 + i as Tick).checked_sub(count) else {
+                continue;
+            };
             if self.newest.is_none_or(|newest| tick > newest) {
                 self.queue.push_back((tick, drive));
                 self.newest = Some(tick);
@@ -56,7 +64,9 @@ impl Remote {
         }
         while self.queue.len() > QUEUE {
             // A step dropped is not driven, but a button pressed in it was pressed.
-            if let (Some((_, old)), Some((_, next))) = (self.queue.pop_front(), self.queue.front_mut()) {
+            if let (Some((_, old)), Some((_, next))) =
+                (self.queue.pop_front(), self.queue.front_mut())
+            {
                 next.use_item |= old.use_item;
                 next.start_boost = next.start_boost.or(old.start_boost);
             }
@@ -71,6 +81,11 @@ pub struct Flow {
     waited: f32,
     /// How long the result has been looked at.
     shown: f32,
+    /// Each car's laps, by grid slot: the lap it is on, when it began it, and the
+    /// quickest it has finished.
+    laps: HashMap<usize, (i32, f32, Option<f32>)>,
+    /// The cars that were still out when the race was ended for them.
+    unfinished: Vec<usize>,
 }
 
 pub fn receive(mut inbox: ResMut<Inbox>, mut remotes: Query<&mut Remote>) {
@@ -110,13 +125,20 @@ pub fn flow(
     mut room: ResMut<super::room::Room>,
     mut wire: ResMut<Wire>,
     mut next: ResMut<NextState<Screen>>,
-    mut karts: Query<(&mut Kart, Has<Player>, Has<Remote>)>,
+    mut karts: Query<(&mut Kart, Has<Player>, Option<&Remote>)>,
+    lineup: Option<Res<super::Lineup>>,
 ) {
     let dt = time.delta_secs();
     match race.phase {
         Phase::Intro => {
             // The drop-in begins once everyone is there to see it.
-            let ready = karts.iter().filter(|k| k.2).count() == 0 || session.members.iter().all(|member| member.loaded);
+            // Whoever is in the room and not in the race is not waited for.
+            let ready = karts.iter().filter_map(|k| k.2).all(|remote| {
+                session
+                    .members
+                    .iter()
+                    .any(|member| member.peer == remote.peer && member.loaded)
+            });
             if !ready && flow.waited < LOAD_WAIT {
                 flow.waited += dt;
                 return;
@@ -135,7 +157,10 @@ pub fn flow(
         Phase::Racing | Phase::Finished => {
             race.time += dt;
             // Over, on this screen, when the car driven here is home.
-            if karts.iter().any(|(k, here, _)| here && k.finished.is_some()) {
+            if karts
+                .iter()
+                .any(|(k, here, _)| here && k.finished.is_some())
+            {
                 race.phase = Phase::Finished;
             }
         }
@@ -143,9 +168,25 @@ pub fn flow(
     if !matches!(race.phase, Phase::Racing | Phase::Finished) {
         return;
     }
+    // Each car's laps are timed as the display times the player's.
+    for (k, ..) in &karts {
+        let now = k.finished.unwrap_or(race.time);
+        let (lap, began, best) = flow.laps.entry(k.slot).or_insert((k.lap, now, None));
+        if k.lap > *lap {
+            if *lap >= 1 {
+                *best = Some(best.map_or(now - *began, |best| best.min(now - *began)));
+            }
+            (*lap, *began) = (k.lap, now);
+        }
+    }
     // The players still out are given a while after the first of them is home; the
     // computer's cars are only waited for as long as a player is.
-    let players = || karts.iter().filter(|(_, here, elsewhere)| *here || *elsewhere).map(|(k, ..)| k);
+    let players = || {
+        karts
+            .iter()
+            .filter(|(_, here, elsewhere)| *here || elsewhere.is_some())
+            .map(|(k, ..)| k)
+    };
     let first_home = players().filter_map(|k| k.finished).reduce(f32::min);
     let still_out = players().any(|k| k.finished.is_none() && k.out.is_none());
     if still_out && !first_home.is_some_and(|at| race.time - at >= FINISH_WAIT) {
@@ -153,16 +194,45 @@ pub fn flow(
     }
     // Cars still out take the places left in the order of the grid, as
     // `RaceSession::UpdateFinishedState` gives them.
-    let mut waiting: Vec<Mut<Kart>> = karts.iter_mut().map(|(k, ..)| k).filter(|k| k.finished.is_none() && k.out.is_none()).collect();
+    let mut waiting: Vec<Mut<Kart>> = karts
+        .iter_mut()
+        .map(|(k, ..)| k)
+        .filter(|k| k.finished.is_none() && k.out.is_none())
+        .collect();
     waiting.sort_by_key(|k| k.slot);
     for (i, k) in waiting.iter_mut().enumerate() {
         k.finished = Some(race.time + i as f32 * 1e-3);
+        flow.unfinished.push(k.slot);
     }
     flow.shown += dt;
     if flow.shown >= RESULT_WAIT {
-        let mut order: Vec<(usize, String)> = karts.iter().map(|(k, ..)| (k.place, k.name.to_string())).collect();
-        order.sort();
-        room.results = order.into_iter().map(|(_, name)| name).collect();
+        let mut order: Vec<(usize, Finish)> = karts
+            .iter()
+            .map(|(k, ..)| {
+                // A player's car is theirs in the results though they gave it up.
+                let player = lineup.as_ref().is_some_and(|lineup| {
+                    lineup
+                        .seats
+                        .iter()
+                        .any(|seat| seat.slot as usize == k.slot && seat.peer.is_some())
+                });
+                let time = k
+                    .finished
+                    .filter(|_| k.out.is_none() && !flow.unfinished.contains(&k.slot));
+                let best = flow.laps.get(&k.slot).and_then(|laps| laps.2);
+                (
+                    k.place,
+                    Finish {
+                        name: k.name.to_string(),
+                        player,
+                        time,
+                        best,
+                    },
+                )
+            })
+            .collect();
+        order.sort_by_key(|(place, _)| *place);
+        (room.results, room.fresh) = (order.into_iter().map(|(_, finish)| finish).collect(), true);
         let over = encode(&ToPlayer::Over);
         for member in &mut session.members {
             wire.0.send(member.peer, over.clone());
@@ -173,7 +243,12 @@ pub fn flow(
 }
 
 /// Tells each player how things stand.
-pub fn send(clock: Res<Clock>, race: Res<Race>, mut wire: ResMut<Wire>, karts: Query<(&Kart, Option<&Remote>)>) {
+pub fn send(
+    clock: Res<Clock>,
+    race: Res<Race>,
+    mut wire: ResMut<Wire>,
+    karts: Query<(&Kart, Option<&Remote>)>,
+) {
     if !clock.tick.is_multiple_of(SNAPSHOT_EVERY) {
         return;
     }
@@ -182,7 +257,10 @@ pub fn send(clock: Res<Clock>, race: Res<Race>, mut wire: ResMut<Wire>, karts: Q
         Phase::Countdown => Stage::Countdown,
         Phase::Racing | Phase::Finished => Stage::Racing,
     };
-    let all: Vec<(u8, Pose, Standing)> = karts.iter().map(|(k, _)| (k.slot as u8, Pose::of(k), Standing::of(k))).collect();
+    let all: Vec<(u8, Pose, Standing)> = karts
+        .iter()
+        .map(|(k, _)| (k.slot as u8, Pose::of(k), Standing::of(k)))
+        .collect();
     for (kart, remote) in &karts {
         let Some(remote) = remote else { continue };
         let snapshot = Snapshot {
@@ -204,12 +282,19 @@ mod tests {
     #[test]
     fn a_players_steps_are_heard_once_and_in_order() {
         let mut remote = Remote::new(1);
-        let step = |throttle: f32| Drive { throttle, ..default() };
+        let step = |throttle: f32| Drive {
+            throttle,
+            ..default()
+        };
         // Steps 1 to 3, then 2 to 5: what was heard before is not heard again.
         remote.hear(3, vec![step(1.0), step(2.0), step(3.0)]);
         remote.hear(5, vec![step(2.0), step(3.0), step(4.0), step(5.0)]);
         // Five waiting is one too many: the oldest goes.
-        let waiting: Vec<(Tick, f32)> = remote.queue.iter().map(|(tick, drive)| (*tick, drive.throttle)).collect();
+        let waiting: Vec<(Tick, f32)> = remote
+            .queue
+            .iter()
+            .map(|(tick, drive)| (*tick, drive.throttle))
+            .collect();
         assert_eq!(waiting, [(2, 2.0), (3, 3.0), (4, 4.0), (5, 5.0)]);
         // A late one that has been overtaken is ignored.
         remote.hear(3, vec![step(9.0)]);
@@ -223,6 +308,9 @@ mod tests {
         (drives[0].use_item, drives[0].start_boost) = (true, Some(1));
         remote.hear(QUEUE as Tick + 1, drives);
         let (tick, first) = remote.queue[0];
-        assert_eq!((tick, first.use_item, first.start_boost), (2, true, Some(1)));
+        assert_eq!(
+            (tick, first.use_item, first.start_boost),
+            (2, true, Some(1))
+        );
     }
 }

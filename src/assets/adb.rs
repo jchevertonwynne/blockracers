@@ -25,7 +25,11 @@ pub struct Part {
 /// A rotation as the files give it, turned into one of ours.
 pub fn turn(rotation: [f32; 4]) -> Quat {
     let rotation = Quat::from_array(rotation);
-    if rotation.length_squared() > 1e-6 { rotation.normalize().conjugate() } else { Quat::IDENTITY }
+    if rotation.length_squared() > 1e-6 {
+        rotation.normalize().conjugate()
+    } else {
+        Quat::IDENTITY
+    }
 }
 
 #[derive(Default)]
@@ -93,7 +97,11 @@ impl Animation {
                     for _ in 0..r.list_header()? {
                         r.expect(Token::Key(0x2c))?;
                         r.string()?;
-                        let mut part = Part { frames: 1.0, ms_per_frame: 33.0, track: 0 };
+                        let mut part = Part {
+                            frames: 1.0,
+                            ms_per_frame: 33.0,
+                            track: 0,
+                        };
                         r.expect(Token::LCurly)?;
                         loop {
                             match r.next()? {
@@ -126,21 +134,35 @@ impl Animation {
         } else if next == count {
             (count - 1, 0, frames + first - last, frame - last)
         } else {
-            (next - 1, next, key(next) - key(next - 1), frame - key(next - 1))
+            (
+                next - 1,
+                next,
+                key(next) - key(next - 1),
+                frame - key(next - 1),
+            )
         };
         (from, to, if length == 0.0 { 0.0 } else { elapsed / length })
     }
 
     /// A bone's position and rotation `frame` frames into a part, where it has keys.
     pub fn sample(&self, part: usize, bone: usize, frame: f32) -> (Option<Vec3>, Option<Quat>) {
-        let Some(part) = self.parts.get(part) else { return (None, None) };
-        let Some(track) = self.tracks.get(part.track + bone) else { return (None, None) };
+        let Some(part) = self.parts.get(part) else {
+            return (None, None);
+        };
+        let Some(track) = self.tracks.get(part.track + bone) else {
+            return (None, None);
+        };
         let position = match track.position_count {
             0 => None,
             1 => self.positions.get(track.positions).copied(),
             count => {
                 let (from, to, amount) = self.span(track.position_keys, count, frame, part.frames);
-                let at = |i: usize| self.positions.get(track.positions + i).copied().unwrap_or_default();
+                let at = |i: usize| {
+                    self.positions
+                        .get(track.positions + i)
+                        .copied()
+                        .unwrap_or_default()
+                };
                 Some(at(from).lerp(at(to), amount))
             }
         };
@@ -149,7 +171,12 @@ impl Animation {
             1 => self.rotations.get(track.rotations).copied(),
             count => {
                 let (from, to, amount) = self.span(track.rotation_keys, count, frame, part.frames);
-                let at = |i: usize| self.rotations.get(track.rotations + i).copied().unwrap_or_default();
+                let at = |i: usize| {
+                    self.rotations
+                        .get(track.rotations + i)
+                        .copied()
+                        .unwrap_or_default()
+                };
                 let (from, to) = (at(from), at(to));
                 // The short way round.
                 Some(from.lerp(if from.dot(to) < 0.0 { -to } else { to }, amount))
@@ -162,10 +189,15 @@ impl Animation {
 #[cfg(test)]
 #[test]
 fn hammer_swings_and_comes_back() {
-    let Some(jam) = super::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else { return };
+    let Some(jam) = super::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
     let hammer = Animation::parse(jam.get("/GAMEDATA/RACEC0R0/RKHAMM02.ADB").unwrap()).unwrap();
     assert_eq!(hammer.parts.len(), 1);
-    assert_eq!((hammer.parts[0].frames, hammer.parts[0].ms_per_frame), (100.0, 30.0));
+    assert_eq!(
+        (hammer.parts[0].frames, hammer.parts[0].ms_per_frame),
+        (100.0, 30.0)
+    );
     let angle = |frame: f32| hammer.sample(0, 0, frame).1.unwrap().to_axis_angle().1;
     assert!(angle(0.0) < 0.01 && angle(99.9) < 0.01);
     assert!(angle(50.0) > 1.4, "{}", angle(50.0));
@@ -174,7 +206,10 @@ fn hammer_swings_and_comes_back() {
     // Every animation in the archive parses.
     let mut count = 0;
     for dir in crate::world::circuits() {
-        for file in jam.list(&format!("/GAMEDATA/{}", dir.0)).filter(|f| f.ends_with(".ADB")) {
+        for file in jam
+            .list(&format!("/GAMEDATA/{}", dir.0))
+            .filter(|f| f.ends_with(".ADB"))
+        {
             assert!(Animation::parse(jam.get(file).unwrap()).is_some(), "{file}");
             count += 1;
         }

@@ -23,7 +23,10 @@ pub struct Texture {
 }
 
 /// Every library is `KEY [count] { KEY "name" { properties } ... }`.
-fn entries(data: &[u8], mut property: impl FnMut(&str, u16, &mut Reader) -> Option<()>) -> Option<()> {
+fn entries(
+    data: &[u8],
+    mut property: impl FnMut(&str, u16, &mut Reader) -> Option<()>,
+) -> Option<()> {
     let mut r = Reader::new(data);
     r.next()?;
     for _ in 0..r.list_header()? {
@@ -45,7 +48,10 @@ fn entries(data: &[u8], mut property: impl FnMut(&str, u16, &mut Reader) -> Opti
 pub fn parse_mdb(data: &[u8]) -> HashMap<String, Material> {
     let mut out: HashMap<String, Material> = HashMap::new();
     entries(data, |name, key, r| {
-        let m = out.entry(name.to_string()).or_insert(Material { diffuse: [255; 4], ..Default::default() });
+        let m = out.entry(name.to_string()).or_insert(Material {
+            diffuse: [255; 4],
+            ..Default::default()
+        });
         match key {
             0x29 => {
                 for c in &mut m.diffuse {

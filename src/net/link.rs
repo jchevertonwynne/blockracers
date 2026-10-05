@@ -4,7 +4,18 @@
 //! (`transport`), or for tests one in memory that can be made as slow and as lossy as
 //! a bad connection.
 
+use serde::{Deserialize, Serialize};
+
 use super::protocol::Peer;
+
+/// How good the way to another game is.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Quality {
+    /// There and back, in milliseconds.
+    pub ping: u16,
+    /// Straight between the two games, and not by way of a relay.
+    pub direct: bool,
+}
 
 /// Something a link has to tell.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +41,13 @@ pub trait Link: Send + Sync + 'static {
     fn address(&self) -> Option<String> {
         None
     }
+    /// How good the way to `peer` is, once that is known.
+    fn quality(&self, _peer: Peer) -> Option<Quality> {
+        None
+    }
+    /// Lets go of a player, once what has been sent them has gone. Nothing says
+    /// they have `Left`: whoever closes it knows.
+    fn close(&mut self, _peer: Peer) {}
 }
 
 #[cfg(test)]
@@ -70,7 +88,11 @@ mod memory {
 
     impl Hub {
         pub fn new(delay: u32, loss: f32) -> Self {
-            Hub { inner: Arc::default(), delay, loss }
+            Hub {
+                inner: Arc::default(),
+                delay,
+                loss,
+            }
         }
 
         /// Time passes.
@@ -79,7 +101,11 @@ mod memory {
         }
 
         pub fn host(&self) -> Memory {
-            Memory { hub: self.clone(), me: HOST, dice: Rng(0x5eed) }
+            Memory {
+                hub: self.clone(),
+                me: HOST,
+                dice: Rng(0x5eed),
+            }
         }
 
         /// A player's end, which the host hears has joined.
@@ -89,7 +115,11 @@ mod memory {
                 inner.joined += 1;
                 inner.joined
             };
-            let link = Memory { hub: self.clone(), me, dice: Rng(0xfeed + me) };
+            let link = Memory {
+                hub: self.clone(),
+                me,
+                dice: Rng(0xfeed + me),
+            };
             link.post(HOST, Event::Joined(me));
             link.post(me, Event::Joined(HOST));
             link
@@ -105,9 +135,12 @@ mod memory {
             let mut inner = self.hub.inner.lock().unwrap();
             inner.sent += 1;
             let (due, order) = (inner.now + self.hub.delay, inner.sent);
-            inner.queues.entry(to).or_default().push((due, order, event));
+            inner
+                .queues
+                .entry(to)
+                .or_default()
+                .push((due, order, event));
         }
-
     }
 
     impl Link for Memory {
@@ -121,11 +154,23 @@ mod memory {
             }
         }
 
+        fn quality(&self, _peer: Peer) -> Option<Quality> {
+            Some(Quality {
+                ping: (self.hub.delay * 2 * 1000 / 60) as u16,
+                direct: true,
+            })
+        }
+
         fn poll(&mut self) -> Option<Event> {
             let mut inner = self.hub.inner.lock().unwrap();
             let now = inner.now;
             let queue = inner.queues.get_mut(&self.me)?;
-            let next = queue.iter().enumerate().filter(|(_, e)| e.0 <= now).min_by_key(|(_, e)| e.1)?.0;
+            let next = queue
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.0 <= now)
+                .min_by_key(|(_, e)| e.1)?
+                .0;
             Some(queue.remove(next).2)
         }
     }

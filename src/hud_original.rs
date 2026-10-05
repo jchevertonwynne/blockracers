@@ -35,6 +35,11 @@ const WARP_BLUE: f32 = 100.0 / 255.0;
 /// The map and the speedometer keep this far from the corner.
 const MAP_INSET: f32 = HEIGHT / 32.0;
 const MARKER: f32 = 16.0;
+/// How far over a player's car their name is written online, from how far off it
+/// can be read, and the distance at which it is full size, in our units.
+const TAG_HEIGHT: f32 = 1.1;
+const TAG_REACH: f32 = 60.0;
+const TAG_NEAR: f32 = 6.0;
 /// The side of the square the player's arrow is drawn in.
 const ARROW_SPAN: f32 = 20.0;
 /// A change of place makes the number swell to twice its size and back.
@@ -51,8 +56,9 @@ const NEEDLE_FULL_SPEED: f32 = 0.19;
 
 // Pictures of `LEGOIMGS.IDB`, in order.
 const PICTURES: [&str; 24] = [
-    "speed", "dot", "cannon", "grapple", "wand", "rocket", "oilcan", "barrel", "magnet", "curse", "igdcrdot", "holder",
-    "holderwp", "oneenh", "twoenh", "threeenh", "shld1", "shld2", "shld3", "shld4", "octan1", "octan2", "octan3", "octan4",
+    "speed", "dot", "cannon", "grapple", "wand", "rocket", "oilcan", "barrel", "magnet", "curse",
+    "igdcrdot", "holder", "holderwp", "oneenh", "twoenh", "threeenh", "shld1", "shld2", "shld3",
+    "shld4", "octan1", "octan2", "octan3", "octan4",
 ];
 const HOLDER: usize = 11;
 const HOLDER_TINT: usize = 12;
@@ -117,9 +123,18 @@ pub struct Root;
 
 fn image(pixels: Pixels, images: &mut Assets<Image>) -> (Handle<Image>, Vec2) {
     let size = Vec2::new(pixels.width as f32, pixels.height as f32);
-    let extent = Extent3d { width: pixels.width, height: pixels.height, depth_or_array_layers: 1 };
-    let mut image =
-        Image::new(extent, TextureDimension::D2, pixels.rgba, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
+    let extent = Extent3d {
+        width: pixels.width,
+        height: pixels.height,
+        depth_or_array_layers: 1,
+    };
+    let mut image = Image::new(
+        extent,
+        TextureDimension::D2,
+        pixels.rgba,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
     image.sampler = ImageSampler::nearest();
     (images.add(image), size)
 }
@@ -134,10 +149,14 @@ pub fn load(
 ) {
     commands.insert_resource(State::default());
     commands.remove_resource::<Art>();
-    let path = std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
+    let path =
+        std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
     let Some(jam) = Jam::open(path) else { return };
     let language = format!("{COMMON}/ENGLISH");
-    let strings = jam.get(&format!("{language}/GAME.SRF")).map(load_strings).unwrap_or_default();
+    let strings = jam
+        .get(&format!("{language}/GAME.SRF"))
+        .map(load_strings)
+        .unwrap_or_default();
     let mut faces = HashMap::new();
     for (name, font) in load_fonts(&jam, &language, "LEGOFNTS.FDB") {
         // One piece of the picture per character.
@@ -145,13 +164,27 @@ pub fn load(
         let mut layout = TextureAtlasLayout::new_empty(UVec2::new(pixels.width, pixels.height));
         let mut pieces = HashMap::new();
         for code in 1..=0xff_u32 {
-            let Some(character) = char::from_u32(code) else { continue };
+            let Some(character) = char::from_u32(code) else {
+                continue;
+            };
             if let Some((x, width)) = font.glyph(character) {
-                pieces.insert(character, layout.add_texture(URect::new(x, 0, x + width, pixels.height)));
+                pieces.insert(
+                    character,
+                    layout.add_texture(URect::new(x, 0, x + width, pixels.height)),
+                );
             }
         }
-        let copy = Pixels { width: pixels.width, height: pixels.height, rgba: pixels.rgba.clone() };
-        let face = Face { image: image(copy, &mut images).0, layout: layouts.add(layout), pieces, font };
+        let copy = Pixels {
+            width: pixels.width,
+            height: pixels.height,
+            rgba: pixels.rgba.clone(),
+        };
+        let face = Face {
+            image: image(copy, &mut images).0,
+            layout: layouts.add(layout),
+            pieces,
+            font,
+        };
         faces.insert(name, face);
     }
     if strings.len() < 44 || !faces.contains_key("font_ths") || !faces.contains_key("ignum") {
@@ -159,27 +192,59 @@ pub fn load(
     }
     let black = Some([0, 0, 0]);
     let picture = |name: &str, images: &mut Assets<Image>| {
-        Some(image(decode_bmp(jam.get(&format!("{COMMON}/{name}.BMP"))?, black)?, images))
+        Some(image(
+            decode_bmp(jam.get(&format!("{COMMON}/{name}.BMP"))?, black)?,
+            images,
+        ))
     };
-    let pictures = PICTURES.iter().map(|name| picture(name, &mut images)).collect();
+    let pictures = PICTURES
+        .iter()
+        .map(|name| picture(name, &mut images))
+        .collect();
 
     // The circuit's map, and the bounds its race definition gives for it.
-    let map = circuits.0[settings.circuit].race.as_deref().and_then(|race| {
-        let dir = format!("/GAMEDATA/{race}");
-        let key = jam.get(&format!("{dir}/IGD_MAP.TDB")).and_then(|d| materials::parse_tdb(d).into_values().next());
-        let pixels = decode_bmp(jam.get(&format!("{dir}/IGD_MAP.BMP"))?, key.and_then(|t| t.color_key).or(black))?;
-        let tokens = tokenize(jam.get(&format!("{dir}/{race}.RAB"))?);
-        let at = tokens.iter().position(|t| *t == Token::Key(0x46))?;
-        let number = |n: usize| match tokens.get(at + 1 + n) {
-            Some(Token::Float(v)) => *v,
-            Some(Token::Int(v)) => *v as f32,
-            _ => 0.0,
-        };
-        Some((image(pixels, &mut images).0, [number(0), number(1), number(2), number(3)]))
-    });
-    let white = image(Pixels { width: 1, height: 1, rgba: vec![255; 4] }, &mut images).0;
+    let map = circuits.0[settings.circuit]
+        .race
+        .as_deref()
+        .and_then(|race| {
+            let dir = format!("/GAMEDATA/{race}");
+            let key = jam
+                .get(&format!("{dir}/IGD_MAP.TDB"))
+                .and_then(|d| materials::parse_tdb(d).into_values().next());
+            let pixels = decode_bmp(
+                jam.get(&format!("{dir}/IGD_MAP.BMP"))?,
+                key.and_then(|t| t.color_key).or(black),
+            )?;
+            let tokens = tokenize(jam.get(&format!("{dir}/{race}.RAB"))?);
+            let at = tokens.iter().position(|t| *t == Token::Key(0x46))?;
+            let number = |n: usize| match tokens.get(at + 1 + n) {
+                Some(Token::Float(v)) => *v,
+                Some(Token::Int(v)) => *v as f32,
+                _ => 0.0,
+            };
+            Some((
+                image(pixels, &mut images).0,
+                [number(0), number(1), number(2), number(3)],
+            ))
+        });
+    let white = image(
+        Pixels {
+            width: 1,
+            height: 1,
+            rgba: vec![255; 4],
+        },
+        &mut images,
+    )
+    .0;
     let arrow = image(arrow(), &mut images).0;
-    commands.insert_resource(Art { faces, strings, pictures, map, white, arrow });
+    commands.insert_resource(Art {
+        faces,
+        strings,
+        pictures,
+        map,
+        white,
+        arrow,
+    });
 }
 
 /// The arrow `RaceHud::DrawMapArrow` draws for the player: a green triangle inside a
@@ -194,20 +259,30 @@ fn arrow() -> Pixels {
     };
     let mut rgba = vec![0; SIZE * SIZE * 4];
     for (i, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-        let at = (Vec2::new((i % SIZE) as f32, (i / SIZE) as f32) + 0.5) / per_unit - ARROW_SPAN / 2.0;
+        let at =
+            (Vec2::new((i % SIZE) as f32, (i / SIZE) as f32) + 0.5) / per_unit - ARROW_SPAN / 2.0;
         if inside(at, [8.0, 5.0, 4.0]) {
             pixel.copy_from_slice(&[0, 255, 0, 255]);
         } else if inside(at, [9.5, 6.5, 5.5]) {
             pixel.copy_from_slice(&[0, 0, 0, 255]);
         }
     }
-    Pixels { width: SIZE as u32, height: SIZE as u32, rgba }
+    Pixels {
+        width: SIZE as u32,
+        height: SIZE as u32,
+        rgba,
+    }
 }
 
 /// Minutes, seconds and hundredths, as `RaceHud::FormatTime` writes them.
-fn clock(seconds: f32) -> String {
+pub fn clock(seconds: f32) -> String {
     let hundredths = (seconds.max(0.0) * 100.0) as u32;
-    format!("{}:{:02}:{:02}", hundredths / 6000 % 60, hundredths / 100 % 60, hundredths % 100)
+    format!(
+        "{}:{:02}:{:02}",
+        hundredths / 6000 % 60,
+        hundredths / 100 % 60,
+        hundredths % 100
+    )
 }
 
 /// The pieces of one frame of the display, on a screen `HEIGHT` tall.
@@ -229,20 +304,34 @@ fn place(at: Vec2, size: Vec2) -> Node {
 
 impl Frame<'_> {
     fn width(&self, face: &str, words: &str, scale: f32) -> f32 {
-        self.art.faces.get(face).map_or(0.0, |f| f.font.measure(words) * scale)
+        self.art
+            .faces
+            .get(face)
+            .map_or(0.0, |f| f.font.measure(words) * scale)
     }
 
     /// Writes `words` with their top left at `at`.
     fn write(&mut self, face: &str, words: &str, at: Vec2, scale: f32, colour: Color) {
-        let Some(face) = self.art.faces.get(face) else { return };
+        let Some(face) = self.art.faces.get(face) else {
+            return;
+        };
         let height = face.font.height() as f32 * scale;
         let mut x = at.x;
         for character in words.to_uppercase().chars() {
-            if let (Some(&piece), Some((_, width))) = (face.pieces.get(&character), face.font.glyph(character)) {
-                let atlas = TextureAtlas { layout: face.layout.clone(), index: piece };
+            if let (Some(&piece), Some((_, width))) =
+                (face.pieces.get(&character), face.font.glyph(character))
+            {
+                let atlas = TextureAtlas {
+                    layout: face.layout.clone(),
+                    index: piece,
+                };
                 let mut glyph = ImageNode::from_atlas_image(face.image.clone(), atlas);
                 (glyph.color, glyph.image_mode) = (colour, NodeImageMode::Stretch);
-                self.nodes.push((place(Vec2::new(x, at.y), Vec2::new(width as f32 * scale, height)), glyph, UiTransform::IDENTITY));
+                self.nodes.push((
+                    place(Vec2::new(x, at.y), Vec2::new(width as f32 * scale, height)),
+                    glyph,
+                    UiTransform::IDENTITY,
+                ));
             }
             x += face.font.advance(character) as f32 * scale;
         }
@@ -251,23 +340,50 @@ impl Frame<'_> {
     /// The big face where it has the letters, and the small one at twice the size
     /// where it hasn't; centred on `centre`.
     fn banner(&mut self, words: &str, centre: Vec2, scale: f32, colour: Color) {
-        let big = self.art.faces.get("ignum").is_some_and(|f| words.chars().all(|c| c == ' ' || f.pieces.contains_key(&c)));
-        let (face, scale) = if big { ("ignum", scale) } else { ("font_ths", scale * 2.0) };
-        let height = self.art.faces.get(face).map_or(0.0, |f| f.font.height() as f32) * scale;
+        let big = self
+            .art
+            .faces
+            .get("ignum")
+            .is_some_and(|f| words.chars().all(|c| c == ' ' || f.pieces.contains_key(&c)));
+        let (face, scale) = if big {
+            ("ignum", scale)
+        } else {
+            ("font_ths", scale * 2.0)
+        };
+        let height = self
+            .art
+            .faces
+            .get(face)
+            .map_or(0.0, |f| f.font.height() as f32)
+            * scale;
         let at = centre - Vec2::new(self.width(face, words, scale), height) / 2.0;
         self.write(face, words, at, scale, colour);
     }
 
     fn picture(&mut self, index: usize, at: Vec2, scale: f32, colour: Color) -> Vec2 {
-        let Some((handle, size)) = self.art.pictures.get(index).cloned().flatten() else { return Vec2::ZERO };
-        let node = ImageNode { image: handle, color: colour, image_mode: NodeImageMode::Stretch, ..default() };
-        self.nodes.push((place(at, size * scale), node, UiTransform::IDENTITY));
+        let Some((handle, size)) = self.art.pictures.get(index).cloned().flatten() else {
+            return Vec2::ZERO;
+        };
+        let node = ImageNode {
+            image: handle,
+            color: colour,
+            image_mode: NodeImageMode::Stretch,
+            ..default()
+        };
+        self.nodes
+            .push((place(at, size * scale), node, UiTransform::IDENTITY));
         size * scale
     }
 
     fn block(&mut self, at: Vec2, size: Vec2, colour: Color) {
-        let node = ImageNode { image: self.art.white.clone(), color: colour, image_mode: NodeImageMode::Stretch, ..default() };
-        self.nodes.push((place(at, size), node, UiTransform::IDENTITY));
+        let node = ImageNode {
+            image: self.art.white.clone(),
+            color: colour,
+            image_mode: NodeImageMode::Stretch,
+            ..default()
+        };
+        self.nodes
+            .push((place(at, size), node, UiTransform::IDENTITY));
     }
 }
 
@@ -287,12 +403,21 @@ pub fn draw(
     pause: Res<crate::Pause>,
     championship: Res<crate::championship::Championship>,
     time_race: Res<crate::time_race::TimeRace>,
-    (variant, replay): (Res<crate::variant::Variant>, Res<crate::replay::Replay>),
+    (variant, replay, role, lineup, camera, cars): (
+        Res<crate::variant::Variant>,
+        Res<crate::replay::Replay>,
+        Res<crate::net::Role>,
+        Option<Res<crate::net::Lineup>>,
+        Single<(&Camera, &Transform), With<Camera3d>>,
+        Query<(&Kart, &Transform), Without<Camera3d>>,
+    ),
 ) {
     for root in &roots {
         commands.entity(root).despawn();
     }
-    let Some((player, _)) = karts.iter().find(|k| k.1) else { return };
+    let Some((player, _)) = karts.iter().find(|k| k.1) else {
+        return;
+    };
     let fit = window.height() / HEIGHT;
     if scale.0 != fit {
         scale.0 = fit;
@@ -303,7 +428,10 @@ pub fn draw(
     if keys.just_pressed(KeyCode::Tab) {
         state.gadget = (state.gadget + 1) % 3;
     }
-    let mut frame = Frame { art: &art, nodes: Vec::new() };
+    let mut frame = Frame {
+        art: &art,
+        nodes: Vec::new(),
+    };
     let string = |index: usize| art.strings.get(index).cloned().unwrap_or_default();
     let line = art.faces["font_ths"].font.height() as f32;
 
@@ -318,12 +446,49 @@ pub fn draw(
             frame.banner(&format!("{}", left.ceil() as u32), banner_at, swell, yellow);
         }
         Phase::Racing if race.time < 2.0 => frame.banner(&string(text::GO), banner_at, 1.8, yellow),
-        Phase::Finished if replay.showing.is_some() => frame.banner("REPLAY", banner_at, 1.0, Color::WHITE),
+        Phase::Finished if replay.showing.is_some() => {
+            frame.banner("REPLAY", banner_at, 1.0, Color::WHITE)
+        }
         Phase::Finished => frame.banner(&string(text::FINISH), banner_at, 1.0, Color::WHITE),
         _ => {}
     }
     if race.phase == Phase::Intro {
-        *state = State { gadget: state.gadget, ..default() };
+        *state = State {
+            gadget: state.gadget,
+            ..default()
+        };
+    }
+
+    // The port's own: online, the other players' names go over their cars, smaller
+    // the further off they are, so that a person can be told from the computer.
+    let online = *role != crate::net::Role::Offline;
+    let people: Vec<usize> = lineup
+        .iter()
+        .filter(|_| online)
+        .flat_map(|lineup| {
+            lineup
+                .seats
+                .iter()
+                .filter(|seat| seat.peer.is_some_and(|peer| peer != lineup.you))
+                .map(|seat| seat.slot as usize)
+        })
+        .collect();
+    let (lens, eye) = *camera;
+    for (kart, shown) in cars
+        .iter()
+        .filter(|(kart, _)| people.contains(&kart.slot) && kart.out.is_none())
+    {
+        let above = shown.translation + Vec3::Y * TAG_HEIGHT;
+        let away = above.distance(eye.translation);
+        let Ok(at) = lens.world_to_viewport(&GlobalTransform::from(*eye), above) else {
+            continue;
+        };
+        if away > TAG_REACH {
+            continue;
+        }
+        let size = (TAG_NEAR / away).clamp(0.4, 0.8);
+        let at = at / fit - Vec2::new(frame.width("font_ths", &kart.name, size) / 2.0, line * size);
+        frame.write("font_ths", &kart.name, at, size, Color::WHITE);
     }
 
     // Laps: the time of the one under way, and the best so far.
@@ -339,7 +504,9 @@ pub fn draw(
     }
     let on_lap = racing_time - state.lap_started;
     // A finished lap's time is held up for a moment, blinking.
-    let held = state.last_lap.filter(|_| on_lap < LAP_HOLD || player.finished.is_some());
+    let held = state
+        .last_lap
+        .filter(|_| on_lap < LAP_HOLD || player.finished.is_some());
     let shown = held.unwrap_or(on_lap);
     let blink = held.is_some() && (on_lap / BLINK) as u32 % 2 == 1 && player.finished.is_none();
     let time_width = frame.width("font_ths", "0:00:00", 1.0);
@@ -347,18 +514,36 @@ pub fn draw(
     let white = Color::WHITE;
     if race.phase != Phase::Intro {
         if !blink {
-            frame.write("font_ths", &clock(shown), Vec2::new(time_x, TOP), 1.0, white);
+            frame.write(
+                "font_ths",
+                &clock(shown),
+                Vec2::new(time_x, TOP),
+                1.0,
+                white,
+            );
         }
         let count = format!("{}/{}", player.display_lap(laps), laps);
         let count_x = time_x - frame.width("font_ths", &count, 1.0) - 14.0;
         frame.write("font_ths", &count, Vec2::new(count_x, TOP), 1.0, white);
         let label = string(text::LAP);
-        frame.write("font_ths", &label, Vec2::new(count_x - frame.width("font_ths", &label, 1.0) - 8.0, TOP), 1.0, white);
+        frame.write(
+            "font_ths",
+            &label,
+            Vec2::new(count_x - frame.width("font_ths", &label, 1.0) - 8.0, TOP),
+            1.0,
+            white,
+        );
         if let Some(best) = state.best_lap {
             let y = TOP + line * 7.0 / 8.0;
             let label = string(text::BEST);
             frame.write("font_ths", &clock(best), Vec2::new(time_x, y), 1.0, white);
-            frame.write("font_ths", &label, Vec2::new(time_x - frame.width("font_ths", &label, 1.0) - 14.0, y), 1.0, white);
+            frame.write(
+                "font_ths",
+                &label,
+                Vec2::new(time_x - frame.width("font_ths", &label, 1.0) - 14.0, y),
+                1.0,
+                white,
+            );
         }
 
         // Place: a big number that swells when it changes, and its ending.
@@ -368,7 +553,11 @@ pub fn draw(
         let swell = match &mut state.pulse {
             Some(age) => {
                 *age += dt;
-                let swell = if *age < PULSE.0 { 1.0 + *age / PULSE.0 } else { (2.0 - (*age - PULSE.0) / PULSE.0).max(1.0) };
+                let swell = if *age < PULSE.0 {
+                    1.0 + *age / PULSE.0
+                } else {
+                    (2.0 - (*age - PULSE.0) / PULSE.0).max(1.0)
+                };
                 if *age > PULSE.1 * 3.0 {
                     state.pulse = None;
                 }
@@ -379,12 +568,27 @@ pub fn draw(
         let place_x = width / 10.0;
         let number = player.place.to_string();
         let number_width = frame.width("ignum", &number, 1.0);
-        frame.write("ignum", &number, Vec2::new(place_x - number_width, TOP), swell, white);
-        frame.write("font_ths", &string(text::PLACES + (player.place - 1).min(3)), Vec2::new(place_x + 5.0, TOP), 1.0, white);
+        frame.write(
+            "ignum",
+            &number,
+            Vec2::new(place_x - number_width, TOP),
+            swell,
+            white,
+        );
+        frame.write(
+            "font_ths",
+            &string(text::PLACES + (player.place - 1).min(3)),
+            Vec2::new(place_x + 5.0, TOP),
+            1.0,
+            white,
+        );
 
         if race.phase == Phase::Racing && player.wrong_way() {
             let words = string(text::WRONG_WAY);
-            let at = Vec2::new((width - frame.width("font_ths", &words, 1.0)) / 2.0, HEIGHT / 5.0);
+            let at = Vec2::new(
+                (width - frame.width("font_ths", &words, 1.0)) / 2.0,
+                HEIGHT / 5.0,
+            );
             frame.write("font_ths", &words, at, 1.0, white);
         }
     }
@@ -405,10 +609,20 @@ pub fn draw(
         frame.picture(HOLDER_TINT, at, 1.0, held.map_or(white, |h| h.0));
         if let Some((_, picture)) = held {
             let item = art.pictures[picture].as_ref().map_or(Vec2::ZERO, |p| p.1);
-            frame.picture(picture, at + size * Vec2::new(31.0, 38.0) / 64.0 - item / 2.0, 1.0, white);
+            frame.picture(
+                picture,
+                at + size * Vec2::new(31.0, 38.0) / 64.0 - item / 2.0,
+                1.0,
+                white,
+            );
         }
         if level > 0 {
-            frame.picture(HOLDER_TINT + level, at + Vec2::new(size.x * 24.0 / 64.0, 0.0), 1.0, white);
+            frame.picture(
+                HOLDER_TINT + level,
+                at + Vec2::new(size.x * 24.0 / 64.0, 0.0),
+                1.0,
+                white,
+            );
         }
     }
 
@@ -423,26 +637,78 @@ pub fn draw(
             let per_unit = MAP_SIZE / range.max_element();
             let size = range * per_unit;
             // Mirrored, the map is turned over top to bottom, as `RaceHud` draws it.
-            let node = ImageNode { image: picture.clone(), image_mode: NodeImageMode::Stretch, flip_y: variant.mirror, ..default() };
-            frame.nodes.push((place(corner - size, size), node, UiTransform::IDENTITY));
+            let node = ImageNode {
+                image: picture.clone(),
+                image_mode: NodeImageMode::Stretch,
+                flip_y: variant.mirror,
+                ..default()
+            };
+            frame
+                .nodes
+                .push((place(corner - size, size), node, UiTransform::IDENTITY));
             // East is right and north is up.
             let spot = |k: &Kart| {
-                let north = if variant.mirror { k.pos.z / UNIT - max_y } else { min_y + k.pos.z / UNIT };
+                let north = if variant.mirror {
+                    k.pos.z / UNIT - max_y
+                } else {
+                    min_y + k.pos.z / UNIT
+                };
                 corner + Vec2::new(k.pos.x / UNIT - max_x, north) * per_unit
             };
             // The marker picture holds four; the first is the one for other racers.
             if let Some((handle, _)) = art.pictures[10].clone() {
                 for (kart, _) in karts.iter().filter(|k| !k.1 && k.0.out.is_none()) {
                     let rect = Some(Rect::new(0.0, 0.0, MARKER, MARKER));
-                    let node = ImageNode { image: handle.clone(), rect, image_mode: NodeImageMode::Stretch, ..default() };
-                    frame.nodes.push((place(spot(kart) - MARKER / 2.0, Vec2::splat(MARKER)), node, UiTransform::IDENTITY));
+                    let node = ImageNode {
+                        image: handle.clone(),
+                        rect,
+                        image_mode: NodeImageMode::Stretch,
+                        ..default()
+                    };
+                    frame.nodes.push((
+                        place(spot(kart) - MARKER / 2.0, Vec2::splat(MARKER)),
+                        node,
+                        UiTransform::IDENTITY,
+                    ));
                 }
+            }
+            // Online the other players' marks have their names beside them: to the
+            // right, or to the left where that would run off the screen.
+            for (kart, _) in karts
+                .iter()
+                .filter(|k| people.contains(&k.0.slot) && k.0.out.is_none())
+            {
+                let (mark, long) = (spot(kart), frame.width("font_ths", &kart.name, 0.4));
+                let reach = MARKER / 2.0 - 2.0;
+                let left = if mark.x + reach + long > width {
+                    mark.x - reach - long
+                } else {
+                    mark.x + reach
+                };
+                frame.write(
+                    "font_ths",
+                    &kart.name,
+                    Vec2::new(left, mark.y - line * 0.2),
+                    0.4,
+                    Color::WHITE,
+                );
             }
             // The player: an arrow pointing the way the kart is.
             let heading = Vec2::new(forward.x, forward.z);
-            let turn = UiTransform { rotation: Rot2::radians(heading.y.atan2(heading.x)), ..UiTransform::IDENTITY };
-            let node = ImageNode { image: art.arrow.clone(), image_mode: NodeImageMode::Stretch, ..default() };
-            frame.nodes.push((place(spot(player) - ARROW_SPAN / 2.0, Vec2::splat(ARROW_SPAN)), node, turn));
+            let turn = UiTransform {
+                rotation: Rot2::radians(heading.y.atan2(heading.x)),
+                ..UiTransform::IDENTITY
+            };
+            let node = ImageNode {
+                image: art.arrow.clone(),
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            };
+            frame.nodes.push((
+                place(spot(player) - ARROW_SPAN / 2.0, Vec2::splat(ARROW_SPAN)),
+                node,
+                turn,
+            ));
         }
         (1, _) => {
             let size = art.pictures[0].as_ref().map_or(Vec2::ZERO, |p| p.1);
@@ -450,12 +716,17 @@ pub fn draw(
             frame.picture(0, at, 1.0, white);
             // The needle turns about a hub off-centre in the dial.
             let hub = Vec2::new(width, HEIGHT) - size * 52.0 / 128.0 - 2.0;
-            let angle = NEEDLE_REST + (state.speed / NEEDLE_FULL_SPEED).clamp(0.0, 1.0) * NEEDLE_SWEEP;
+            let angle =
+                NEEDLE_REST + (state.speed / NEEDLE_FULL_SPEED).clamp(0.0, 1.0) * NEEDLE_SWEEP;
             let along = Vec2::new(angle.cos(), angle.sin());
             for step in 0..15 {
                 let reach = step as f32 / 14.0;
                 let thick = 5.0 - reach * 3.0;
-                frame.block(hub + along * reach * NEEDLE_LENGTH - thick / 2.0, Vec2::splat(thick), Color::srgb_u8(0xc8, 0xc8, 0xc8));
+                frame.block(
+                    hub + along * reach * NEEDLE_LENGTH - thick / 2.0,
+                    Vec2::splat(thick),
+                    Color::srgb_u8(0xc8, 0xc8, 0xc8),
+                );
             }
             let dot = art.pictures[1].as_ref().map_or(Vec2::ZERO, |p| p.1);
             frame.picture(1, hub - dot / 2.0, 1.0, white);
@@ -469,7 +740,10 @@ pub fn draw(
     let extras = "R: REPLAY   P: PHOTO";
     if replay.showing.is_some() {
         let keys = "LEFT RIGHT: CAR   T: CAMERA   ESC: BACK";
-        let at = Vec2::new((width - frame.width("font_ths", keys, 0.6)) / 2.0, HEIGHT - 1.2 * line);
+        let at = Vec2::new(
+            (width - frame.width("font_ths", keys, 0.6)) / 2.0,
+            HEIGHT - 1.2 * line,
+        );
         frame.write("font_ths", keys, at, 0.6, white);
     } else if race.phase == Phase::Finished && settings.time_race {
         // Against the clock: the laps, what they come to, the time to beat, and how it went.
@@ -478,7 +752,13 @@ pub fn draw(
             .laps
             .iter()
             .enumerate()
-            .map(|(lap, &seconds)| (format!("{} {}", string(text::LAP), lap + 1), clock(seconds), white))
+            .map(|(lap, &seconds)| {
+                (
+                    format!("{} {}", string(text::LAP), lap + 1),
+                    clock(seconds),
+                    white,
+                )
+            })
             .collect();
         rows.push(("TOTAL".into(), clock(time_race.run.total()), yellow));
         if let Some(record) = &time_race.record {
@@ -487,24 +767,62 @@ pub fn draw(
         let top = HEIGHT * 0.3;
         for (row, (label, value, colour)) in rows.iter().enumerate() {
             let y = top + row as f32 * line * 7.0 / 8.0;
-            frame.write("font_ths", label, Vec2::new(width / 2.0 - 150.0, y), 1.0, *colour);
-            frame.write("font_ths", value, Vec2::new(width / 2.0 + 150.0 - frame.width("font_ths", value, 1.0), y), 1.0, *colour);
+            frame.write(
+                "font_ths",
+                label,
+                Vec2::new(width / 2.0 - 150.0, y),
+                1.0,
+                *colour,
+            );
+            frame.write(
+                "font_ths",
+                value,
+                Vec2::new(width / 2.0 + 150.0 - frame.width("font_ths", value, 1.0), y),
+                1.0,
+                *colour,
+            );
         }
-        let verdict = if time_race.result == Some(true) { text::RECORD_BEATEN } else { text::RECORD_STANDS };
+        let verdict = if time_race.result == Some(true) {
+            text::RECORD_BEATEN
+        } else {
+            text::RECORD_STANDS
+        };
         for (row, words) in [string(verdict), string(verdict + 1)].iter().enumerate() {
             let y = top + (rows.len() as f32 + 0.6 + row as f32 * 0.8) * line * 7.0 / 8.0;
-            frame.write("font_ths", words, Vec2::new((width - frame.width("font_ths", words, 0.75)) / 2.0, y), 0.75, yellow);
+            frame.write(
+                "font_ths",
+                words,
+                Vec2::new((width - frame.width("font_ths", words, 0.75)) / 2.0, y),
+                0.75,
+                yellow,
+            );
         }
-        let prompt = format!("ENTER: {}   ESC: {}", string(text::RESTART), string(text::EXIT));
-        let at = Vec2::new((width - frame.width("font_ths", &prompt, 0.75)) / 2.0, HEIGHT * 0.3 + 7.5 * line);
+        let prompt = format!(
+            "ENTER: {}   ESC: {}",
+            string(text::RESTART),
+            string(text::EXIT)
+        );
+        let at = Vec2::new(
+            (width - frame.width("font_ths", &prompt, 0.75)) / 2.0,
+            HEIGHT * 0.3 + 7.5 * line,
+        );
         frame.write("font_ths", &prompt, at, 0.75, white);
-        let at = Vec2::new((width - frame.width("font_ths", extras, 0.75)) / 2.0, HEIGHT * 0.3 + 8.3 * line);
+        let at = Vec2::new(
+            (width - frame.width("font_ths", extras, 0.75)) / 2.0,
+            HEIGHT * 0.3 + 8.3 * line,
+        );
         frame.write("font_ths", extras, at, 0.75, white);
     } else if race.phase == Phase::Finished {
         let run = championship.run.as_ref();
         let over = championship.over();
         let mut rows: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
-        rows.sort_by_key(|k| if over { championship.standing(k.slot) } else { k.place });
+        rows.sort_by_key(|k| {
+            if over {
+                championship.standing(k.slot)
+            } else {
+                k.place
+            }
+        });
         let top = HEIGHT * 0.3;
         let right = |frame: &mut Frame, words: &str, x: f32, y: f32, colour: Color| {
             let at = Vec2::new(x - frame.width("font_ths", words, 1.0), y);
@@ -512,28 +830,83 @@ pub fn draw(
         };
         for (row, kart) in rows.iter().enumerate() {
             let y = top + row as f32 * line * 7.0 / 8.0;
-            let colour = if std::ptr::eq(*kart, player) { yellow } else { white };
-            let position = if over { championship.standing(kart.slot) } else { kart.place };
-            let place = format!("{}{}", position, string(text::PLACES + (position - 1).min(3)));
-            frame.write("font_ths", &place, Vec2::new(width / 2.0 - 230.0, y), 1.0, colour);
-            frame.write("font_ths", &kart.name, Vec2::new(width / 2.0 - 160.0, y), 1.0, colour);
+            let colour = if std::ptr::eq(*kart, player) {
+                yellow
+            } else {
+                white
+            };
+            let position = if over {
+                championship.standing(kart.slot)
+            } else {
+                kart.place
+            };
+            let place = format!(
+                "{}{}",
+                position,
+                string(text::PLACES + (position - 1).min(3))
+            );
+            frame.write(
+                "font_ths",
+                &place,
+                Vec2::new(width / 2.0 - 230.0, y),
+                1.0,
+                colour,
+            );
+            frame.write(
+                "font_ths",
+                &kart.name,
+                Vec2::new(width / 2.0 - 160.0, y),
+                1.0,
+                colour,
+            );
             match run {
                 Some(run) => {
                     if !over {
-                        right(&mut frame, &format!("+{}", run.round_points[kart.slot]), width / 2.0 + 160.0, y, colour);
+                        right(
+                            &mut frame,
+                            &format!("+{}", run.round_points[kart.slot]),
+                            width / 2.0 + 160.0,
+                            y,
+                            colour,
+                        );
                     }
-                    right(&mut frame, &run.points[kart.slot].to_string(), width / 2.0 + 230.0, y, colour);
+                    right(
+                        &mut frame,
+                        &run.points[kart.slot].to_string(),
+                        width / 2.0 + 230.0,
+                        y,
+                        colour,
+                    );
                 }
-                None => right(&mut frame, &kart.finished.map_or("-".into(), clock), width / 2.0 + 230.0, y, colour),
+                None => right(
+                    &mut frame,
+                    &kart.finished.map_or("-".into(), clock),
+                    width / 2.0 + 230.0,
+                    y,
+                    colour,
+                ),
             }
         }
+        // Online there is nothing to press: the session goes back to its room.
         let prompt = match run {
+            _ if online => String::new(),
             Some(_) => format!("ENTER: {}", string(text::CONTINUE)),
-            None => format!("ENTER: {}   ESC: {}", string(text::RESTART), string(text::EXIT)),
+            None => format!(
+                "ENTER: {}   ESC: {}",
+                string(text::RESTART),
+                string(text::EXIT)
+            ),
         };
-        let at = Vec2::new((width - frame.width("font_ths", &prompt, 0.75)) / 2.0, HEIGHT * 0.3 + 6.5 * line);
+        let at = Vec2::new(
+            (width - frame.width("font_ths", &prompt, 0.75)) / 2.0,
+            HEIGHT * 0.3 + 6.5 * line,
+        );
         frame.write("font_ths", &prompt, at, 0.75, white);
-        let at = Vec2::new((width - frame.width("font_ths", extras, 0.75)) / 2.0, HEIGHT * 0.3 + 7.3 * line);
+        let extras = if online { "" } else { extras };
+        let at = Vec2::new(
+            (width - frame.width("font_ths", extras, 0.75)) / 2.0,
+            HEIGHT * 0.3 + 7.3 * line,
+        );
         frame.write("font_ths", extras, at, 0.75, white);
     }
 
@@ -549,32 +922,69 @@ pub fn draw(
     state.wash = wash.clamp(0.0, 1.0);
     if state.wash > 0.0 {
         let colour = Color::srgba(0.0, 0.0, WARP_BLUE, state.wash);
-        let node = ImageNode { image: art.white.clone(), color: colour, image_mode: NodeImageMode::Stretch, ..default() };
-        frame.nodes.insert(0, (place(Vec2::ZERO, Vec2::new(width, HEIGHT)), node, UiTransform::IDENTITY));
+        let node = ImageNode {
+            image: art.white.clone(),
+            color: colour,
+            image_mode: NodeImageMode::Stretch,
+            ..default()
+        };
+        frame.nodes.insert(
+            0,
+            (
+                place(Vec2::ZERO, Vec2::new(width, HEIGHT)),
+                node,
+                UiTransform::IDENTITY,
+            ),
+        );
     }
 
     // Paused: everything else gives way to a darkened screen and the menu.
     if let Some(dialog) = &pause.0 {
         frame.nodes.clear();
-        let shade = ImageNode { image: art.white.clone(), color: Color::srgba(0.0, 0.0, 0.0, 64.0 / 255.0), image_mode: NodeImageMode::Stretch, ..default() };
-        frame.nodes.push((place(Vec2::ZERO, Vec2::new(width, HEIGHT)), shade, UiTransform::IDENTITY));
+        let shade = ImageNode {
+            image: art.white.clone(),
+            color: Color::srgba(0.0, 0.0, 0.0, 64.0 / 255.0),
+            image_mode: NodeImageMode::Stretch,
+            ..default()
+        };
+        frame.nodes.push((
+            place(Vec2::ZERO, Vec2::new(width, HEIGHT)),
+            shade,
+            UiTransform::IDENTITY,
+        ));
         let step = line * 2.0;
         let top = HEIGHT / 2.0 - dialog.options.len() as f32 * step / 2.0;
-        frame.banner(&string(dialog.prompt), Vec2::new(width / 2.0, top - step / 2.0), 1.0, white);
+        frame.banner(
+            &string(dialog.prompt),
+            Vec2::new(width / 2.0, top - step / 2.0),
+            1.0,
+            white,
+        );
         for (row, &option) in dialog.options.iter().enumerate() {
             // The answer picked out pulses.
             let colour = if row == dialog.selected {
-                let pulse = 0.75 + 0.25 * (real.elapsed_secs_f64() * std::f64::consts::TAU).cos() as f32;
+                let pulse =
+                    0.75 + 0.25 * (real.elapsed_secs_f64() * std::f64::consts::TAU).cos() as f32;
                 Color::srgba(1.0, 1.0, 0x24 as f32 / 255.0, pulse)
             } else {
                 Color::srgb(0.5, 0.5, 0x12 as f32 / 255.0)
             };
-            frame.banner(&string(option), Vec2::new(width / 2.0, top + (row as f32 + 0.5) * step), 1.0, colour);
+            frame.banner(
+                &string(option),
+                Vec2::new(width / 2.0, top + (row as f32 + 0.5) * step),
+                1.0,
+                colour,
+            );
         }
     }
 
     let nodes = frame.nodes;
-    let screen = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() };
+    let screen = Node {
+        position_type: PositionType::Absolute,
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        ..default()
+    };
     commands.spawn((Root, screen)).with_children(|root| {
         for node in nodes {
             root.spawn(node);

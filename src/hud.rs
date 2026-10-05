@@ -23,17 +23,39 @@ pub struct ItemText;
 pub struct CenterText;
 
 fn font(size: f32) -> TextFont {
-    TextFont { font_size: FontSize::Px(size), ..default() }
+    TextFont {
+        font_size: FontSize::Px(size),
+        ..default()
+    }
 }
 
 fn corner(top: Val, bottom: Val, left: Val, right: Val) -> Node {
-    Node { position_type: PositionType::Absolute, top, bottom, left, right, ..default() }
+    Node {
+        position_type: PositionType::Absolute,
+        top,
+        bottom,
+        left,
+        right,
+        ..default()
+    }
 }
 
 pub fn setup_text_hud(mut commands: Commands) {
     let (auto, edge) = (Val::Auto, Val::Px(16.0));
-    commands.spawn((LapText, Text::new(""), font(34.0), TextShadow::default(), corner(edge, auto, edge, auto)));
-    commands.spawn((PlaceText, Text::new(""), font(48.0), TextShadow::default(), corner(edge, auto, auto, edge)));
+    commands.spawn((
+        LapText,
+        Text::new(""),
+        font(34.0),
+        TextShadow::default(),
+        corner(edge, auto, edge, auto),
+    ));
+    commands.spawn((
+        PlaceText,
+        Text::new(""),
+        font(48.0),
+        TextShadow::default(),
+        corner(edge, auto, auto, edge),
+    ));
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -46,7 +68,10 @@ pub fn setup_text_hud(mut commands: Commands) {
     ));
     commands.spawn((
         ItemBox,
-        Node { padding: UiRect::all(Val::Px(12.0)), ..corner(auto, edge, edge, auto) },
+        Node {
+            padding: UiRect::all(Val::Px(12.0)),
+            ..corner(auto, edge, edge, auto)
+        },
         BackgroundColor(Color::NONE),
         children![(ItemText, Text::new(""), font(26.0))],
     ));
@@ -69,7 +94,10 @@ pub fn setup_text_hud(mut commands: Commands) {
 }
 
 fn ordinal(place: usize) -> &'static str {
-    ["1st", "2nd", "3rd", "4th", "5th", "6th"].get(place - 1).copied().unwrap_or("-")
+    ["1st", "2nd", "3rd", "4th", "5th", "6th"]
+        .get(place - 1)
+        .copied()
+        .unwrap_or("-")
 }
 
 fn clock(t: f32) -> String {
@@ -81,21 +109,47 @@ pub fn update_text_hud(
     settings: Res<Settings>,
     replay: Res<crate::replay::Replay>,
     karts: Query<(&Kart, Has<Player>)>,
-    mut lap: Single<&mut Text, (With<LapText>, Without<PlaceText>, Without<TimeText>, Without<ItemText>, Without<CenterText>)>,
-    mut place: Single<&mut Text, (With<PlaceText>, Without<TimeText>, Without<ItemText>, Without<CenterText>)>,
+    mut lap: Single<
+        &mut Text,
+        (
+            With<LapText>,
+            Without<PlaceText>,
+            Without<TimeText>,
+            Without<ItemText>,
+            Without<CenterText>,
+        ),
+    >,
+    mut place: Single<
+        &mut Text,
+        (
+            With<PlaceText>,
+            Without<TimeText>,
+            Without<ItemText>,
+            Without<CenterText>,
+        ),
+    >,
     mut timer: Single<&mut Text, (With<TimeText>, Without<ItemText>, Without<CenterText>)>,
     mut item: Single<&mut Text, (With<ItemText>, Without<CenterText>)>,
     mut center: Single<&mut Text, With<CenterText>>,
     mut item_box: Single<&mut BackgroundColor, With<ItemBox>>,
 ) {
-    let Some((player, _)) = karts.iter().find(|k| k.1) else { return };
+    let Some((player, _)) = karts.iter().find(|k| k.1) else {
+        return;
+    };
     let set = |text: &mut Text, value: String| {
         if text.0 != value {
             text.0 = value;
         }
     };
 
-    set(&mut lap, format!("LAP {}/{}", player.display_lap(settings.laps()), settings.laps()));
+    set(
+        &mut lap,
+        format!(
+            "LAP {}/{}",
+            player.display_lap(settings.laps()),
+            settings.laps()
+        ),
+    );
     set(&mut place, ordinal(player.place).to_string());
     set(&mut timer, clock(player.finished.unwrap_or(race.time)));
 
@@ -120,7 +174,9 @@ pub fn update_text_hud(
         Phase::Racing if race.time < 1.0 => "GO!".to_string(),
         Phase::Racing if player.wrong_way() => "WRONG WAY".to_string(),
         Phase::Racing => String::new(),
-        Phase::Finished if replay.showing.is_some() => "REPLAY\n\nLeft / Right: car    T: camera    ESC: back".to_string(),
+        Phase::Finished if replay.showing.is_some() => {
+            "REPLAY\n\nLeft / Right: car    T: camera    ESC: back".to_string()
+        }
         Phase::Finished => {
             let mut rows: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
             rows.sort_by_key(|k| k.place);

@@ -20,7 +20,8 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
   pause, photo mode and replays are off. Bricks, power-ups and the circuit's events
   are run only on the host, which tells the others what came of them (`net::scene`);
-  a joiner's `TrackEvents` is `following` and starts nothing by itself. A joiner's own car
+  a joiner's `TrackEvents` is `following` and starts nothing by itself. A player who
+  gives a race up is back in the session's room, and their car is the computer's. A joiner's own car
   is driven ahead of the host and the others are shown where they will be by then
   (`net::client`), so that what is seen and what is bumped into agree.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
@@ -90,7 +91,10 @@ An online demo is two runs at once, a host and a joiner, each with its own
 seconds or so before anything is on the road. Online the demo's cars are driven by
 `BRICK_KEYS` (`W@10+12`), not by the computer. A demo can't type, so the pages
 with something to type into are reached by `BRICK_MENU` and `BRICK_NET` and not
-through the menus; in the room, `Enter` is on "ready" to begin with.
+through the menus; in the room, `Enter` is on "ready" to begin with. After a race
+the room opens on its results, where `Enter` is on "OK". The room's other pages
+(the last race, and the host's page for the password, the player limit and putting
+a player out) are reached with `BRICK_KEYS`.
 
 ## Being a good guest on the user's machine
 

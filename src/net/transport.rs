@@ -22,7 +22,7 @@ use iroh::{Endpoint, EndpointId};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use super::link::{Event, Link};
+use super::link::{Event, Link, Quality};
 use super::protocol::{HOST, Peer};
 
 /// Games speak only to games that speak this.
@@ -40,13 +40,35 @@ pub fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         // The lobby is asked over HTTPS, and this is whose arithmetic that uses.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_name("net").build().expect("threads for the network")
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .thread_name("net")
+            .build()
+            .expect("threads for the network")
     })
 }
+
+/// How often the ways to the other games are looked at.
+const MEASURED_EVERY: Duration = Duration::from_secs(1);
 
 enum Out {
     Message(Peer, Vec<u8>),
     Datagram(Peer, Vec<u8>),
+    Close(Peer),
+}
+
+type Measured = Arc<Mutex<HashMap<Peer, Quality>>>;
+
+/// How good the way a connection is using is: iroh has one by a relay to begin
+/// with, and a straight one beside it once it has found a way through.
+fn quality(connection: &Connection) -> Option<Quality> {
+    let paths = connection.paths();
+    let path = paths.iter().find(|path| path.is_selected())?;
+    Some(Quality {
+        ping: path.rtt().as_millis().min(u16::MAX as u128) as u16,
+        direct: path.is_ip(),
+    })
 }
 
 pub struct Transport {
@@ -54,6 +76,7 @@ pub struct Transport {
     events: Mutex<Receiver<Event>>,
     /// What other games dial to reach this one, once it is known.
     address: Arc<OnceLock<String>>,
+    measured: Measured,
 }
 
 impl Transport {
@@ -72,16 +95,23 @@ impl Transport {
         let (tell, events) = channel();
         let address = Arc::new(OnceLock::new());
         let known = address.clone();
+        let measured = Measured::default();
+        let measuring = measured.clone();
         runtime().spawn(async move {
             let ran = match dial {
-                Some(host) => join(&host, outgoing, tell.clone()).await,
-                None => host(outgoing, tell.clone(), known).await,
+                Some(host) => join(&host, outgoing, tell.clone(), measuring).await,
+                None => host(outgoing, tell.clone(), known, measuring).await,
             };
             if let Err(error) = ran {
                 let _ = tell.send(Event::Failed(format!("{error:#}")));
             }
         });
-        Transport { out, events: Mutex::new(events), address }
+        Transport {
+            out,
+            events: Mutex::new(events),
+            address,
+            measured,
+        }
     }
 }
 
@@ -101,23 +131,42 @@ impl Link for Transport {
     fn address(&self) -> Option<String> {
         self.address.get().cloned()
     }
+
+    fn quality(&self, peer: Peer) -> Option<Quality> {
+        self.measured.lock().ok()?.get(&peer).copied()
+    }
+
+    fn close(&mut self, peer: Peer) {
+        let _ = self.out.send(Out::Close(peer));
+    }
 }
 
 async fn endpoint() -> Result<Endpoint> {
-    Endpoint::builder(presets::N0).alpns(vec![ALPN.to_vec()]).bind().await.context("opening the network")
+    Endpoint::builder(presets::N0)
+        .alpns(vec![ALPN.to_vec()])
+        .bind()
+        .await
+        .context("opening the network")
 }
 
 /// Writes each message handed to it down a stream, its length first.
 async fn write(mut stream: SendStream, mut messages: UnboundedReceiver<Vec<u8>>) -> Result<()> {
     while let Some(message) = messages.recv().await {
-        stream.write_all(&(message.len() as u32).to_le_bytes()).await?;
+        stream
+            .write_all(&(message.len() as u32).to_le_bytes())
+            .await?;
         stream.write_all(&message).await?;
     }
     Ok(())
 }
 
 /// Reads messages from a stream and datagrams from its connection until either ends.
-async fn read(peer: Peer, connection: Connection, mut stream: RecvStream, tell: Sender<Event>) -> Result<()> {
+async fn read(
+    peer: Peer,
+    connection: Connection,
+    mut stream: RecvStream,
+    tell: Sender<Event>,
+) -> Result<()> {
     let messages = async {
         loop {
             let mut length = [0u8; 4];
@@ -147,13 +196,26 @@ async fn read(peer: Peer, connection: Connection, mut stream: RecvStream, tell: 
     }
 }
 
-async fn join(host: &str, mut outgoing: UnboundedReceiver<Out>, tell: Sender<Event>) -> Result<()> {
+async fn join(
+    host: &str,
+    mut outgoing: UnboundedReceiver<Out>,
+    tell: Sender<Event>,
+    measured: Measured,
+) -> Result<()> {
     let host: EndpointId = host.parse().context("the host's address")?;
     let endpoint = endpoint().await?;
-    let connection = tokio::time::timeout(DIAL_WAIT, endpoint.connect(host, ALPN)).await.context("the host didn't answer")?.context("reaching the host")?;
-    let (mut send, receive) = connection.open_bi().await.context("opening a stream to the host")?;
+    let connection = tokio::time::timeout(DIAL_WAIT, endpoint.connect(host, ALPN))
+        .await
+        .context("the host didn't answer")?
+        .context("reaching the host")?;
+    let (mut send, receive) = connection
+        .open_bi()
+        .await
+        .context("opening a stream to the host")?;
     // A stream isn't there for the other end until something has been sent down it.
-    send.write_all(&[GREETING]).await.context("greeting the host")?;
+    send.write_all(&[GREETING])
+        .await
+        .context("greeting the host")?;
     let (messages, queued) = unbounded_channel();
     tokio::spawn(write(send, queued));
     tell.send(Event::Joined(HOST))?;
@@ -164,20 +226,35 @@ async fn join(host: &str, mut outgoing: UnboundedReceiver<Out>, tell: Sender<Eve
                 Out::Message(_, bytes) => drop(messages.send(bytes)),
                 // One too big to send, or sent while the way is blocked, is one lost.
                 Out::Datagram(_, bytes) => drop(connection.send_datagram(Bytes::from(bytes))),
+                Out::Close(_) => {}
             }
+        }
+    };
+    let measuring = async {
+        loop {
+            if let Some(quality) = quality(&connection) {
+                measured.lock().unwrap().insert(HOST, quality);
+            }
+            tokio::time::sleep(MEASURED_EVERY).await;
         }
     };
     tokio::select! {
         // The game has let go of its end.
         _ = writing => {}
         _ = reading => drop(tell.send(Event::Left(HOST))),
+        _ = measuring => {}
     }
     connection.close(0u32.into(), b"left");
     endpoint.close().await;
     Ok(())
 }
 
-async fn host(mut outgoing: UnboundedReceiver<Out>, tell: Sender<Event>, address: Arc<OnceLock<String>>) -> Result<()> {
+async fn host(
+    mut outgoing: UnboundedReceiver<Out>,
+    tell: Sender<Event>,
+    address: Arc<OnceLock<String>>,
+    measured: Measured,
+) -> Result<()> {
     let endpoint = endpoint().await?;
     // Until it has a relay to be found through, nobody could dial it.
     endpoint.online().await;
@@ -192,15 +269,22 @@ async fn host(mut outgoing: UnboundedReceiver<Out>, tell: Sender<Event>, address
             tokio::spawn(async move {
                 let met = async {
                     let connection = incoming.await.context("a player connecting")?;
-                    let (send, mut receive) = connection.accept_bi().await.context("a player's stream")?;
+                    let (send, mut receive) =
+                        connection.accept_bi().await.context("a player's stream")?;
                     let mut greeting = [0u8; 1];
-                    receive.read_exact(&mut greeting).await.context("a player's greeting")?;
+                    receive
+                        .read_exact(&mut greeting)
+                        .await
+                        .context("a player's greeting")?;
                     if greeting != [GREETING] {
                         bail!("a greeting of {greeting:?}");
                     }
                     let (messages, queued) = unbounded_channel();
                     tokio::spawn(write(send, queued));
-                    players.lock().unwrap().insert(peer, (connection.clone(), messages));
+                    players
+                        .lock()
+                        .unwrap()
+                        .insert(peer, (connection.clone(), messages));
                     tell.send(Event::Joined(peer))?;
                     read(peer, connection, receive, tell.clone()).await
                 };
@@ -215,16 +299,38 @@ async fn host(mut outgoing: UnboundedReceiver<Out>, tell: Sender<Event>, address
     };
     let writing = async {
         while let Some(out) = outgoing.recv().await {
-            let players = players.lock().unwrap();
+            let mut players = players.lock().unwrap();
             match out {
-                Out::Message(peer, bytes) => drop(players.get(&peer).map(|(_, messages)| messages.send(bytes))),
-                Out::Datagram(peer, bytes) => drop(players.get(&peer).map(|(connection, _)| connection.send_datagram(Bytes::from(bytes)))),
+                Out::Message(peer, bytes) => {
+                    drop(players.get(&peer).map(|(_, messages)| messages.send(bytes)))
+                }
+                Out::Datagram(peer, bytes) => drop(
+                    players
+                        .get(&peer)
+                        .map(|(connection, _)| connection.send_datagram(Bytes::from(bytes))),
+                ),
+                // Forgotten, the player's stream ends once what is waiting to go
+                // down it has gone, and their game closes the rest.
+                Out::Close(peer) => drop(players.remove(&peer)),
             }
+        }
+    };
+    let measuring = async {
+        loop {
+            let now: HashMap<Peer, Quality> = players
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|(peer, (connection, _))| Some((*peer, quality(connection)?)))
+                .collect();
+            *measured.lock().unwrap() = now;
+            tokio::time::sleep(MEASURED_EVERY).await;
         }
     };
     tokio::select! {
         _ = writing => {}
         _ = accepting => {}
+        _ = measuring => {}
     }
     endpoint.close().await;
     Ok(())
@@ -243,7 +349,10 @@ mod tests {
                 Some(event) if wanted(&event) => return event,
                 _ => std::thread::sleep(Duration::from_millis(5)),
             }
-            assert!(began.elapsed() < Duration::from_secs(30), "waited too long for {what}");
+            assert!(
+                began.elapsed() < Duration::from_secs(30),
+                "waited too long for {what}"
+            );
         }
     }
 
@@ -258,31 +367,76 @@ mod tests {
             if let Some(Event::Failed(why)) = host.poll() {
                 panic!("hosting: {why}");
             }
-            assert!(began.elapsed() < Duration::from_secs(30), "the host never came online");
+            assert!(
+                began.elapsed() < Duration::from_secs(30),
+                "the host never came online"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
         let mut player = Transport::join(&host.address().unwrap());
-        wait_for(&mut player, "the player to reach the host", |e| *e == Event::Joined(HOST));
-        let Event::Joined(peer) = wait_for(&mut host, "the host to hear of the player", |e| matches!(e, Event::Joined(_))) else { unreachable!() };
+        wait_for(&mut player, "the player to reach the host", |e| {
+            *e == Event::Joined(HOST)
+        });
+        let Event::Joined(peer) = wait_for(&mut host, "the host to hear of the player", |e| {
+            matches!(e, Event::Joined(_))
+        }) else {
+            unreachable!()
+        };
 
         player.send(HOST, vec![1, 2, 3]);
         player.send(HOST, vec![4; 5000]);
-        assert_eq!(wait_for(&mut host, "the first message", |e| matches!(e, Event::Message(..))), Event::Message(peer, vec![1, 2, 3]));
-        assert_eq!(wait_for(&mut host, "the second message", |e| matches!(e, Event::Message(..))), Event::Message(peer, vec![4; 5000]));
+        assert_eq!(
+            wait_for(&mut host, "the first message", |e| matches!(
+                e,
+                Event::Message(..)
+            )),
+            Event::Message(peer, vec![1, 2, 3])
+        );
+        assert_eq!(
+            wait_for(&mut host, "the second message", |e| matches!(
+                e,
+                Event::Message(..)
+            )),
+            Event::Message(peer, vec![4; 5000])
+        );
         host.send(peer, vec![9]);
-        assert_eq!(wait_for(&mut player, "the host's answer", |e| matches!(e, Event::Message(..))), Event::Message(HOST, vec![9]));
+        assert_eq!(
+            wait_for(&mut player, "the host's answer", |e| matches!(
+                e,
+                Event::Message(..)
+            )),
+            Event::Message(HOST, vec![9])
+        );
 
         // Datagrams may be lost, so a few are sent each way; a snapshot's worth fits.
         for _ in 0..20 {
             player.datagram(HOST, vec![7; 60]);
             host.datagram(peer, vec![8; 1000]);
         }
-        assert_eq!(wait_for(&mut host, "a datagram", |e| matches!(e, Event::Datagram(..))), Event::Datagram(peer, vec![7; 60]));
-        assert_eq!(wait_for(&mut player, "a datagram back", |e| matches!(e, Event::Datagram(..))), Event::Datagram(HOST, vec![8; 1000]));
+        assert_eq!(
+            wait_for(&mut host, "a datagram", |e| matches!(
+                e,
+                Event::Datagram(..)
+            )),
+            Event::Datagram(peer, vec![7; 60])
+        );
+        assert_eq!(
+            wait_for(&mut player, "a datagram back", |e| matches!(
+                e,
+                Event::Datagram(..)
+            )),
+            Event::Datagram(HOST, vec![8; 1000])
+        );
 
         // A player who goes is heard to have gone.
         drop(player);
-        assert_eq!(wait_for(&mut host, "the player leaving", |e| matches!(e, Event::Left(_))), Event::Left(peer));
+        assert_eq!(
+            wait_for(&mut host, "the player leaving", |e| matches!(
+                e,
+                Event::Left(_)
+            )),
+            Event::Left(peer)
+        );
         println!("hosted, joined and talked in {:?}", began.elapsed());
     }
 }

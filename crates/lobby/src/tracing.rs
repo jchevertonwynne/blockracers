@@ -16,8 +16,15 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 /// provider it returns is to be shut down when the server stops, which sends what is
 /// still waiting.
 pub fn init(service: &'static str, endpoint: &str) -> Result<SdkTracerProvider> {
-    let exporter = SpanExporter::builder().with_tonic().with_endpoint(format!("http://{endpoint}")).build().context("making the trace exporter")?;
-    let provider = SdkTracerProvider::builder().with_batch_exporter(exporter).with_resource(Resource::builder().with_service_name(service).build()).build();
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(format!("http://{endpoint}"))
+        .build()
+        .context("making the trace exporter")?;
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(Resource::builder().with_service_name(service).build())
+        .build();
     global::set_tracer_provider(provider.clone());
     Ok(provider)
 }
@@ -31,16 +38,27 @@ pub async fn trace(request: Request, next: Next) -> Response {
         return next.run(request).await;
     }
     let method = request.method().to_string();
-    let route = request.extensions().get::<MatchedPath>().map_or("unmatched", MatchedPath::as_str).to_string();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("unmatched", MatchedPath::as_str)
+        .to_string();
     let tracer = global::tracer("lobby");
     let mut span = tracer
         .span_builder(format!("{method} {route}"))
         .with_kind(SpanKind::Server)
-        .with_attributes([KeyValue::new("http.request.method", method), KeyValue::new("http.route", route), KeyValue::new("url.path", path)])
+        .with_attributes([
+            KeyValue::new("http.request.method", method),
+            KeyValue::new("http.route", route),
+            KeyValue::new("url.path", path),
+        ])
         .start(&tracer);
     let response = next.run(request).await;
     let status = response.status();
-    span.set_attribute(KeyValue::new("http.response.status_code", status.as_u16() as i64));
+    span.set_attribute(KeyValue::new(
+        "http.response.status_code",
+        status.as_u16() as i64,
+    ));
     if status.is_server_error() {
         span.set_status(Status::error(status.to_string()));
     }

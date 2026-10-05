@@ -72,9 +72,14 @@ impl Pose {
         let pose = self;
         (kart.pos, kart.rot, kart.vel, kart.steer) = (pose.pos, pose.rot, pose.vel, pose.steer);
         (kart.boost, kart.shield, kart.sliding) = (pose.boost, pose.shield, pose.sliding);
-        (kart.spin, kart.spin_out, kart.cursed, kart.magnet) = (pose.spin, pose.spin_out, pose.cursed, pose.magnet);
+        (kart.spin, kart.spin_out, kart.cursed, kart.magnet) =
+            (pose.spin, pose.spin_out, pose.cursed, pose.magnet);
         (kart.held, kart.whites) = (pose.held, pose.whites);
-        kart.out = if pose.out { kart.out.or(Some(at)) } else { None };
+        kart.out = if pose.out {
+            kart.out.or(Some(at))
+        } else {
+            None
+        };
         let forward = pose.rot * Vec3::NEG_Z;
         kart.yaw = (-forward.x).atan2(-forward.z);
         kart.facing = forward.with_y(0.0).normalize_or(kart.facing);
@@ -147,8 +152,15 @@ impl Replay {
 
     /// Moves on to watching the next car round, or the one before.
     pub fn watch_next(&mut self, player: usize, step: isize) {
-        let racing: Vec<usize> = self.frames.first().map(|f| (0..SLOTS).filter(|&s| f.poses[s].is_some()).collect()).unwrap_or_default();
-        let now = racing.iter().position(|&slot| slot == self.subject.unwrap_or(player)).unwrap_or(0) as isize;
+        let racing: Vec<usize> = self
+            .frames
+            .first()
+            .map(|f| (0..SLOTS).filter(|&s| f.poses[s].is_some()).collect())
+            .unwrap_or_default();
+        let now = racing
+            .iter()
+            .position(|&slot| slot == self.subject.unwrap_or(player))
+            .unwrap_or(0) as isize;
         if !racing.is_empty() {
             self.subject = Some(racing[(now + step).rem_euclid(racing.len() as isize) as usize]);
         }
@@ -161,7 +173,10 @@ impl Replay {
         let side = if number as i32 % 2 == 0 { 1.0 } else { -1.0 };
         let (line, _, right) = track.sample(number * STATION_GAP);
         let at = line + right * side * (track.road + STATION_OUT);
-        let ground = track.collision.ground(at + Vec3::Y * 15.0, 40.0).map_or(line.y, |hit| hit.point.y);
+        let ground = track
+            .collision
+            .ground(at + Vec3::Y * 15.0, 40.0)
+            .map_or(line.y, |hit| hit.point.y);
         at.with_y(ground.max(line.y) + STATION_HEIGHT)
     }
 
@@ -169,19 +184,30 @@ impl Replay {
         self.frames.last().map_or(0.0, |frame| frame.time)
     }
 
-    fn note(&mut self, karts: impl Iterator<Item = (usize, Pose)>, actions: Vec<(Entity, Action, Transform)>) {
+    fn note(
+        &mut self,
+        karts: impl Iterator<Item = (usize, Pose)>,
+        actions: Vec<(Entity, Action, Transform)>,
+    ) {
         let mut poses = [None; SLOTS];
         for (slot, pose) in karts {
             if let Some(place) = poses.get_mut(slot) {
                 *place = Some(pose);
             }
         }
-        self.frames.push(Frame { time: self.clock, poses, actions });
+        self.frames.push(Frame {
+            time: self.clock,
+            poses,
+            actions,
+        });
     }
 
     /// Where the car in `slot` was `time` seconds in.
     fn pose(&self, slot: usize, time: f32) -> Option<Pose> {
-        let next = self.frames.partition_point(|frame| frame.time <= time).clamp(1, self.frames.len().max(2) - 1);
+        let next = self
+            .frames
+            .partition_point(|frame| frame.time <= time)
+            .clamp(1, self.frames.len().max(2) - 1);
         let (from, to) = (self.frames.get(next - 1)?, self.frames.get(next)?);
         let along = ((time - from.time) / (to.time - from.time).max(1e-6)).clamp(0.0, 1.0);
         Some((*from.poses.get(slot)?)?.towards((*to.poses.get(slot)?)?, along))
@@ -203,7 +229,12 @@ pub fn record(
 ) {
     let replay = &mut *replay;
     match race.phase {
-        Phase::Intro | Phase::Countdown => *replay = Replay { tail: TAIL, ..default() },
+        Phase::Intro | Phase::Countdown => {
+            *replay = Replay {
+                tail: TAIL,
+                ..default()
+            }
+        }
         Phase::Finished if replay.tail <= 0.0 => return,
         Phase::Finished => replay.tail -= time.delta_secs(),
         Phase::Racing => {}
@@ -215,8 +246,14 @@ pub fn record(
     replay.due -= time.delta_secs();
     if replay.due <= 0.0 {
         replay.due += INTERVAL;
-        let actions = actions.iter().map(|(entity, action, transform)| (entity, action.clone(), *transform)).collect();
-        replay.note(karts.iter().map(|kart| (kart.slot, Pose::of(kart))), actions);
+        let actions = actions
+            .iter()
+            .map(|(entity, action, transform)| (entity, action.clone(), *transform))
+            .collect();
+        replay.note(
+            karts.iter().map(|kart| (kart.slot, Pose::of(kart))),
+            actions,
+        );
     }
 }
 
@@ -244,12 +281,21 @@ pub fn play(
     let dt = time.delta_secs();
     let at = (shown + dt).min(replay.length());
     for mut kart in &mut karts {
-        let Some(pose) = replay.pose(kart.slot, at) else { continue };
+        let Some(pose) = replay.pose(kart.slot, at) else {
+            continue;
+        };
         pose.put(&mut kart, at, dt);
     }
     // Power-ups' doings are as they were at the last note taken.
-    let frame = replay.frames.partition_point(|frame| frame.time <= at).saturating_sub(1);
-    let actions = replay.frames.get(frame).map(|frame| frame.actions.as_slice()).unwrap_or_default();
+    let frame = replay
+        .frames
+        .partition_point(|frame| frame.time <= at)
+        .saturating_sub(1);
+    let actions = replay
+        .frames
+        .get(frame)
+        .map(|frame| frame.actions.as_slice())
+        .unwrap_or_default();
     replay.shown.retain(|was, entity| {
         let still = actions.iter().any(|(recorded, ..)| recorded == was);
         if !still {
@@ -260,10 +306,15 @@ pub fn play(
     for (was, action, transform) in actions {
         match replay.shown.get(was) {
             Some(&entity) => {
-                commands.entity(entity).try_insert((action.clone(), *transform));
+                commands
+                    .entity(entity)
+                    .try_insert((action.clone(), *transform));
             }
             None => {
-                replay.shown.insert(*was, commands.spawn((action.clone(), *transform, Replayed)).id());
+                replay.shown.insert(
+                    *was,
+                    commands.spawn((action.clone(), *transform, Replayed)).id(),
+                );
             }
         }
     }
@@ -297,7 +348,9 @@ const ZOOM: (f32, f32) = (0.15, 2.0);
 /// Where pictures go: `$BRICK_PHOTOS`, or a `screenshots` folder.
 fn picture_path() -> String {
     let folder = std::env::var("BRICK_PHOTOS").unwrap_or("screenshots".into());
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_millis());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |t| t.as_millis());
     let _ = std::fs::create_dir_all(&folder);
     format!("{folder}/brick-racers-{stamp}.png")
 }
@@ -324,7 +377,11 @@ pub fn photo(
     let Some(shot) = &mut photo.0 else {
         if keys.just_pressed(KeyCode::KeyP) && pause.0.is_none() {
             let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
-            photo.0 = Some(Shot { yaw, pitch, was_paused: clock.is_paused() });
+            photo.0 = Some(Shot {
+                yaw,
+                pitch,
+                was_paused: clock.is_paused(),
+            });
             clock.pause();
             sfx.play(id::MENU_SELECT);
             commands.spawn((
@@ -364,13 +421,35 @@ pub fn photo(
         shot.pitch = (shot.pitch - motion.delta.y * LOOK).clamp(-1.5, 1.5);
     }
     transform.rotation = Quat::from_euler(EulerRot::YXZ, shot.yaw, shot.pitch, 0.0);
-    let fast = if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) { 4.0 } else { 1.0 };
-    let fly = transform.rotation * Vec3::NEG_Z * held([KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown])
-        + transform.rotation * Vec3::X * held([KeyCode::KeyD, KeyCode::ArrowRight], [KeyCode::KeyA, KeyCode::ArrowLeft])
-        + Vec3::Y * held([KeyCode::KeyE, KeyCode::KeyE], [KeyCode::KeyQ, KeyCode::KeyQ]);
+    let fast = if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+        4.0
+    } else {
+        1.0
+    };
+    let fly = transform.rotation
+        * Vec3::NEG_Z
+        * held(
+            [KeyCode::KeyW, KeyCode::ArrowUp],
+            [KeyCode::KeyS, KeyCode::ArrowDown],
+        )
+        + transform.rotation
+            * Vec3::X
+            * held(
+                [KeyCode::KeyD, KeyCode::ArrowRight],
+                [KeyCode::KeyA, KeyCode::ArrowLeft],
+            )
+        + Vec3::Y
+            * held(
+                [KeyCode::KeyE, KeyCode::KeyE],
+                [KeyCode::KeyQ, KeyCode::KeyQ],
+            );
     transform.translation += fly * FLY_SPEED * fast * dt;
     if let Projection::Perspective(lens) = &mut *projection {
-        let closer = held([KeyCode::KeyZ, KeyCode::KeyZ], [KeyCode::KeyX, KeyCode::KeyX]) * dt + scroll.delta.y * 0.05;
+        let closer = held(
+            [KeyCode::KeyZ, KeyCode::KeyZ],
+            [KeyCode::KeyX, KeyCode::KeyX],
+        ) * dt
+            + scroll.delta.y * 0.05;
         lens.fov = (lens.fov * (1.0 - closer)).clamp(ZOOM.0, ZOOM.1);
     }
 
@@ -381,7 +460,9 @@ pub fn photo(
         }
         let path = picture_path();
         info!("photo saved to {path}");
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path));
         sfx.play(id::MENU_CONFIRM);
     }
 }
@@ -410,7 +491,10 @@ fn a_replay_puts_cars_back_where_they_were() {
     // Between two notes a car is between its two places.
     for time in [0.0, 0.31, 1.234, 2.0] {
         let pose = replay.pose(3, time).unwrap();
-        assert!(pose.pos.distance(at(3, time)) < 1e-3 && (pose.steer - time).abs() < 1e-3, "{time}");
+        assert!(
+            pose.pos.distance(at(3, time)) < 1e-3 && (pose.steer - time).abs() < 1e-3,
+            "{time}"
+        );
         assert_eq!(pose.out, time >= 1.0);
     }
     // Past either end it is at that end, and a slot nobody raced in has nothing.
@@ -427,14 +511,20 @@ fn a_replay_puts_cars_back_where_they_were() {
     assert_eq!(replay.subject, Some(3));
     // The places it is watched from are off the road, above it, and change along the lap.
     let mut kart = Kart::new(&track, 0);
-    let stations: Vec<Vec3> = [10.0, 30.0, 80.0].map(|s| {
-        kart.s = s;
-        Replay::station(&track, &kart)
-    }).to_vec();
+    let stations: Vec<Vec3> = [10.0, 30.0, 80.0]
+        .map(|s| {
+            kart.s = s;
+            Replay::station(&track, &kart)
+        })
+        .to_vec();
     assert_eq!(stations[0], stations[1]);
     assert!(stations[0].distance(stations[2]) > 40.0);
     let (_, _, lat) = track.project(stations[2], track.nearest(stations[2]));
-    assert!(lat.abs() > track.road && stations[2].y > 2.0, "{lat} {}", stations[2]);
+    assert!(
+        lat.abs() > track.road && stations[2].y > 2.0,
+        "{lat} {}",
+        stations[2]
+    );
 }
 
 #[cfg(test)]
@@ -443,20 +533,39 @@ fn a_replay_puts_power_ups_back_as_they_were() {
     use bevy::ecs::system::RunSystemOnce;
     use std::time::Duration;
     let mut world = World::new();
-    let racing = Race { phase: Phase::Racing, intro: 0.0, countdown: 0.0, time: 0.0, demo: false, quick: true };
+    let racing = Race {
+        phase: Phase::Racing,
+        intro: 0.0,
+        countdown: 0.0,
+        time: 0.0,
+        demo: false,
+        quick: true,
+    };
     world.insert_resource(racing);
     world.insert_resource(Time::<()>::default());
-    world.insert_resource(Replay { tail: TAIL, ..default() });
+    world.insert_resource(Replay {
+        tail: TAIL,
+        ..default()
+    });
     let owner = world.spawn(Kart::new(&Track::new(), 0)).id();
     let step = |world: &mut World, system: fn(&mut World)| {
-        world.resource_mut::<Time>().advance_by(Duration::from_secs_f32(INTERVAL));
+        world
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(INTERVAL));
         system(world);
     };
     // A second of racing; an oil slick lies on the road for the middle third of it.
     let mut slick = None;
     for frame in 0..30 {
         if frame == 10 {
-            slick = Some(world.spawn((Action::OilSlick { owner, age: 0.0 }, Transform::from_xyz(5.0, 0.0, 7.0))).id());
+            slick = Some(
+                world
+                    .spawn((
+                        Action::OilSlick { owner, age: 0.0 },
+                        Transform::from_xyz(5.0, 0.0, 7.0),
+                    ))
+                    .id(),
+            );
         }
         if frame == 20 {
             world.despawn(slick.take().unwrap());
@@ -464,19 +573,41 @@ fn a_replay_puts_power_ups_back_as_they_were() {
         step(&mut world, |world| world.run_system_once(record).unwrap());
     }
     // Something the race left lying about when it ended.
-    let left = world.spawn((Action::Explosion { age: 0.0, radius: 1.0, owner: None }, Transform::default())).id();
+    let left = world
+        .spawn((
+            Action::Explosion {
+                age: 0.0,
+                radius: 1.0,
+                owner: None,
+            },
+            Transform::default(),
+        ))
+        .id();
     world.resource_mut::<Replay>().start();
     let mut seen = Vec::new();
     for _ in 0..40 {
         step(&mut world, |world| world.run_system_once(play).unwrap());
-        let shown: Vec<Vec3> = world.query_filtered::<&Transform, With<Replayed>>().iter(&world).map(|t| t.translation).collect();
+        let shown: Vec<Vec3> = world
+            .query_filtered::<&Transform, With<Replayed>>()
+            .iter(&world)
+            .map(|t| t.translation)
+            .collect();
         seen.push(shown);
     }
     // The slick is back for the frames it was there, where it was, and for no others;
     // the leftovers went as the replay began, and nothing of the replay's outlives it.
     assert!(world.get_entity(left).is_err());
-    assert!(seen[2].is_empty() && seen[14] == [Vec3::new(5.0, 0.0, 7.0)] && seen[25].is_empty(), "{seen:?}");
+    assert!(
+        seen[2].is_empty() && seen[14] == [Vec3::new(5.0, 0.0, 7.0)] && seen[25].is_empty(),
+        "{seen:?}"
+    );
     assert_eq!(seen.iter().filter(|shown| !shown.is_empty()).count(), 10);
     assert!(world.resource::<Replay>().showing.is_none());
-    assert_eq!(world.query_filtered::<(), With<Action>>().iter(&world).count(), 0);
+    assert_eq!(
+        world
+            .query_filtered::<(), With<Action>>()
+            .iter(&world)
+            .count(),
+        0
+    );
 }

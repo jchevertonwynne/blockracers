@@ -75,9 +75,15 @@ impl Prediction {
     /// one of the player's steps, for the knocks it had been given by then.
     fn knocked(&self, slot: usize, tick: Tick, dt: f32) -> (Vec3, Vec3) {
         let knocks = self.shunts.get(slot).map_or(&[][..], Vec::as_slice);
-        knocks.iter().filter(|knock| knock.at <= tick).fold((Vec3::ZERO, Vec3::ZERO), |(moved, sped), knock| {
-            (moved + knock.moved + knock.sped * ((tick - knock.at) as f32 * dt), sped + knock.sped)
-        })
+        knocks.iter().filter(|knock| knock.at <= tick).fold(
+            (Vec3::ZERO, Vec3::ZERO),
+            |(moved, sped), knock| {
+                (
+                    moved + knock.moved + knock.sped * ((tick - knock.at) as f32 * dt),
+                    sped + knock.sped,
+                )
+            },
+        )
     }
 }
 
@@ -121,10 +127,18 @@ pub fn receive(
     };
 
     // The cars the player's own may run into: every other still in the race.
-    let others: Vec<Entity> = karts.iter().filter(|(_, kart, own, shown)| (!own || *shown) && kart.out.is_none()).map(|(entity, ..)| entity).collect();
+    let others: Vec<Entity> = karts
+        .iter()
+        .filter(|(_, kart, own, shown)| (!own || *shown) && kart.out.is_none())
+        .map(|(entity, ..)| entity)
+        .collect();
     let mut driven = None;
     for (entity, mut kart, own, shown) in &mut karts {
-        let standing: Option<Standing> = snapshot.karts.iter().find(|k| k.0 as usize == kart.slot).map(|k| k.2);
+        let standing: Option<Standing> = snapshot
+            .karts
+            .iter()
+            .find(|k| k.0 as usize == kart.slot)
+            .map(|k| k.2);
         if !own || shown {
             if let Some(standing) = standing {
                 standing.put(&mut kart);
@@ -149,14 +163,21 @@ pub fn receive(
         }
     }
     let Some(own) = driven else { return };
-    let Ok((_, mut kart, ..)) = karts.get_mut(own) else { return };
+    let Ok((_, mut kart, ..)) = karts.get_mut(own) else {
+        return;
+    };
     let was = (kart.pos, kart.rot);
     // Stepping the car again must not sound its sounds again.
     let owed = (kart.cues, kart.touched, kart.honked, kart.sparks);
     snapshot.own.put(&mut kart);
     p.sent.retain(|(tick, _)| *tick > snapshot.used);
     // The host has now driven the car past the knocks it gave up to there.
-    for knock in p.shunts.iter_mut().flatten().filter(|knock| knock.heard.is_none() && knock.at <= snapshot.used) {
+    for knock in p
+        .shunts
+        .iter_mut()
+        .flatten()
+        .filter(|knock| knock.heard.is_none() && knock.at <= snapshot.used)
+    {
         knock.heard = Some(snapshot.tick);
     }
     // The others are shown as they were knocked up to the step before this one.
@@ -170,14 +191,24 @@ pub fn receive(
         for &other in &others {
             if let Ok([(_, mut kart, ..), (_, mut other, ..)]) = karts.get_many_mut([own, other]) {
                 // A step meets the others as they were shown at the end of the one before.
-                let (now, then) = (p.knocked(other.slot, shown_at, dt), p.knocked(other.slot, tick.saturating_sub(1), dt));
+                let (now, then) = (
+                    p.knocked(other.slot, shown_at, dt),
+                    p.knocked(other.slot, tick.saturating_sub(1), dt),
+                );
                 // The others are shown where they are by the last of these steps.
                 let back = (p.sent.len() - 1 - step) as f32 * dt;
-                meet_ahead(&mut kart, &mut other, -back, (then.0 - now.0, then.1 - now.1));
+                meet_ahead(
+                    &mut kart,
+                    &mut other,
+                    -back,
+                    (then.0 - now.0, then.1 - now.1),
+                );
             }
         }
     }
-    let Ok((_, mut kart, ..)) = karts.get_mut(own) else { return };
+    let Ok((_, mut kart, ..)) = karts.get_mut(own) else {
+        return;
+    };
     (kart.cues, kart.touched, kart.honked, kart.sparks) = owed;
     // What is seen stays where it was, and is brought across from there.
     let moved = was.0 - kart.pos;
@@ -203,49 +234,105 @@ const SURGE: f32 = 60.0;
 /// here, and the bump is not sounded: the host's telling of it is. What the bump did
 /// to the other car, in place and in speed, is given back.
 fn meet_ahead(own: &mut Kart, other: &mut Kart, lead: f32, knocked: (Vec3, Vec3)) -> (Vec3, Vec3) {
-    let was = (other.pos, other.vel, other.spin, other.spin_rate, other.cursed, other.boost, other.shove);
+    let was = (
+        other.pos,
+        other.vel,
+        other.spin,
+        other.spin_rate,
+        other.cursed,
+        other.boost,
+        other.shove,
+    );
     other.vel += knocked.1;
     other.pos += knocked.0 + other.vel * lead;
     let met = (other.pos, other.vel);
     crate::kart::meet(own, other, None);
     let did = (other.pos - met.0, other.vel - met.1);
-    (other.pos, other.vel, other.spin, other.spin_rate, other.cursed, other.boost, other.shove) = was;
+    (
+        other.pos,
+        other.vel,
+        other.spin,
+        other.spin_rate,
+        other.cursed,
+        other.boost,
+        other.shove,
+    ) = was;
     did
 }
 
 /// Sends this step's pressing, with the last few steps' again in case they were lost.
-pub fn send(clock: Res<Clock>, mut wire: ResMut<Wire>, mut p: ResMut<Prediction>, own: Query<&Controls, (With<Player>, Without<Puppet>)>) {
+pub fn send(
+    clock: Res<Clock>,
+    mut wire: ResMut<Wire>,
+    mut p: ResMut<Prediction>,
+    own: Query<&Controls, (With<Player>, Without<Puppet>)>,
+) {
     let Ok(c) = own.single() else { return };
     p.sent.push_back((clock.tick, Drive::of(c)));
     while p.sent.len() > REMEMBERED {
         p.sent.pop_front();
     }
-    let drives: Vec<Drive> = p.sent.iter().rev().take(RESENT).rev().map(|(_, drive)| *drive).collect();
-    wire.0.datagram(HOST, encode(&Inputs { last: clock.tick, drives }));
+    let drives: Vec<Drive> = p
+        .sent
+        .iter()
+        .rev()
+        .take(RESENT)
+        .rev()
+        .map(|(_, drive)| *drive)
+        .collect();
+    wire.0.datagram(
+        HOST,
+        encode(&Inputs {
+            last: clock.tick,
+            drives,
+        }),
+    );
 }
 
 /// The player's car bumps into the others here and now, as it will be found to have
 /// done on the host, and doesn't drive through them until the host says otherwise.
 /// A car it knocks is shown knocked at once (`Shunt`).
-pub fn bump(clock: Res<Clock>, mut p: ResMut<Prediction>, mut own: Query<&mut Kart, (With<Player>, Without<Puppet>)>, mut others: Query<&mut Kart, With<Puppet>>) {
-    let (Ok(mut own), true) = (own.single_mut(), p.latest.is_some()) else { return };
+pub fn bump(
+    clock: Res<Clock>,
+    mut p: ResMut<Prediction>,
+    mut own: Query<&mut Kart, (With<Player>, Without<Puppet>)>,
+    mut others: Query<&mut Kart, With<Puppet>>,
+) {
+    let (Ok(mut own), true) = (own.single_mut(), p.latest.is_some()) else {
+        return;
+    };
     for mut other in others.iter_mut().filter(|other| other.out.is_none()) {
         let (moved, sped) = meet_ahead(&mut own, &mut other, 0.0, (Vec3::ZERO, Vec3::ZERO));
         if (moved != Vec3::ZERO || sped != Vec3::ZERO)
             && let Some(knocks) = p.shunts.get_mut(other.slot)
         {
-            knocks.push(Shunt { at: clock.tick, moved, sped, heard: None });
+            knocks.push(Shunt {
+                at: clock.tick,
+                moved,
+                sped,
+                heard: None,
+            });
         }
     }
 }
 
 /// Puts the cars the host drives where it had them a moment ago.
-pub fn puppets(time: Res<Time>, clock: Res<Clock>, race: Res<Race>, mut p: ResMut<Prediction>, mut karts: Query<&mut Kart, With<Puppet>>) {
+pub fn puppets(
+    time: Res<Time>,
+    clock: Res<Clock>,
+    race: Res<Race>,
+    mut p: ResMut<Prediction>,
+    mut karts: Query<&mut Kart, With<Puppet>>,
+) {
     let Some(latest) = p.latest else { return };
     // The moment shown moves on a step each step, and is drawn towards where it
     // should be if words from the host come faster or slower than that.
     let wanted = latest as f32 - BEHIND;
-    p.shown = if (wanted - p.shown).abs() > 2.0 * BEHIND { wanted } else { p.shown + 1.0 + (wanted - p.shown - 1.0) * 0.1 };
+    p.shown = if (wanted - p.shown).abs() > 2.0 * BEHIND {
+        wanted
+    } else {
+        p.shown + 1.0 + (wanted - p.shown - 1.0) * 0.1
+    };
     let shown = p.shown;
     let dt = time.delta_secs();
     // How far the player's car is ahead of the moment the host's word is read at:
@@ -257,7 +344,9 @@ pub fn puppets(time: Res<Time>, clock: Res<Clock>, race: Res<Race>, mut p: ResMu
     }
     for mut kart in &mut karts {
         let knocked = p.knocked(kart.slot, clock.tick, dt);
-        let Some(seen) = p.seen.get_mut(kart.slot) else { continue };
+        let Some(seen) = p.seen.get_mut(kart.slot) else {
+            continue;
+        };
         while seen.len() > 2 && seen[1].0 as f32 <= shown {
             seen.pop_front();
         }
@@ -265,8 +354,15 @@ pub fn puppets(time: Res<Time>, clock: Res<Clock>, race: Res<Race>, mut p: ResMu
         let (pose, surge, turning) = match (seen.front(), seen.get(1)) {
             (Some(&(from, a)), Some(&(to, b))) => {
                 let over = (to - from) as f32 * dt;
-                let pose = a.towards(b, ((shown - from as f32) / (to - from) as f32).clamp(0.0, 1.0));
-                (pose, ((b.vel - a.vel) / over).clamp_length_max(SURGE), Quat::IDENTITY.slerp(b.rot * a.rot.inverse(), lead / over))
+                let pose = a.towards(
+                    b,
+                    ((shown - from as f32) / (to - from) as f32).clamp(0.0, 1.0),
+                );
+                (
+                    pose,
+                    ((b.vel - a.vel) / over).clamp_length_max(SURGE),
+                    Quat::IDENTITY.slerp(b.rot * a.rot.inverse(), lead / over),
+                )
             }
             (Some(&(_, only)), None) => (only, Vec3::ZERO, Quat::IDENTITY),
             _ => continue,
@@ -287,7 +383,11 @@ pub fn puppets(time: Res<Time>, clock: Res<Clock>, race: Res<Race>, mut p: ResMu
 }
 
 /// Shows the player's car where it was seen before a correction, less each frame.
-pub fn smooth(time: Res<Time>, mut p: ResMut<Prediction>, mut own: Query<&mut Transform, (With<Player>, Without<Puppet>)>) {
+pub fn smooth(
+    time: Res<Time>,
+    mut p: ResMut<Prediction>,
+    mut own: Query<&mut Transform, (With<Player>, Without<Puppet>)>,
+) {
     let keep = (-SMOOTHING * time.delta_secs()).exp();
     p.offset *= keep;
     p.turn = Quat::IDENTITY.slerp(p.turn, keep);

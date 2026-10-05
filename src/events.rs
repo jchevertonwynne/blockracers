@@ -5,8 +5,7 @@
 //! `RaceTimerList`; the event tables' animations and particles are not played.
 
 use crate::assets::{
-    Jam,
-    route,
+    Jam, route,
     tokens::{Token, tokenize},
 };
 use crate::audio::{Emitter, Sfx};
@@ -202,9 +201,22 @@ fn parse_particles(tokens: &[Token]) -> Vec<EventParticles> {
     records(tokens, 0x3d)
         .into_iter()
         .filter_map(|(header, fields)| {
-            let after = |key: u16| fields.iter().position(|t| *t == Token::Key(key)).map(|at| &fields[at + 1..]);
-            let vec3 = |from: &[Token]| Vec3::new(number(from.first()), number(from.get(1)), number(from.get(2)));
-            let Some(Token::Str(emitter)) = after(0x3d)?.first() else { return None };
+            let after = |key: u16| {
+                fields
+                    .iter()
+                    .position(|t| *t == Token::Key(key))
+                    .map(|at| &fields[at + 1..])
+            };
+            let vec3 = |from: &[Token]| {
+                Vec3::new(
+                    number(from.first()),
+                    number(from.get(1)),
+                    number(from.get(2)),
+                )
+            };
+            let Some(Token::Str(emitter)) = after(0x3d)?.first() else {
+                return None;
+            };
             // The way it faces and its up, which an emitter's own directions are turned by.
             let (forward, up) = match after(0x3e) {
                 Some(axes) => (vec3(axes), vec3(&axes[3.min(axes.len())..])),
@@ -213,7 +225,10 @@ fn parse_particles(tokens: &[Token]) -> Vec<EventParticles> {
             let plain = Mat3::from_cols(world(Vec3::X), world(Vec3::Y), world(Vec3::Z));
             let turned = Mat3::from_cols(world(forward), world(up.cross(forward)), world(up));
             let follows = match after(0x33).and_then(|name| name.first()) {
-                Some(Token::Str(name)) => Some((name.to_lowercase(), after(0x54).map_or(0, |node| number(node.first()) as usize))),
+                Some(Token::Str(name)) => Some((
+                    name.to_lowercase(),
+                    after(0x54).map_or(0, |node| number(node.first()) as usize),
+                )),
                 _ => None,
             };
             Some(EventParticles {
@@ -250,7 +265,10 @@ fn parse_tints(tokens: &[Token]) -> Vec<EventTint> {
             // Done as the event ends, a change stays (`ParseColorTransforms`).
             let mut when = When::of(header, fields);
             when.no_end |= when.on_end;
-            EventTint { when, tint: (!clear).then(|| tint(three(0x4e), three(0x4f))) }
+            EventTint {
+                when,
+                tint: (!clear).then(|| tint(three(0x4e), three(0x4f))),
+            }
         })
         .collect()
 }
@@ -260,8 +278,14 @@ fn parse_models(tokens: &[Token]) -> Vec<EventModel> {
         .into_iter()
         .filter_map(|(header, fields)| {
             let at = fields.iter().position(|t| *t == Token::Key(0x33))?;
-            let Some(Token::Str(prop)) = fields.get(at + 1) else { return None };
-            Some(EventModel { when: When::of(header, fields), prop: prop.to_lowercase(), hide_when_active: fields.contains(&Token::Key(0x46)) })
+            let Some(Token::Str(prop)) = fields.get(at + 1) else {
+                return None;
+            };
+            Some(EventModel {
+                when: When::of(header, fields),
+                prop: prop.to_lowercase(),
+                hide_when_active: fields.contains(&Token::Key(0x46)),
+            })
         })
         .collect()
 }
@@ -278,9 +302,17 @@ pub fn effects(
     mut karts: Query<&mut Kart>,
     mut placed: Query<&mut Transform, With<crate::particles::Emitter>>,
 ) {
-    let (Some(mut events), Some(scenery)) = (events, scenery) else { return };
+    let (Some(mut events), Some(scenery)) = (events, scenery) else {
+        return;
+    };
     let events = &mut *events;
-    let shown = |on: bool| if on { Visibility::Inherited } else { Visibility::Hidden };
+    let shown = |on: bool| {
+        if on {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        }
+    };
     if race.phase == Phase::Intro {
         // A fresh start: nothing going, every car its own colours, and each model
         // there or not as it is with its event off.
@@ -293,7 +325,11 @@ pub fn effects(
             kart.tint = Vec3::ONE;
         }
         for model in &events.models {
-            if let Some((_, _, mut visibility)) = scenery.0.get(&model.prop).and_then(|&e| props.get_mut(e).ok()) {
+            if let Some((_, _, mut visibility)) = scenery
+                .0
+                .get(&model.prop)
+                .and_then(|&e| props.get_mut(e).ok())
+            {
                 visibility.set_if_neq(shown(model.hide_when_active));
             }
         }
@@ -303,7 +339,9 @@ pub fn effects(
         match fired.racer {
             // A car's colours change as that car sets the event off, and no other's.
             Some(racer) => {
-                let Ok(mut kart) = karts.get_mut(racer) else { continue };
+                let Ok(mut kart) = karts.get_mut(racer) else {
+                    continue;
+                };
                 for change in &events.tints {
                     if change.when.begins(fired.event, fired.start) {
                         kart.tint = change.tint.unwrap_or(Vec3::ONE);
@@ -314,14 +352,22 @@ pub fn effects(
             }
             None => {
                 for particles in &mut events.particles {
-                    if particles.when.begins(fired.event, fired.start) && particles.going.is_none() {
-                        let at = fired.at.filter(|_| particles.at_event).unwrap_or(particles.position);
-                        let place = Transform::from_translation(at).with_rotation(particles.rotation);
-                        particles.going = emitters.as_ref().and_then(|e| e.spawn(&mut commands, &particles.emitter, place));
+                    if particles.when.begins(fired.event, fired.start) && particles.going.is_none()
+                    {
+                        let at = fired
+                            .at
+                            .filter(|_| particles.at_event)
+                            .unwrap_or(particles.position);
+                        let place =
+                            Transform::from_translation(at).with_rotation(particles.rotation);
+                        particles.going = emitters
+                            .as_ref()
+                            .and_then(|e| e.spawn(&mut commands, &particles.emitter, place));
                     } else if particles.when.ends(fired.event, fired.start)
-                        && let Some(entity) = particles.going.take() {
-                            commands.entity(entity).try_despawn();
-                        }
+                        && let Some(entity) = particles.going.take()
+                    {
+                        commands.entity(entity).try_despawn();
+                    }
                 }
                 for model in &events.models {
                     let on = if model.when.begins(fired.event, fired.start) {
@@ -331,7 +377,11 @@ pub fn effects(
                     } else {
                         continue;
                     };
-                    if let Some((_, _, mut visibility)) = scenery.0.get(&model.prop).and_then(|&e| props.get_mut(e).ok()) {
+                    if let Some((_, _, mut visibility)) = scenery
+                        .0
+                        .get(&model.prop)
+                        .and_then(|&e| props.get_mut(e).ok())
+                    {
                         visibility.set_if_neq(shown(on != model.hide_when_active));
                     }
                 }
@@ -340,19 +390,27 @@ pub fn effects(
     }
     // Particles that ride on a model's bone go where it goes.
     for particles in &mut events.particles {
-        let (Some(entity), Some((prop, bone))) = (particles.going, &particles.follows) else { continue };
+        let (Some(entity), Some((prop, bone))) = (particles.going, &particles.follows) else {
+            continue;
+        };
         // One that ran out by itself may be set going again.
         let Ok(mut transform) = placed.get_mut(entity) else {
             particles.going = None;
             continue;
         };
-        if let Some((prop, Some(animated), _)) = scenery.0.get(prop).and_then(|&e| props.get(e).ok()) {
+        if let Some((prop, Some(animated), _)) =
+            scenery.0.get(prop).and_then(|&e| props.get(e).ok())
+        {
             transform.translation = animated.bone_position(prop, *bone, 0.0);
         }
     }
     // The same for ones that stay put, so that they can be set going again.
     for particles in &mut events.particles {
-        if particles.going.is_some_and(|entity| placed.get(entity).is_err()) && particles.follows.is_none() {
+        if particles
+            .going
+            .is_some_and(|entity| placed.get(entity).is_err())
+            && particles.follows.is_none()
+        {
             particles.going = None;
         }
     }
@@ -373,14 +431,24 @@ fn number(token: Option<&Token>) -> f32 {
 /// The records of the section of a token stream that opens with `key`:
 /// `key [count] { 0x27 ... { fields } ... }`. Each is its header and its fields.
 fn records(tokens: &[Token], key: u16) -> Vec<(&[Token], &[Token])> {
-    let opens = |i: usize| tokens[i] == Token::Key(key) && tokens.get(i + 1) == Some(&Token::LBracket);
-    let Some(start) = (0..tokens.len()).find(|&i| opens(i)) else { return Vec::new() };
+    let opens =
+        |i: usize| tokens[i] == Token::Key(key) && tokens.get(i + 1) == Some(&Token::LBracket);
+    let Some(start) = (0..tokens.len()).find(|&i| opens(i)) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     let mut at = start + 5;
     while tokens.get(at) == Some(&Token::Key(0x27)) {
-        let Some(open) = tokens[at..].iter().position(|t| *t == Token::LCurly) else { break };
-        let Some(close) = tokens[at..].iter().position(|t| *t == Token::RCurly) else { break };
-        out.push((&tokens[at + 1..at + open], &tokens[at + open + 1..at + close]));
+        let Some(open) = tokens[at..].iter().position(|t| *t == Token::LCurly) else {
+            break;
+        };
+        let Some(close) = tokens[at..].iter().position(|t| *t == Token::RCurly) else {
+            break;
+        };
+        out.push((
+            &tokens[at + 1..at + open],
+            &tokens[at + open + 1..at + close],
+        ));
         at += close + 1;
     }
     out
@@ -412,9 +480,13 @@ fn parse_sounds(tokens: &[Token]) -> Vec<EventSound> {
                     Token::Key(0x31) => sound.emitter.range.0 = value(0),
                     Token::Key(0x32) => sound.emitter.range.1 = value(0),
                     Token::Key(0x3a) => sound.no_end = true,
-                    Token::Key(0x3b) => sound.emitter.pos = to_world([value(0), value(1), value(2)]),
+                    Token::Key(0x3b) => {
+                        sound.emitter.pos = to_world([value(0), value(1), value(2)])
+                    }
                     Token::Key(0x3f) => sound.at_event = true,
-                    Token::Key(0x40) => sound.chance = Some(value(0)).filter(|&c| (c * 255.0) as u8 != 255),
+                    Token::Key(0x40) => {
+                        sound.chance = Some(value(0)).filter(|&c| (c * 255.0) as u8 != 255)
+                    }
                     _ => {}
                 }
             }
@@ -499,7 +571,10 @@ fn parse_doors(tokens: &[Token]) -> Vec<(String, String)> {
             _ => None,
         }
     };
-    records(tokens, 0x52).into_iter().filter_map(|(_, fields)| Some((name(fields, 0x33)?, name(fields, 0x4a)?))).collect()
+    records(tokens, 0x52)
+        .into_iter()
+        .filter_map(|(_, fields)| Some((name(fields, 0x33)?, name(fields, 0x4a)?)))
+        .collect()
 }
 
 /// The sky state records: `event [on end] { name, time, what to hide and show }`.
@@ -507,7 +582,12 @@ fn parse_skies(tokens: &[Token]) -> Vec<crate::sky::Change> {
     records(tokens, 0x42)
         .into_iter()
         .map(|(header, fields)| {
-            let after = |key: u16| fields.iter().position(|t| *t == Token::Key(key)).and_then(|at| fields.get(at + 1));
+            let after = |key: u16| {
+                fields
+                    .iter()
+                    .position(|t| *t == Token::Key(key))
+                    .and_then(|at| fields.get(at + 1))
+            };
             let has = |key: u16| fields.contains(&Token::Key(key));
             crate::sky::Change {
                 event: number(header.first()) as i32,
@@ -517,8 +597,16 @@ fn parse_skies(tokens: &[Token]) -> Vec<crate::sky::Change> {
                     _ => None,
                 },
                 seconds: after(0x44).map_or(0.0, |t| number(Some(t)) / 1000.0),
-                dome: if has(0x45) { Some(false) } else { has(0x46).then_some(true) },
-                world: if has(0x47) { Some(false) } else { has(0x48).then_some(true) },
+                dome: if has(0x45) {
+                    Some(false)
+                } else {
+                    has(0x46).then_some(true)
+                },
+                world: if has(0x47) {
+                    Some(false)
+                } else {
+                    has(0x48).then_some(true)
+                },
             }
         })
         .collect()
@@ -528,7 +616,14 @@ fn parse_timers(tokens: &[Token]) -> Vec<Timer> {
     records(tokens, 0x27)
         .into_iter()
         .map(|(_, fields)| {
-            let mut timer = Timer { on: (0.0, false), off: (0.0, false), delay: 0.0, event: -1, active: false, remaining: None };
+            let mut timer = Timer {
+                on: (0.0, false),
+                off: (0.0, false),
+                delay: 0.0,
+                event: -1,
+                active: false,
+                remaining: None,
+            };
             for (i, token) in fields.iter().enumerate() {
                 // A phase's length may be marked as random.
                 let phase = || {
@@ -550,11 +645,19 @@ fn parse_timers(tokens: &[Token]) -> Vec<Timer> {
 
 /// Loads the events of a race (a folder name such as `RACEC0R0`).
 pub fn load(race: &str) -> Option<TrackEvents> {
-    let jam = Jam::open(std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()))?;
+    let jam = Jam::open(
+        std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()),
+    )?;
     let dir = format!("/GAMEDATA/{race}");
     let mut files: Vec<&str> = jam.list(&dir).collect();
     files.sort();
-    let with_ext = |ext: &'static str| files.iter().copied().filter(move |f| f.ends_with(ext)).filter_map(|f| jam.get(f));
+    let with_ext = |ext: &'static str| {
+        files
+            .iter()
+            .copied()
+            .filter(move |f| f.ends_with(ext))
+            .filter_map(|f| jam.get(f))
+    };
     let mut events = TrackEvents::default();
     for data in with_ext(".EVB") {
         let tokens = tokenize(data);
@@ -568,14 +671,16 @@ pub fn load(race: &str) -> Option<TrackEvents> {
         events.models.extend(parse_models(&tokens));
     }
     for data in with_ext(".TRB") {
-        events.triggers.extend(route::parse_triggers(data).into_iter().map(|t| Trigger {
-            centre: to_world(t.centre),
-            radius: t.radius * UNIT,
-            event: t.event,
-            active: false,
-            players_only: t.players_only,
-            lap: t.lap,
-        }));
+        events
+            .triggers
+            .extend(route::parse_triggers(data).into_iter().map(|t| Trigger {
+                centre: to_world(t.centre),
+                radius: t.radius * UNIT,
+                event: t.event,
+                active: false,
+                players_only: t.players_only,
+                lap: t.lap,
+            }));
     }
     for data in with_ext(".TIB") {
         events.timers.extend(parse_timers(&tokenize(data)));
@@ -585,14 +690,25 @@ pub fn load(race: &str) -> Option<TrackEvents> {
 
 /// A phase of a timer: as long as it says, or some random part of that.
 fn phase_length((length, random): (f32, bool), sfx: &mut Sfx) -> f32 {
-    if random { length * sfx.roll(1024) as f32 / 1023.0 } else { length }
+    if random {
+        length * sfx.roll(1024) as f32 / 1023.0
+    } else {
+        length
+    }
 }
 
 impl TrackEvents {
     /// Adds a trigger sphere, for a circuit that has no trigger file: its centre and
     /// radius in ours.
     pub fn trigger(&mut self, centre: Vec3, radius: f32, event: i32, players_only: bool) {
-        self.triggers.push(Trigger { centre, radius, event, active: false, players_only, lap: None });
+        self.triggers.push(Trigger {
+            centre,
+            radius,
+            event,
+            active: false,
+            players_only,
+            lap: None,
+        });
     }
 
     fn retrigger_delay(sfx: &mut Sfx) -> f32 {
@@ -651,7 +767,10 @@ impl TrackEvents {
             return;
         }
         if self.logging {
-            self.log.push(Logged { fired, whole: false });
+            self.log.push(Logged {
+                fired,
+                whole: false,
+            });
         }
         self.fired.push(fired);
     }
@@ -659,7 +778,9 @@ impl TrackEvents {
     /// Does what the host's log says was done. The events an event holds open are in
     /// the log themselves, so nothing is held here.
     pub fn follow(&mut self, logged: Logged, sfx: &mut Sfx) {
-        let Fired { event, start, at, .. } = logged.fired;
+        let Fired {
+            event, start, at, ..
+        } = logged.fired;
         match (logged.whole, start) {
             (true, true) => self.begin(event, at, sfx, false),
             (true, false) => self.finish(event, at, sfx, false),
@@ -670,13 +791,31 @@ impl TrackEvents {
     fn begin(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx, hold: bool) {
         debug!("event {event} starts");
         if self.logging {
-            self.log.push(Logged { fired: Fired { event, start: true, at, racer: None }, whole: true });
+            self.log.push(Logged {
+                fired: Fired {
+                    event,
+                    start: true,
+                    at,
+                    racer: None,
+                },
+                whole: true,
+            });
         }
-        self.fired.push(Fired { event, start: true, at, racer: None });
+        self.fired.push(Fired {
+            event,
+            start: true,
+            at,
+            racer: None,
+        });
         if !self.started.contains(&event) {
             self.started.push(event);
         }
-        self.sky.extend(self.skies.iter().filter(|s| s.event == event && !s.on_end).cloned());
+        self.sky.extend(
+            self.skies
+                .iter()
+                .filter(|s| s.event == event && !s.on_end)
+                .cloned(),
+        );
         if hold {
             self.hold(event, false, sfx);
         }
@@ -690,10 +829,28 @@ impl TrackEvents {
     fn finish(&mut self, event: i32, at: Option<Vec3>, sfx: &mut Sfx, hold: bool) {
         debug!("event {event} ends");
         if self.logging {
-            self.log.push(Logged { fired: Fired { event, start: false, at, racer: None }, whole: true });
+            self.log.push(Logged {
+                fired: Fired {
+                    event,
+                    start: false,
+                    at,
+                    racer: None,
+                },
+                whole: true,
+            });
         }
-        self.fired.push(Fired { event, start: false, at, racer: None });
-        self.sky.extend(self.skies.iter().filter(|s| s.event == event && s.on_end).cloned());
+        self.fired.push(Fired {
+            event,
+            start: false,
+            at,
+            racer: None,
+        });
+        self.sky.extend(
+            self.skies
+                .iter()
+                .filter(|s| s.event == event && s.on_end)
+                .cloned(),
+        );
         if hold {
             self.hold(event, true, sfx);
         }
@@ -713,7 +870,12 @@ pub fn track_events(
     race: Res<Race>,
     events: Option<ResMut<TrackEvents>>,
     mut sfx: ResMut<Sfx>,
-    mut karts: Query<(Entity, &mut Kart, Has<crate::kart::Player>, Has<crate::net::Remote>)>,
+    mut karts: Query<(
+        Entity,
+        &mut Kart,
+        Has<crate::kart::Player>,
+        Has<crate::net::Remote>,
+    )>,
 ) {
     let Some(mut events) = events else { return };
     let events = &mut *events;
@@ -742,7 +904,12 @@ pub fn track_events(
     // Trigger spheres: their events run for as long as any racer is inside.
     for i in 0..events.triggers.len() * alone as usize {
         let trigger = &events.triggers[i];
-        let (centre, radius, event, active) = (trigger.centre, trigger.radius, trigger.event, trigger.active);
+        let (centre, radius, event, active) = (
+            trigger.centre,
+            trigger.radius,
+            trigger.event,
+            trigger.active,
+        );
         let (players_only, lap) = (trigger.players_only, trigger.lap);
         if event < 0 {
             continue;
@@ -751,7 +918,9 @@ pub fn track_events(
             .iter()
             // `RacerTriggerList::Entry::OnEvent`: a lap's trigger is for racers on that lap.
             // A player is a player whichever game they are at.
-            .filter(|(_, k, here, elsewhere)| (*here || *elsewhere || !players_only) && lap.is_none_or(|lap| k.lap - 1 == lap))
+            .filter(|(_, k, here, elsewhere)| {
+                (*here || *elsewhere || !players_only) && lap.is_none_or(|lap| k.lap - 1 == lap)
+            })
             .filter(|(_, k, ..)| k.pos.distance_squared(centre) < radius * radius)
             .map(|(e, ..)| e)
             .collect();
@@ -762,10 +931,20 @@ pub fn track_events(
         let before = std::mem::replace(&mut events.inside[i], inside.clone());
         let at = Some(centre);
         for &racer in inside.iter().filter(|e| !before.contains(e)) {
-            events.note(Fired { event, start: true, at, racer: Some(racer) });
+            events.note(Fired {
+                event,
+                start: true,
+                at,
+                racer: Some(racer),
+            });
         }
         for &racer in before.iter().filter(|e| !inside.contains(e)) {
-            events.note(Fired { event, start: false, at, racer: Some(racer) });
+            events.note(Fired {
+                event,
+                start: false,
+                at,
+                racer: Some(racer),
+            });
         }
         match (touched, active) {
             (true, false) => events.start(event, Some(centre), &mut sfx),
@@ -779,14 +958,28 @@ pub fn track_events(
         // Driving through a surface that isn't solid, or sounding the horn, are events too.
         let horn = std::mem::take(&mut k.honked).then_some(999);
         for event in [k.touched.take(), horn].into_iter().flatten() {
-            events.note(Fired { event, start: true, at: Some(k.pos), racer: Some(entity) });
+            events.note(Fired {
+                event,
+                start: true,
+                at: Some(k.pos),
+                racer: Some(entity),
+            });
             events.fire(event, Some(k.pos), &mut sfx);
-            events.note(Fired { event, start: false, at: Some(k.pos), racer: Some(entity) });
+            events.note(Fired {
+                event,
+                start: false,
+                at: Some(k.pos),
+                racer: Some(entity),
+            });
         }
         if !alone {
             continue;
         }
-        let now = [k.surface.enter_event, k.surface.leave_event, k.surface.touch_event];
+        let now = [
+            k.surface.enter_event,
+            k.surface.leave_event,
+            k.surface.touch_event,
+        ];
         let before = events.surfaces.insert(entity, now).unwrap_or_default();
         if now != before {
             if let Some(event) = before[1] {
@@ -814,7 +1007,10 @@ pub fn track_events(
         }
         let (event, was_active) = (timer.event, timer.active);
         timer.active = !was_active;
-        timer.remaining = Some(phase_length(if was_active { timer.off } else { timer.on }, &mut sfx));
+        timer.remaining = Some(phase_length(
+            if was_active { timer.off } else { timer.on },
+            &mut sfx,
+        ));
         if was_active {
             events.end(event, None, &mut sfx);
         } else {
@@ -825,7 +1021,9 @@ pub fn track_events(
     // Events held open for a while come to their end.
     for i in 0..events.delays.len() * alone as usize {
         let delay = &mut events.delays[i];
-        let Some(remaining) = &mut delay.remaining else { continue };
+        let Some(remaining) = &mut delay.remaining else {
+            continue;
+        };
         *remaining -= dt;
         if *remaining <= 0.0 {
             delay.remaining = None;
@@ -862,12 +1060,33 @@ mod tests {
     #[test]
     fn a_follower_does_what_the_hosts_log_says_and_nothing_else() {
         let mut sfx = Sfx::default();
-        let held = || vec![Delay { event: 5, on_end: false, seconds: 2.0, then: Some(6), remaining: None }];
-        let mut host = TrackEvents { delays: held(), logging: true, ..default() };
-        let mut follower = TrackEvents { delays: held(), following: true, ..default() };
+        let held = || {
+            vec![Delay {
+                event: 5,
+                on_end: false,
+                seconds: 2.0,
+                then: Some(6),
+                remaining: None,
+            }]
+        };
+        let mut host = TrackEvents {
+            delays: held(),
+            logging: true,
+            ..default()
+        };
+        let mut follower = TrackEvents {
+            delays: held(),
+            following: true,
+            ..default()
+        };
         let racer = Entity::from_raw_u32(7).unwrap();
         host.start(5, Some(Vec3::X), &mut sfx);
-        host.note(Fired { event: 5, start: true, at: None, racer: Some(racer) });
+        host.note(Fired {
+            event: 5,
+            start: true,
+            at: None,
+            racer: Some(racer),
+        });
         host.end(5, None, &mut sfx);
         // Starting 5 starts 6 with it, and all of it is in the log.
         assert_eq!(host.started, [5, 6]);
@@ -876,8 +1095,15 @@ mod tests {
         // Left to itself the follower does nothing.
         follower.start(5, None, &mut sfx);
         follower.fire(9, None, &mut sfx);
-        follower.note(Fired { event: 5, start: true, at: None, racer: Some(racer) });
-        assert!(follower.started.is_empty() && follower.fired.is_empty() && follower.log.is_empty());
+        follower.note(Fired {
+            event: 5,
+            start: true,
+            at: None,
+            racer: Some(racer),
+        });
+        assert!(
+            follower.started.is_empty() && follower.fired.is_empty() && follower.log.is_empty()
+        );
 
         // By the log it does just what the host did, and holds nothing open itself.
         for logged in host.log.clone() {
@@ -885,7 +1111,12 @@ mod tests {
         }
         assert_eq!(follower.started, host.started);
         assert_eq!(follower.fired, host.fired);
-        assert!(follower.delays.iter().all(|delay| delay.remaining.is_none()));
+        assert!(
+            follower
+                .delays
+                .iter()
+                .all(|delay| delay.remaining.is_none())
+        );
     }
 
     /// Needs the original game data; silently passes without it.
@@ -893,8 +1124,15 @@ mod tests {
     fn every_circuit_has_ambient_sounds_wired_to_triggers() {
         for (race, name) in crate::world::circuits() {
             let events = load(&race).unwrap();
-            assert!(!events.sounds.is_empty() && !events.triggers.is_empty(), "{name}");
-            let triggered = events.sounds.iter().filter(|s| events.triggers.iter().any(|t| t.event == s.event)).count();
+            assert!(
+                !events.sounds.is_empty() && !events.triggers.is_empty(),
+                "{name}"
+            );
+            let triggered = events
+                .sounds
+                .iter()
+                .filter(|s| events.triggers.iter().any(|t| t.event == s.event))
+                .count();
             let loops = events.sounds.iter().filter(|s| s.looping).count();
             println!(
                 "{race} {name}: {} sounds ({triggered} on triggers, {loops} loops), {} triggers, {} timers",
@@ -904,8 +1142,14 @@ mod tests {
             );
             assert!(triggered > 0, "{name}");
             for sound in &events.sounds {
-                assert!(sound.emitter.range.0 > 0.0 && sound.emitter.range.1 >= sound.emitter.range.0, "{name}");
-                assert!(sound.emitter.volume > 0.0 && sound.emitter.volume <= 1.0, "{name}");
+                assert!(
+                    sound.emitter.range.0 > 0.0 && sound.emitter.range.1 >= sound.emitter.range.0,
+                    "{name}"
+                );
+                assert!(
+                    sound.emitter.volume > 0.0 && sound.emitter.volume <= 1.0,
+                    "{name}"
+                );
             }
         }
     }
@@ -924,7 +1168,13 @@ mod tests {
             active: false,
             retrigger: 0.0,
         };
-        let mut events = TrackEvents { sounds: vec![sound(1, true, None, false), sound(2, false, Some(0.5), false)], ..default() };
+        let mut events = TrackEvents {
+            sounds: vec![
+                sound(1, true, None, false),
+                sound(2, false, Some(0.5), false),
+            ],
+            ..default()
+        };
         let mut sfx = Sfx::default();
         events.start(1, Some(Vec3::X), &mut sfx);
         events.start(2, None, &mut sfx);
@@ -944,20 +1194,36 @@ pub fn part_animations(
     mut sfx: ResMut<Sfx>,
     mut props: Query<&mut Animated>,
 ) {
-    let (Some(mut events), Some(scenery), Some(mut track)) = (events, scenery, track) else { return };
+    let (Some(mut events), Some(scenery), Some(mut track)) = (events, scenery, track) else {
+        return;
+    };
     let events = &mut *events;
     let mut notices: Vec<(Option<i32>, Option<i32>)> = Vec::new();
     for animation in &mut events.animations {
-        let Some(mut prop) = scenery.0.get(&animation.prop).and_then(|&e| props.get_mut(e).ok()) else { continue };
+        let Some(mut prop) = scenery
+            .0
+            .get(&animation.prop)
+            .and_then(|&e| props.get_mut(e).ok())
+        else {
+            continue;
+        };
         let once = |part: usize| Some((part, false));
         let idle = Some((animation.idle, true));
-        for fired in events.fired.iter().filter(|f| f.event == animation.event && f.racer.is_none()) {
+        for fired in events
+            .fired
+            .iter()
+            .filter(|f| f.event == animation.event && f.racer.is_none())
+        {
             let resting = animation.state == 0 || animation.state == 3;
             if fired.start != animation.on_end && resting {
                 // `OnStartAt`: the start part if there is one, else straight to the active part.
                 prop.queued = animation.start.map_or(Some((animation.active, true)), once);
             }
-            if !fired.start && !animation.no_end && animation.state != 0 && prop.part != animation.idle {
+            if !fired.start
+                && !animation.no_end
+                && animation.state != 0
+                && prop.part != animation.idle
+            {
                 prop.queued = match animation.end {
                     Some(end) if prop.part != end => once(end),
                     _ => idle,
@@ -967,7 +1233,9 @@ pub fn part_animations(
         // Each part hands on to the next when it has played out.
         if prop.queued.is_none() {
             match animation.state {
-                1 if Some(prop.part) == animation.start => prop.queued = Some((animation.active, animation.looping)),
+                1 if Some(prop.part) == animation.start => {
+                    prop.queued = Some((animation.active, animation.looping))
+                }
                 2 if !animation.looping && prop.part == animation.active => {
                     prop.queued = animation.end.map_or(idle, once);
                 }
@@ -985,8 +1253,14 @@ pub fn part_animations(
             0
         };
         // Events tied to the parts start and end as the parts do (`NotifyStateChange`).
-        if state != animation.state && !(state == 2 && animation.state == 0 && animation.active == animation.idle) {
-            let tied = |state: u8| state.checked_sub(1).and_then(|s| animation.state_events[s as usize]);
+        if state != animation.state
+            && !(state == 2 && animation.state == 0 && animation.active == animation.idle)
+        {
+            let tied = |state: u8| {
+                state
+                    .checked_sub(1)
+                    .and_then(|s| animation.state_events[s as usize])
+            };
             notices.push((tied(animation.state), tied(state)));
             animation.state = state;
         }
@@ -1000,8 +1274,15 @@ pub fn part_animations(
         }
     }
     for (prop, volume) in &events.doors {
-        let resting = events.animations.iter().find(|a| a.prop == *prop).map(|a| a.idle);
-        let (Some(resting), Some(animated)) = (resting, scenery.0.get(prop).and_then(|&e| props.get(e).ok())) else {
+        let resting = events
+            .animations
+            .iter()
+            .find(|a| a.prop == *prop)
+            .map(|a| a.idle);
+        let (Some(resting), Some(animated)) = (
+            resting,
+            scenery.0.get(prop).and_then(|&e| props.get(e).ok()),
+        ) else {
             continue;
         };
         if let Some(&(tag, _)) = track.surfaces.get(volume) {
@@ -1014,10 +1295,22 @@ pub fn part_animations(
 #[test]
 fn the_moon_s_events_change_its_sky() {
     use crate::sky::Change;
-    let Some(events) = load("RACEC0R3") else { return };
+    let Some(events) = load("RACEC0R3") else {
+        return;
+    };
     // Event 50 flashes the sky as it starts, and lets it back to the open air as it ends.
-    let change = |on_end, state: &str, seconds| Change { event: 50, on_end, state: Some(state.into()), seconds, dome: None, world: None };
-    assert_eq!(events.skies, [change(false, "flash", 0.25), change(true, "openair", 0.5)]);
+    let change = |on_end, state: &str, seconds| Change {
+        event: 50,
+        on_end,
+        state: Some(state.into()),
+        seconds,
+        dome: None,
+        world: None,
+    };
+    assert_eq!(
+        events.skies,
+        [change(false, "flash", 0.25), change(true, "openair", 0.5)]
+    );
     // The castle has a second sky, and nothing that asks for it.
     assert!(load("RACEC0R0").unwrap().skies.is_empty());
 }
@@ -1025,29 +1318,105 @@ fn the_moon_s_events_change_its_sky() {
 #[cfg(test)]
 #[test]
 fn events_set_off_particles_tints_and_models() {
-    let Some(knight) = load("RACEC2R0") else { return };
+    let Some(knight) = load("RACEC2R0") else {
+        return;
+    };
     // The cauldron bubbles where the circuit puts it, for as long as its event is on.
     assert_eq!(knight.particles.len(), 16);
     let bubbles = &knight.particles[0];
-    assert_eq!((bubbles.emitter.as_str(), bubbles.when, bubbles.at_event), ("bubbles", When { event: 0, on_end: false, no_end: false }, false));
-    assert!(bubbles.position.distance(to_world([283.2072, -692.7856, -71.01189])) < 1e-3);
+    assert_eq!(
+        (bubbles.emitter.as_str(), bubbles.when, bubbles.at_event),
+        (
+            "bubbles",
+            When {
+                event: 0,
+                on_end: false,
+                no_end: false
+            },
+            false
+        )
+    );
+    assert!(
+        bubbles
+            .position
+            .distance(to_world([283.2072, -692.7856, -71.01189]))
+            < 1e-3
+    );
     assert!(bubbles.rotation.angle_between(Quat::IDENTITY) < 1e-3);
     // Going into the dark a car is half as bright, and stays so until the event on
     // the way out puts its colours back.
     assert_eq!(knight.tints.len(), 4);
-    assert_eq!((knight.tints[0].when, knight.tints[0].tint), (When { event: 2, on_end: false, no_end: true }, Some(Vec3::splat(0.5))));
-    assert_eq!((knight.tints[1].when, knight.tints[1].tint), (When { event: 3, on_end: false, no_end: false }, None));
+    assert_eq!(
+        (knight.tints[0].when, knight.tints[0].tint),
+        (
+            When {
+                event: 2,
+                on_end: false,
+                no_end: true
+            },
+            Some(Vec3::splat(0.5))
+        )
+    );
+    assert_eq!(
+        (knight.tints[1].when, knight.tints[1].tint),
+        (
+            When {
+                event: 3,
+                on_end: false,
+                no_end: false
+            },
+            None
+        )
+    );
     // The moon's lava follows its model, its glow reddens a car, and its lasers are
     // only there while their events are on.
     let moon = load("RACEC0R3").unwrap();
     assert_eq!(moon.particles[0].follows, Some(("mmlavbl".to_string(), 0)));
-    assert!(moon.tints.iter().any(|t| t.tint.is_some_and(|c| c.x > 1.4 && c.y == 1.0 && c.z == 1.0)));
-    let lasers: Vec<_> = moon.models.iter().map(|m| (m.when.event, m.prop.as_str(), m.hide_when_active)).collect();
+    assert!(moon.tints.iter().any(|t| {
+        t.tint
+            .is_some_and(|c| c.x > 1.4 && c.y == 1.0 && c.z == 1.0)
+    }));
+    let lasers: Vec<_> = moon
+        .models
+        .iter()
+        .map(|m| (m.when.event, m.prop.as_str(), m.hide_when_active))
+        .collect();
     assert_eq!(lasers.len(), 6);
     assert_eq!(lasers[0], (60, "mmlaser1", false));
     // An event's start begins what it does, and its end ends it unless told not to.
-    let when = When { event: 7, on_end: false, no_end: false };
-    assert!(when.begins(7, true) && !when.begins(7, false) && when.ends(7, false) && !when.ends(8, false));
-    assert!(When { no_end: true, ..when }.begins(7, true) && !When { no_end: true, ..when }.ends(7, false));
-    assert!(When { on_end: true, ..when }.begins(7, false) && !When { on_end: true, ..when }.begins(7, true));
+    let when = When {
+        event: 7,
+        on_end: false,
+        no_end: false,
+    };
+    assert!(
+        when.begins(7, true)
+            && !when.begins(7, false)
+            && when.ends(7, false)
+            && !when.ends(8, false)
+    );
+    assert!(
+        When {
+            no_end: true,
+            ..when
+        }
+        .begins(7, true)
+            && !When {
+                no_end: true,
+                ..when
+            }
+            .ends(7, false)
+    );
+    assert!(
+        When {
+            on_end: true,
+            ..when
+        }
+        .begins(7, false)
+            && !When {
+                on_end: true,
+                ..when
+            }
+            .begins(7, true)
+    );
 }

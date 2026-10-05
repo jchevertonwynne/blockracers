@@ -44,7 +44,12 @@ impl Power {
 
     pub fn name(self, level: u8) -> &'static str {
         let names = match self {
-            Power::Red => ["Cannon ball", "Grappling hook", "Lightning wand", "Homing missile"],
+            Power::Red => [
+                "Cannon ball",
+                "Grappling hook",
+                "Lightning wand",
+                "Homing missile",
+            ],
             Power::Yellow => ["Oil slick", "Dynamite", "Magnet", "Mummy's curse"],
             Power::Blue => ["Shield", "Shield II", "Shield III", "Shield IV"],
             Power::Green => ["Turbo", "Turbo II", "Turbo III", "Warp"],
@@ -274,9 +279,12 @@ impl Pickup {
         match self.state {
             BrickState::Idle => 1.0,
             BrickState::Wait => 0.0,
-            BrickState::Appear if self.timer < BRICK_OVERSHOOT => self.timer / BRICK_OVERSHOOT / BRICK_SCALE,
+            BrickState::Appear if self.timer < BRICK_OVERSHOOT => {
+                self.timer / BRICK_OVERSHOOT / BRICK_SCALE
+            }
             BrickState::Appear => {
-                let settling = ((self.timer - BRICK_OVERSHOOT) / (BRICK_APPEAR - BRICK_OVERSHOOT)).min(1.0);
+                let settling =
+                    ((self.timer - BRICK_OVERSHOOT) / (BRICK_APPEAR - BRICK_OVERSHOOT)).min(1.0);
                 (1.0 - (1.0 - BRICK_SCALE) * settling) / BRICK_SCALE
             }
             BrickState::Shrink => (1.0 - self.timer / BRICK_SHRINK).max(0.0),
@@ -285,7 +293,11 @@ impl Pickup {
 
     /// What a brick looks like in its state: seen or not, how big, and where.
     fn show(&self, tf: &mut Transform, vis: &mut Mut<Visibility>, t: f32) {
-        vis.set_if_neq(if self.state == BrickState::Wait { Visibility::Hidden } else { Visibility::Inherited });
+        vis.set_if_neq(if self.state == BrickState::Wait {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        });
         tf.scale = Vec3::splat(BRICK_SCALE * self.size()).max(Vec3::splat(0.001));
         tf.translation = self.pos + Vec3::Y * self.lift;
         if !self.modelled {
@@ -297,7 +309,14 @@ impl Pickup {
     /// What of a brick another game needs telling when it changes: what it is, what
     /// it is doing and becoming, and where.
     fn mark(&self) -> BrickMark {
-        BrickMark(self.power, self.next_power, self.state, self.next, (self.pos * 100.0).as_ivec3().to_array(), self.going_home)
+        BrickMark(
+            self.power,
+            self.next_power,
+            self.state,
+            self.next,
+            (self.pos * 100.0).as_ivec3().to_array(),
+            self.going_home,
+        )
     }
 
     /// `DroppableBrick::ReturnHome`: one lying on the road shrinks away first; one
@@ -323,11 +342,25 @@ pub enum MagnetState {
 #[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     /// `on_hit` is an event of the circuit's to set off where it lands.
-    Cannonball { owner: Entity, shot: Shot, on_hit: Option<i32> },
+    Cannonball {
+        owner: Entity,
+        shot: Shot,
+        on_hit: Option<i32>,
+    },
     /// Flying until `pulling` is set, then reeling owner and victim together.
-    Hook { owner: Entity, shot: Shot, time: f32, pulling: Option<Entity> },
+    Hook {
+        owner: Entity,
+        shot: Shot,
+        time: f32,
+        pulling: Option<Entity>,
+    },
     /// `shocked` is the car it has struck, and how long ago.
-    Lightning { owner: Entity, time: f32, crackle: f32, shocked: Option<(Entity, f32)> },
+    Lightning {
+        owner: Entity,
+        time: f32,
+        crackle: f32,
+        shocked: Option<(Entity, f32)>,
+    },
     /// `HomingProjectile`: where it is before it is set spiralling, the way it is
     /// going, its speed over the road and when it turns on its target, the place on
     /// the road it is making for and the checkpoint that place came from, and how
@@ -345,15 +378,36 @@ pub enum Action {
         spiral: (f32, f32),
         time: f32,
     },
-    OilSlick { owner: Entity, age: f32 },
+    OilSlick {
+        owner: Entity,
+        age: f32,
+    },
     /// In the air while it has a `shot`; after that, `wait` until the next blast.
-    Dynamite { owner: Entity, shot: Option<Shot>, blasts: u8, wait: f32 },
+    Dynamite {
+        owner: Entity,
+        shot: Option<Shot>,
+        blasts: u8,
+        wait: f32,
+    },
     /// `time` is what is left of its state. `held` is the car under it, and `stopped`
     /// whether that car has come to rest.
-    Magnet { owner: Entity, time: f32, state: MagnetState, held: Option<Entity>, stopped: bool },
-    Curse { owner: Entity, age: f32 },
+    Magnet {
+        owner: Entity,
+        time: f32,
+        state: MagnetState,
+        held: Option<Entity>,
+        stopped: bool,
+    },
+    Curse {
+        owner: Entity,
+        age: f32,
+    },
     /// `owner` is whose weapon it was; it does them no harm.
-    Explosion { age: f32, radius: f32, owner: Option<Entity> },
+    Explosion {
+        age: f32,
+        radius: f32,
+        owner: Option<Entity>,
+    },
 }
 
 #[derive(Resource)]
@@ -399,13 +453,17 @@ impl ItemAssets {
             None => ["enh", "enhblen"],
         };
         if pickup.id == u16::MAX {
-            pickup.id = self.put_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            pickup.id = self
+                .put_out
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         debug!("brick {:?} at {}", pickup.power, pickup.pos);
-        let at = Transform::from_translation(pickup.pos + Vec3::Y * pickup.lift).with_scale(Vec3::splat(BRICK_SCALE * pickup.size()));
+        let at = Transform::from_translation(pickup.pos + Vec3::Y * pickup.lift)
+            .with_scale(Vec3::splat(BRICK_SCALE * pickup.size()));
         let model = models.and_then(|models| {
             let brick = models.spawn(commands, names[0], at, Motion::Loop)?;
-            if let Some(glow) = models.spawn(commands, names[1], Transform::IDENTITY, Motion::Loop) {
+            if let Some(glow) = models.spawn(commands, names[1], Transform::IDENTITY, Motion::Loop)
+            {
                 commands.entity(brick).add_child(glow);
             }
             Some(brick)
@@ -417,7 +475,12 @@ impl ItemAssets {
             }
             None => {
                 let material = self.brick_material(pickup.power);
-                commands.spawn((pickup, Mesh3d(self.brick.clone()), MeshMaterial3d(material), at));
+                commands.spawn((
+                    pickup,
+                    Mesh3d(self.brick.clone()),
+                    MeshMaterial3d(material),
+                    at,
+                ));
             }
         }
     }
@@ -461,9 +524,22 @@ pub fn setup_items(
     };
     let mut assets = assets;
     let mut brick = BrickMesh::default();
-    brick.brick(Vec3::ZERO, Vec3::new(0.55, 0.33, 0.55), Quat::IDENTITY, Color::WHITE, (2, 2));
+    brick.brick(
+        Vec3::ZERO,
+        Vec3::new(0.55, 0.33, 0.55),
+        Quat::IDENTITY,
+        Color::WHITE,
+        (2, 2),
+    );
     assets.brick = meshes.add(brick.build());
-    assets.bricks = [Power::Red.color(), Power::Yellow.color(), Power::Blue.color(), Power::Green.color(), WHITE].map(|color| {
+    assets.bricks = [
+        Power::Red.color(),
+        Power::Yellow.color(),
+        Power::Blue.color(),
+        Power::Green.color(),
+        WHITE,
+    ]
+    .map(|color| {
         materials.add(StandardMaterial {
             base_color: color,
             emissive: color.to_linear() * 0.4,
@@ -475,7 +551,10 @@ pub fn setup_items(
         fire.alpha_mode = AlphaMode::Blend;
     }
     // The oil slick's own picture, where there is one.
-    if let (Some(picture), Some(mut oil)) = (swatches.and_then(|s| s.0.get("oilslck").cloned()), materials.get_mut(&assets.oil)) {
+    if let (Some(picture), Some(mut oil)) = (
+        swatches.and_then(|s| s.0.get("oilslck").cloned()),
+        materials.get_mut(&assets.oil),
+    ) {
         *oil = StandardMaterial {
             base_color_texture: Some(picture),
             unlit: true,
@@ -483,20 +562,38 @@ pub fn setup_items(
             ..default()
         };
     }
-    commands.insert_resource(Targets(loaded.as_ref().map(|loaded| loaded.targets.clone()).unwrap_or_default()));
+    commands.insert_resource(Targets(
+        loaded
+            .as_ref()
+            .map(|loaded| loaded.targets.clone())
+            .unwrap_or_default(),
+    ));
     let rule = settings.brick_rule();
     let placed = loaded.is_some();
     let models = models.as_deref();
     let mut spawn = |pos: Vec3, power: Option<Power>| {
         // The race's rule may recolour the brick, or leave it out.
-        let Some(power) = crate::rules::brick(rule, power) else { return };
+        let Some(power) = crate::rules::brick(rule, power) else {
+            return;
+        };
         // The original's own placements are where the brick is drawn (`PickupBrick::Draw`);
         // ours are on the road, and the brick is held above it.
         let lift = if placed { 0.0 } else { BRICK_HEIGHT };
         // The port's random bricks begin as any colour, too.
         let random = rule == crate::menu::RANDOM_BRICKS && power.is_some();
-        let power = if random { Some(any_colour(&mut rng)) } else { power };
-        assets.spawn_brick(&mut commands, models, Pickup { random, ..Pickup::new(power, pos, lift, false) });
+        let power = if random {
+            Some(any_colour(&mut rng))
+        } else {
+            power
+        };
+        assets.spawn_brick(
+            &mut commands,
+            models,
+            Pickup {
+                random,
+                ..Pickup::new(power, pos, lift, false)
+            },
+        );
     };
     let powers = POWERS;
 
@@ -516,7 +613,10 @@ pub fn setup_items(
         let s = track.length * station as f32 / STATIONS as f32;
         if station % 2 == 1 {
             for (i, lat) in [-0.75, -0.25, 0.25, 0.75].into_iter().enumerate() {
-                spawn(track.point(s, lat * track.road), Some(powers[(i + station / 2) % 4]));
+                spawn(
+                    track.point(s, lat * track.road),
+                    Some(powers[(i + station / 2) % 4]),
+                );
             }
         } else {
             for lat in [-0.65, 0.0, 0.65] {
@@ -546,9 +646,15 @@ pub fn pickups(
 
     // White bricks leave their cars: knocked out by a hit, they fall where the car is;
     // spent on a power-up, they go home.
-    let mut owed: Vec<(Entity, u8, u8, Vec3)> = karts.iter_mut().map(|(e, mut k)| (e, k.whites, std::mem::take(&mut k.white_drops), k.pos)).collect();
+    let mut owed: Vec<(Entity, u8, u8, Vec3)> = karts
+        .iter_mut()
+        .map(|(e, mut k)| (e, k.whites, std::mem::take(&mut k.white_drops), k.pos))
+        .collect();
     for (_, mut p, ..) in &mut picks {
-        let Some(owner) = p.holder.and_then(|holder| owed.iter_mut().find(|o| o.0 == holder)) else {
+        let Some(owner) = p
+            .holder
+            .and_then(|holder| owed.iter_mut().find(|o| o.0 == holder))
+        else {
             if p.holder.take().is_some() {
                 p.go_home();
             }
@@ -557,8 +663,11 @@ pub fn pickups(
         if owner.2 > 0 {
             // `DroppableBrick::DropAt`.
             owner.2 -= 1;
-            let ground = track.collision.ground(owner.3 + Vec3::Y * BRICK_DROP_PROBE, BRICK_DROP_PROBE * 2.0);
-            p.pos = ground.map_or(owner.3, |hit| hit.point) + Vec3::Y * (BRICK_DROP_HEIGHT - p.lift);
+            let ground = track
+                .collision
+                .ground(owner.3 + Vec3::Y * BRICK_DROP_PROBE, BRICK_DROP_PROBE * 2.0);
+            p.pos =
+                ground.map_or(owner.3, |hit| hit.point) + Vec3::Y * (BRICK_DROP_HEIGHT - p.lift);
             (p.holder, p.dropped, p.state, p.timer) = (None, Some(0.0), BrickState::Appear, 0.0);
         } else if owner.1 == 0 {
             p.go_home();
@@ -568,10 +677,18 @@ pub fn pickups(
     }
 
     for (entity, mut p, mut tf, mut vis) in &mut picks {
-        if !audible && (p.state == BrickState::Wait || (p.power != p.home && !p.random) || p.pos != p.home_pos) {
+        if !audible
+            && (p.state == BrickState::Wait
+                || (p.power != p.home && !p.random)
+                || p.pos != p.home_pos)
+        {
             // A random brick is put back as the colour it has.
             let colour = if p.random { p.power } else { p.home };
-            let fresh = Pickup { random: p.random, id: p.id, ..Pickup::new(colour, p.home_pos, p.lift, p.modelled) };
+            let fresh = Pickup {
+                random: p.random,
+                id: p.id,
+                ..Pickup::new(colour, p.home_pos, p.lift, p.modelled)
+            };
             if p.power != p.home && !p.random {
                 commands.entity(entity).despawn();
                 assets.spawn_brick(&mut commands, models.as_deref(), fresh);
@@ -601,11 +718,15 @@ pub fn pickups(
                         commands.entity(entity).despawn();
                         assets.spawn_brick(&mut commands, models.as_deref(), p.clone());
                     } else {
-                        commands.entity(entity).insert(MeshMaterial3d(assets.brick_material(p.power)));
+                        commands
+                            .entity(entity)
+                            .insert(MeshMaterial3d(assets.brick_material(p.power)));
                     }
                 }
             }
-            BrickState::Appear if p.timer > BRICK_APPEAR => (p.state, p.timer) = (BrickState::Idle, 0.0),
+            BrickState::Appear if p.timer > BRICK_APPEAR => {
+                (p.state, p.timer) = (BrickState::Idle, 0.0)
+            }
             BrickState::Wait if p.power.is_some() && p.timer >= BRICK_RESPAWN => {
                 (p.state, p.timer, formed) = (BrickState::Appear, 0.0, true);
             }
@@ -640,7 +761,14 @@ pub fn pickups(
                         None => (p.home, BrickState::Wait),
                     };
                     if audible {
-                        sfx.emit(if had.is_some() { id::BRICK_SWAP } else { id::BRICK_COLLECT }, brick_sound(p.pos));
+                        sfx.emit(
+                            if had.is_some() {
+                                id::BRICK_SWAP
+                            } else {
+                                id::BRICK_COLLECT
+                            },
+                            brick_sound(p.pos),
+                        );
                     }
                 }
                 // `WhiteBrick::OnTouched`: carried until it is used or knocked out.
@@ -662,11 +790,21 @@ pub fn pickups(
 
 /// What a brick was when its host last told of it.
 #[derive(Clone, PartialEq)]
-pub struct BrickMark(Option<Power>, Option<Power>, BrickState, BrickState, [i32; 3], bool);
+pub struct BrickMark(
+    Option<Power>,
+    Option<Power>,
+    BrickState,
+    BrickState,
+    [i32; 3],
+    bool,
+);
 
 /// Racing online, a host's bricks that have changed since `told` was last brought up
 /// to date, for telling its players of. The port's own.
-pub fn bricks_changed(picks: &Query<&Pickup>, told: &mut std::collections::HashMap<u16, BrickMark>) -> Vec<Pickup> {
+pub fn bricks_changed(
+    picks: &Query<&Pickup>,
+    told: &mut std::collections::HashMap<u16, BrickMark>,
+) -> Vec<Pickup> {
     let mut changed = Vec::new();
     for pickup in picks {
         let now = pickup.mark();
@@ -680,9 +818,20 @@ pub fn bricks_changed(picks: &Query<&Pickup>, told: &mut std::collections::HashM
 
 /// A player's game makes its bricks what its host says they are. A brick of another
 /// colour is another model, as it is where the race is run.
-pub fn bricks_told(commands: &mut Commands, assets: &ItemAssets, models: Option<&Models>, told: Vec<Pickup>, picks: &mut Query<(Entity, &mut Pickup, &mut Transform, &mut Visibility)>) {
+pub fn bricks_told(
+    commands: &mut Commands,
+    assets: &ItemAssets,
+    models: Option<&Models>,
+    told: Vec<Pickup>,
+    picks: &mut Query<(Entity, &mut Pickup, &mut Transform, &mut Visibility)>,
+) {
     for brick in told {
-        let Some((entity, mut pickup, ..)) = picks.iter_mut().find(|(_, pickup, ..)| pickup.id == brick.id) else { continue };
+        let Some((entity, mut pickup, ..)) = picks
+            .iter_mut()
+            .find(|(_, pickup, ..)| pickup.id == brick.id)
+        else {
+            continue;
+        };
         let recoloured = pickup.power != brick.power;
         let modelled = pickup.modelled;
         *pickup = Pickup { modelled, ..brick };
@@ -690,14 +839,19 @@ pub fn bricks_told(commands: &mut Commands, assets: &ItemAssets, models: Option<
             commands.entity(entity).despawn();
             assets.spawn_brick(commands, models, pickup.clone());
         } else if recoloured {
-            commands.entity(entity).insert(MeshMaterial3d(assets.brick_material(pickup.power)));
+            commands
+                .entity(entity)
+                .insert(MeshMaterial3d(assets.brick_material(pickup.power)));
         }
     }
 }
 
 /// A player's game shows its bricks as they were last said to be, growing and
 /// shrinking as time passes; taking them is the host's business.
-pub fn show_pickups(time: Res<Time>, mut picks: Query<(&mut Pickup, &mut Transform, &mut Visibility)>) {
+pub fn show_pickups(
+    time: Res<Time>,
+    mut picks: Query<(&mut Pickup, &mut Transform, &mut Visibility)>,
+) {
     for (mut pickup, mut tf, mut vis) in &mut picks {
         pickup.timer += time.delta_secs();
         pickup.show(&mut tf, &mut vis, time.elapsed_secs());
@@ -751,7 +905,16 @@ struct Seen {
 fn seen<'a>(karts: impl Iterator<Item = (Entity, &'a Kart)>) -> Vec<Seen> {
     let mut cars: Vec<(usize, Seen)> = karts
         .filter(|(_, k)| k.out.is_none())
-        .map(|(entity, k)| ((k.slot + 1) % (crate::kart::PLAYER_SLOT + 1), Seen { entity, pos: k.pos, vel: k.vel }))
+        .map(|(entity, k)| {
+            (
+                (k.slot + 1) % (crate::kart::PLAYER_SLOT + 1),
+                Seen {
+                    entity,
+                    pos: k.pos,
+                    vel: k.vel,
+                },
+            )
+        })
         .collect();
     cars.sort_by_key(|car| car.0);
     cars.into_iter().map(|car| car.1).collect()
@@ -762,25 +925,41 @@ fn seen<'a>(karts: impl Iterator<Item = (Entity, &'a Kart)>) -> Vec<Seen> {
 fn in_cone(at: Vec3, from: Vec3, forward: Vec3, (min, max, cone): (f32, f32, f32)) -> Option<f32> {
     let to = at - from;
     let distance = to.length_squared();
-    ((min * min..=max * max).contains(&distance) && to.dot(forward) >= cone * distance.sqrt()).then_some(distance)
+    ((min * min..=max * max).contains(&distance) && to.dot(forward) >= cone * distance.sqrt())
+        .then_some(distance)
 }
 
 /// `RaceState::FindNearestRacerInCone`. The car asking is too close to find itself.
 fn nearest(cars: &[Seen], from: Vec3, forward: Vec3, cone: (f32, f32, f32)) -> Option<Seen> {
-    let found = cars.iter().filter_map(|car| Some((in_cone(car.pos, from, forward, cone)?, *car)));
-    found.min_by(|a, b| a.0.total_cmp(&b.0)).map(|found| found.1)
+    let found = cars
+        .iter()
+        .filter_map(|car| Some((in_cone(car.pos, from, forward, cone)?, *car)));
+    found
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|found| found.1)
 }
 
 /// `RaceState::FindFarthestRacerInCone`.
 fn farthest(cars: &[Seen], from: Vec3, forward: Vec3, cone: (f32, f32, f32)) -> Option<Seen> {
-    let found = cars.iter().filter_map(|car| Some((in_cone(car.pos, from, forward, cone)?, *car)));
-    found.max_by(|a, b| a.0.total_cmp(&b.0)).map(|found| found.1)
+    let found = cars
+        .iter()
+        .filter_map(|car| Some((in_cone(car.pos, from, forward, cone)?, *car)));
+    found
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|found| found.1)
 }
 
 /// `RaceState::FindRacerInCone` and as many `FindNextRacerInCone` after it: the cars
 /// in the cone, in the order of the racers.
-fn each_in_cone<'a>(cars: &'a [Seen], from: Vec3, forward: Vec3, cone: (f32, f32, f32)) -> impl Iterator<Item = Seen> + 'a {
-    cars.iter().filter(move |car| in_cone(car.pos, from, forward, cone).is_some()).copied()
+fn each_in_cone<'a>(
+    cars: &'a [Seen],
+    from: Vec3,
+    forward: Vec3,
+    cone: (f32, f32, f32),
+) -> impl Iterator<Item = Seen> + 'a {
+    cars.iter()
+        .filter(move |car| in_cone(car.pos, from, forward, cone).is_some())
+        .copied()
 }
 
 /// The circuit's target points: what the player's shots lock onto when one is ahead
@@ -790,10 +969,19 @@ pub struct Targets(pub Vec<(Vec3, i32)>);
 
 impl Targets {
     /// `TargetPointList::FindTargetInCone`.
-    fn find(&self, spent: &[i32], from: Vec3, forward: Vec3, cone: (f32, f32, f32)) -> Option<Vec3> {
+    fn find(
+        &self,
+        spent: &[i32],
+        from: Vec3,
+        forward: Vec3,
+        cone: (f32, f32, f32),
+    ) -> Option<Vec3> {
         let live = self.0.iter().filter(|target| !spent.contains(&target.1));
-        let found = live.filter_map(|target| Some((in_cone(target.0, from, forward, cone)?, target.0)));
-        found.min_by(|a, b| a.0.total_cmp(&b.0)).map(|found| found.1)
+        let found =
+            live.filter_map(|target| Some((in_cone(target.0, from, forward, cone)?, target.0)));
+        found
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|found| found.1)
     }
 }
 
@@ -823,28 +1011,57 @@ impl Shot {
         let duration = duration.max(1e-3);
         let delta = to - from;
         let vel = delta / duration + Vec3::Y * 0.5 * gravity * duration;
-        Shot { from, vel, gravity, speed: delta.with_y(0.0).length() / duration, age: 0.0, life }
+        Shot {
+            from,
+            vel,
+            gravity,
+            speed: delta.with_y(0.0).length() / duration,
+            age: 0.0,
+            life,
+        }
     }
 
     /// `LaunchAtPosition`: at a place, at a speed over the ground.
     fn lobbed(from: Vec3, to: Vec3, speed: f32, gravity: f32, life: f32) -> Shot {
-        Shot::timed(from, to, (to - from).with_y(0.0).length() / speed, gravity, life)
+        Shot::timed(
+            from,
+            to,
+            (to - from).with_y(0.0).length() / speed,
+            gravity,
+            life,
+        )
     }
 
     /// `LaunchAtPoint`: at a place, the faster for the shooter's own speed that way.
     fn at_point(from: Vec3, to: Vec3, speed: f32, gravity: f32, life: f32, shooter: Vec3) -> Shot {
         let flat = (to - from).with_y(0.0);
-        let distance = if flat.length() == 0.0 { 1.0 } else { flat.length() };
+        let distance = if flat.length() == 0.0 {
+            1.0
+        } else {
+            flat.length()
+        };
         let speed = speed + shooter.dot(flat / distance).max(0.0);
         Shot::timed(from, to, distance / speed, gravity, life)
     }
 
     /// `LaunchAtRacer`: at where a car will be when the shot gets there. `behind` is
     /// the thrower's facing when the lead is only taken if that place is behind it.
-    fn at_racer(from: Vec3, target: Seen, speed: f32, gravity: f32, life: f32, shooter: Vec3, behind: Option<Vec3>) -> Shot {
+    fn at_racer(
+        from: Vec3,
+        target: Seen,
+        speed: f32,
+        gravity: f32,
+        life: f32,
+        shooter: Vec3,
+        behind: Option<Vec3>,
+    ) -> Shot {
         let aim = target.pos + Vec3::Y * TARGET_HEIGHT;
         let flat = (aim - from).with_y(0.0);
-        let distance = if flat.length() == 0.0 { 1.0 } else { flat.length() };
+        let distance = if flat.length() == 0.0 {
+            1.0
+        } else {
+            flat.length()
+        };
         let speed = (speed + shooter.dot(flat / distance).abs()).max(1e-3);
         let duration = distance / speed;
         let led = aim + target.vel * duration;
@@ -857,10 +1074,18 @@ impl Shot {
 
     /// `Deflect`: sent from where it is at whoever fired it, or where it came from.
     fn deflect(&mut self, at: Vec3, back: Option<Seen>) {
-        let (target, vel) = back.map_or((self.from, Vec3::ZERO), |car| (car.pos + Vec3::Y * TARGET_HEIGHT, car.vel));
+        let (target, vel) = back.map_or((self.from, Vec3::ZERO), |car| {
+            (car.pos + Vec3::Y * TARGET_HEIGHT, car.vel)
+        });
         let flat = (target - at).with_y(0.0).length();
         let duration = if flat == 0.0 { 1.0 } else { flat } / self.speed.max(1e-3);
-        *self = Shot::timed(at, target + vel * duration, duration, self.gravity, self.life);
+        *self = Shot::timed(
+            at,
+            target + vel * duration,
+            duration,
+            self.gravity,
+            self.life,
+        );
     }
 
     fn position(&self) -> Vec3 {
@@ -897,7 +1122,9 @@ pub fn use_items(
     mut q: Query<(Entity, &mut Kart, &mut Controls)>,
 ) {
     let cars = seen(q.iter().map(|(e, k, _)| (e, k)));
-    let spent = events.as_ref().map_or(&[][..], |events| &events.started[..]);
+    let spent = events
+        .as_ref()
+        .map_or(&[][..], |events| &events.started[..]);
     for (owner, mut k, mut c) in &mut q {
         if !std::mem::take(&mut c.use_item) {
             continue;
@@ -939,7 +1166,11 @@ pub fn use_items(
             let targets = targets.as_ref().filter(|_| k.route.is_none())?;
             targets.find(spent, k.pos, forward, cone)
         };
-        let mut spawn = |action: Action, mesh: &Handle<Mesh>, material: &Handle<StandardMaterial>, at: Vec3, size: Vec3| {
+        let mut spawn = |action: Action,
+                         mesh: &Handle<Mesh>,
+                         material: &Handle<StandardMaterial>,
+                         at: Vec3,
+                         size: Vec3| {
             commands.spawn((
                 action,
                 Mesh3d(mesh.clone()),
@@ -952,31 +1183,102 @@ pub fn use_items(
             // nearest car ahead, else straight on.
             (Power::Red, 0) => {
                 let shot = if let Some(at) = point(AIM_POINT) {
-                    Shot::at_point(muzzle, at, CANNONBALL_SPEED, CANNONBALL_GRAVITY, CANNONBALL_LIFE, k.vel)
+                    Shot::at_point(
+                        muzzle,
+                        at,
+                        CANNONBALL_SPEED,
+                        CANNONBALL_GRAVITY,
+                        CANNONBALL_LIFE,
+                        k.vel,
+                    )
                 } else if let Some(car) = nearest(&cars, k.pos, forward, AIM_RACER) {
-                    Shot::at_racer(muzzle, car, CANNONBALL_SPEED, CANNONBALL_GRAVITY, CANNONBALL_LIFE, k.vel, None)
+                    Shot::at_racer(
+                        muzzle,
+                        car,
+                        CANNONBALL_SPEED,
+                        CANNONBALL_GRAVITY,
+                        CANNONBALL_LIFE,
+                        k.vel,
+                        None,
+                    )
                 } else {
                     let at = k.pos + forward * CANNONBALL_RANGE + Vec3::Y * TARGET_HEIGHT;
-                    Shot::at_point(muzzle, at, CANNONBALL_SPEED, CANNONBALL_GRAVITY, CANNONBALL_LIFE, k.vel)
+                    Shot::at_point(
+                        muzzle,
+                        at,
+                        CANNONBALL_SPEED,
+                        CANNONBALL_GRAVITY,
+                        CANNONBALL_LIFE,
+                        k.vel,
+                    )
                 };
-                spawn(Action::Cannonball { owner, shot, on_hit: None }, &assets.sphere, &assets.black, muzzle, Vec3::splat(0.5));
+                spawn(
+                    Action::Cannonball {
+                        owner,
+                        shot,
+                        on_hit: None,
+                    },
+                    &assets.sphere,
+                    &assets.black,
+                    muzzle,
+                    Vec3::splat(0.5),
+                );
             }
             // `FireGrapplingHook`: the farthest car dead ahead, else the nearest in a
             // wide cone, else a target point, else straight on.
             (Power::Red, 1) => {
-                let car = farthest(&cars, k.pos, forward, HOOK_FAR).or_else(|| nearest(&cars, k.pos, forward, HOOK_WIDE));
+                let car = farthest(&cars, k.pos, forward, HOOK_FAR)
+                    .or_else(|| nearest(&cars, k.pos, forward, HOOK_WIDE));
                 let shot = match car {
-                    Some(car) => Shot::at_racer(muzzle, car, HOOK_SPEED, HOOK_GRAVITY, HOOK_FLIGHT_TIME, k.vel, None),
+                    Some(car) => Shot::at_racer(
+                        muzzle,
+                        car,
+                        HOOK_SPEED,
+                        HOOK_GRAVITY,
+                        HOOK_FLIGHT_TIME,
+                        k.vel,
+                        None,
+                    ),
                     None => {
-                        let at = point(AIM_POINT).unwrap_or(k.pos + forward * HOOK_RANGE + Vec3::Y * TARGET_HEIGHT);
-                        Shot::at_point(muzzle, at, HOOK_SPEED, HOOK_GRAVITY, HOOK_FLIGHT_TIME, k.vel)
+                        let at = point(AIM_POINT)
+                            .unwrap_or(k.pos + forward * HOOK_RANGE + Vec3::Y * TARGET_HEIGHT);
+                        Shot::at_point(
+                            muzzle,
+                            at,
+                            HOOK_SPEED,
+                            HOOK_GRAVITY,
+                            HOOK_FLIGHT_TIME,
+                            k.vel,
+                        )
                     }
                 };
-                spawn(Action::Hook { owner, shot, time: HOOK_FLIGHT_TIME, pulling: None }, &assets.cube, &assets.grey, muzzle, Vec3::splat(0.5));
+                spawn(
+                    Action::Hook {
+                        owner,
+                        shot,
+                        time: HOOK_FLIGHT_TIME,
+                        pulling: None,
+                    },
+                    &assets.cube,
+                    &assets.grey,
+                    muzzle,
+                    Vec3::splat(0.5),
+                );
             }
             (Power::Red, 2) => {
                 let size = Vec3::new(0.3, 0.3, LIGHTNING_RANGE);
-                spawn(Action::Lightning { owner, time: LIGHTNING_TIME, crackle: 0.0, shocked: None }, &assets.cube, &assets.bolt, muzzle, size);
+                spawn(
+                    Action::Lightning {
+                        owner,
+                        time: LIGHTNING_TIME,
+                        crackle: 0.0,
+                        shocked: None,
+                    },
+                    &assets.cube,
+                    &assets.bolt,
+                    muzzle,
+                    size,
+                );
             }
             // `FireHomingMissiles`: three, each after the next car in the cone; with
             // too few cars there, the rest fan out ahead.
@@ -986,18 +1288,41 @@ pub fn use_items(
                 let mut target = first;
                 // `HomingProjectile::StartHoming`: it takes the road from the car's
                 // last checkpoint, unless the car is pointing back at it.
-                let gate = k.checkpoint.filter(|&gate| track.course.checkpoints.get(gate).is_some_and(|gate| forward.dot(gate.normal) <= 0.0));
+                let gate = k.checkpoint.filter(|&gate| {
+                    track
+                        .course
+                        .checkpoints
+                        .get(gate)
+                        .is_some_and(|gate| forward.dot(gate.normal) <= 0.0)
+                });
                 for index in 0..MISSILES {
                     if index > 0 {
                         target = target.and_then(|_| ahead.next());
                     }
                     // The launch only settles how fast it goes.
                     let shot = match target {
-                        Some(car) => Shot::at_racer(k.pos, car, MISSILE_SPEED, CANNONBALL_GRAVITY, MISSILE_FLIGHT_TIME, k.vel, None),
+                        Some(car) => Shot::at_racer(
+                            k.pos,
+                            car,
+                            MISSILE_SPEED,
+                            CANNONBALL_GRAVITY,
+                            MISSILE_FLIGHT_TIME,
+                            k.vel,
+                            None,
+                        ),
                         None => {
-                            let side = forward.cross(Vec3::Y) * [-1.0, 0.0, 1.0][index] * MISSILE_SPREAD;
-                            let at = k.pos + forward * MISSILE_RANGE + side + Vec3::Y * TARGET_HEIGHT;
-                            Shot::at_point(k.pos, at, MISSILE_SPEED, CANNONBALL_GRAVITY, MISSILE_FLIGHT_TIME, k.vel)
+                            let side =
+                                forward.cross(Vec3::Y) * [-1.0, 0.0, 1.0][index] * MISSILE_SPREAD;
+                            let at =
+                                k.pos + forward * MISSILE_RANGE + side + Vec3::Y * TARGET_HEIGHT;
+                            Shot::at_point(
+                                k.pos,
+                                at,
+                                MISSILE_SPEED,
+                                CANNONBALL_GRAVITY,
+                                MISSILE_FLIGHT_TIME,
+                                k.vel,
+                            )
                         }
                     };
                     let action = Action::Missile {
@@ -1013,30 +1338,80 @@ pub fn use_items(
                         spiral: (0.0, 0.0),
                         time: MISSILE_FLIGHT_TIME,
                     };
-                    spawn(action, &assets.sphere, &assets.red, k.pos + Vec3::Y * MISSILE_HEIGHT, Vec3::new(0.35, 0.35, 0.8));
+                    spawn(
+                        action,
+                        &assets.sphere,
+                        &assets.red,
+                        k.pos + Vec3::Y * MISSILE_HEIGHT,
+                        Vec3::new(0.35, 0.35, 0.8),
+                    );
                 }
             }
             (Power::Yellow, 0) => {
-                spawn(Action::OilSlick { owner, age: 0.0 }, &assets.disc, &assets.oil, dropped, Vec3::new(1.4, 1.0, 1.4));
+                spawn(
+                    Action::OilSlick { owner, age: 0.0 },
+                    &assets.disc,
+                    &assets.oil,
+                    dropped,
+                    Vec3::new(1.4, 1.0, 1.4),
+                );
             }
             // `ThrowDynamite`: at the nearest car behind, else well back down the road.
             (Power::Yellow, 1) => {
                 let shot = match nearest(&cars, k.pos, -forward, AIM_RACER) {
-                    Some(car) => Shot::at_racer(muzzle, car, DYNAMITE_SPEED, CANNONBALL_GRAVITY, DYNAMITE_FLIGHT_TIME, k.vel, Some(k.facing)),
+                    Some(car) => Shot::at_racer(
+                        muzzle,
+                        car,
+                        DYNAMITE_SPEED,
+                        CANNONBALL_GRAVITY,
+                        DYNAMITE_FLIGHT_TIME,
+                        k.vel,
+                        Some(k.facing),
+                    ),
                     None => {
                         let at = k.pos - forward * DYNAMITE_THROW + Vec3::Y * LAUNCH_HEIGHT;
-                        Shot::at_point(muzzle, at, DYNAMITE_SPEED, CANNONBALL_GRAVITY, DYNAMITE_FLIGHT_TIME, k.vel)
+                        Shot::at_point(
+                            muzzle,
+                            at,
+                            DYNAMITE_SPEED,
+                            CANNONBALL_GRAVITY,
+                            DYNAMITE_FLIGHT_TIME,
+                            k.vel,
+                        )
                     }
                 };
-                let action = Action::Dynamite { owner, shot: Some(shot), blasts: DYNAMITE_BLASTS, wait: 0.0 };
+                let action = Action::Dynamite {
+                    owner,
+                    shot: Some(shot),
+                    blasts: DYNAMITE_BLASTS,
+                    wait: 0.0,
+                };
                 spawn(action, &assets.stick, &assets.red, muzzle, Vec3::ONE);
             }
             (Power::Yellow, 2) => {
-                let action = Action::Magnet { owner, time: MAGNET_ARMED_TIME, state: MagnetState::Armed, held: None, stopped: false };
-                spawn(action, &assets.disc, &assets.magnet, dropped, Vec3::new(1.2, 3.0, 1.2));
+                let action = Action::Magnet {
+                    owner,
+                    time: MAGNET_ARMED_TIME,
+                    state: MagnetState::Armed,
+                    held: None,
+                    stopped: false,
+                };
+                spawn(
+                    action,
+                    &assets.disc,
+                    &assets.magnet,
+                    dropped,
+                    Vec3::new(1.2, 3.0, 1.2),
+                );
             }
             (Power::Yellow, _) => {
-                spawn(Action::Curse { owner, age: 0.0 }, &assets.disc, &assets.curse, dropped, Vec3::new(1.2, 3.0, 1.2));
+                spawn(
+                    Action::Curse { owner, age: 0.0 },
+                    &assets.disc,
+                    &assets.curse,
+                    dropped,
+                    Vec3::new(1.2, 3.0, 1.2),
+                );
             }
             (Power::Blue, level) => {
                 k.shield = SHIELD_TIMES[level as usize];
@@ -1059,34 +1434,84 @@ pub struct Beam {
 
 impl ItemAssets {
     /// A cannon ball fired by the circuit itself, from one place at another.
-    pub fn cannonball(&self, commands: &mut Commands, from: Vec3, to: Vec3, on_hit: Option<i32>) -> Entity {
+    pub fn cannonball(
+        &self,
+        commands: &mut Commands,
+        from: Vec3,
+        to: Vec3,
+        on_hit: Option<i32>,
+    ) -> Entity {
         let shot = if from.with_y(0.0).distance(to.with_y(0.0)) < 1.0 {
-            Shot { from, vel: Vec3::ZERO, gravity: CANNONBALL_GRAVITY, speed: CANNONBALL_SPEED, age: 0.0, life: EMPLACED_LIFE }
+            Shot {
+                from,
+                vel: Vec3::ZERO,
+                gravity: CANNONBALL_GRAVITY,
+                speed: CANNONBALL_SPEED,
+                age: 0.0,
+                life: EMPLACED_LIFE,
+            }
         } else {
-            Shot::lobbed(from, to, CANNONBALL_SPEED, CANNONBALL_GRAVITY, EMPLACED_LIFE)
+            Shot::lobbed(
+                from,
+                to,
+                CANNONBALL_SPEED,
+                CANNONBALL_GRAVITY,
+                EMPLACED_LIFE,
+            )
         };
-        let action = Action::Cannonball { owner: Entity::PLACEHOLDER, shot, on_hit };
+        let action = Action::Cannonball {
+            owner: Entity::PLACEHOLDER,
+            shot,
+            on_hit,
+        };
         let transform = Transform::from_translation(from).with_scale(Vec3::splat(0.5));
-        commands.spawn((action, Mesh3d(self.sphere.clone()), MeshMaterial3d(self.black.clone()), transform)).id()
+        commands
+            .spawn((
+                action,
+                Mesh3d(self.sphere.clone()),
+                MeshMaterial3d(self.black.clone()),
+                transform,
+            ))
+            .id()
     }
 
     /// A mummy's curse left lying in wait by the circuit.
     pub fn curse(&self, commands: &mut Commands, at: Vec3) {
-        let action = Action::Curse { owner: Entity::PLACEHOLDER, age: 0.0 };
+        let action = Action::Curse {
+            owner: Entity::PLACEHOLDER,
+            age: 0.0,
+        };
         let transform = Transform::from_translation(at).with_scale(Vec3::new(1.2, 3.0, 1.2));
-        commands.spawn((action, Mesh3d(self.disc.clone()), MeshMaterial3d(self.curse.clone()), transform));
+        commands.spawn((
+            action,
+            Mesh3d(self.disc.clone()),
+            MeshMaterial3d(self.curse.clone()),
+            transform,
+        ));
     }
 
     /// A lightning bolt from `beam`, an entity with a [`Beam`].
     pub fn lightning(&self, commands: &mut Commands, beam: Entity) {
-        let action = Action::Lightning { owner: beam, time: LIGHTNING_TIME, crackle: 0.0, shocked: None };
+        let action = Action::Lightning {
+            owner: beam,
+            time: LIGHTNING_TIME,
+            crackle: 0.0,
+            shocked: None,
+        };
         let transform = Transform::from_scale(Vec3::new(0.3, 0.3, LIGHTNING_RANGE));
-        commands.spawn((action, Mesh3d(self.cube.clone()), MeshMaterial3d(self.bolt.clone()), transform));
+        commands.spawn((
+            action,
+            Mesh3d(self.cube.clone()),
+            MeshMaterial3d(self.bolt.clone()),
+            transform,
+        ));
     }
 }
 
 fn flight_sound(at: Vec3, vel: Vec3) -> Emitter {
-    Emitter::at(at).moving(vel).range(FLIGHT_SOUND_RANGE.0, FLIGHT_SOUND_RANGE.1)
+    Emitter::at(at)
+        .moving(vel)
+        .range(FLIGHT_SOUND_RANGE.0, FLIGHT_SOUND_RANGE.1)
 }
 
 /// How far an explosion has grown, of 1, this long into its life
@@ -1112,7 +1537,9 @@ pub fn actions(
     let dt = time.delta_secs();
     // Explosions are collected and set off once every action has had its turn.
     let mut blasts: Vec<(Vec3, f32, Entity)> = Vec::new();
-    let touching = |k: &Kart, at: Vec3, radius: f32| (k.pos + Vec3::Y * 0.6).distance_squared(at) < radius * radius;
+    let touching = |k: &Kart, at: Vec3, radius: f32| {
+        (k.pos + Vec3::Y * 0.6).distance_squared(at) < radius * radius
+    };
     let cars = seen(karts.iter());
     let car = |entity: Entity| cars.iter().find(|car| car.entity == entity).copied();
 
@@ -1121,14 +1548,25 @@ pub fn actions(
         let mut done = false;
         match &mut *action {
             // `CannonballAction`.
-            Action::Cannonball { owner, shot, on_hit } => {
+            Action::Cannonball {
+                owner,
+                shot,
+                on_hit,
+            } => {
                 let flight = shot.fly(&mut tf.translation, dt, &track);
                 let at = tf.translation;
-                sfx.sustain_nearest(flight::CANNONBALL, id::CANNON_FLIGHT, flight_sound(at, shot.velocity()), FLIGHT_SOUND_RANGE.1);
+                sfx.sustain_nearest(
+                    flight::CANNONBALL,
+                    id::CANNON_FLIGHT,
+                    flight_sound(at, shot.velocity()),
+                    FLIGHT_SOUND_RANGE.1,
+                );
                 // `LauncherHazard`: a shot the circuit fires at a spot meets no car on
                 // its way; only its landing counts, and one that never lands is gone.
                 let launched = *owner == Entity::PLACEHOLDER && on_hit.is_some();
-                let struck = karts.iter_mut().find(|(e, k)| !launched && e != owner && k.warp <= 0.0 && touching(k, at, KART_RADIUS));
+                let struck = karts.iter_mut().find(|(e, k)| {
+                    !launched && e != owner && k.warp <= 0.0 && touching(k, at, KART_RADIUS)
+                });
                 let mut deflected = false;
                 if let (Flight::Flying, Some((victim, mut k))) = (&flight, struck) {
                     done = true;
@@ -1157,7 +1595,9 @@ pub fn actions(
                     continue;
                 } else if !matches!(flight, Flight::Flying) {
                     // Some surfaces answer to being shot.
-                    if let (Flight::HitWorld(point, Some(event)), Some(events)) = (&flight, &mut events) {
+                    if let (Flight::HitWorld(point, Some(event)), Some(events)) =
+                        (&flight, &mut events)
+                    {
                         events.fire(*event, Some(*point), &mut sfx);
                     }
                     sfx.emit(id::EXPLOSION, Emitter::at(at).far());
@@ -1169,15 +1609,27 @@ pub fn actions(
                 }
             }
             // `GrapplingHookAction`.
-            Action::Hook { owner, shot, time, pulling } => {
+            Action::Hook {
+                owner,
+                shot,
+                time,
+                pulling,
+            } => {
                 *time -= dt;
                 done = *time <= 0.0;
                 match *pulling {
                     None => {
                         let flight = shot.fly(&mut tf.translation, dt, &track);
                         let at = tf.translation;
-                        sfx.sustain_nearest(flight::HOOK, id::HOOK_FLIGHT, flight_sound(at, shot.velocity()), FLIGHT_SOUND_RANGE.1);
-                        let caught = karts.iter_mut().find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, at, KART_RADIUS));
+                        sfx.sustain_nearest(
+                            flight::HOOK,
+                            id::HOOK_FLIGHT,
+                            flight_sound(at, shot.velocity()),
+                            FLIGHT_SOUND_RANGE.1,
+                        );
+                        let caught = karts.iter_mut().find(|(e, k)| {
+                            e != owner && k.warp <= 0.0 && touching(k, at, KART_RADIUS)
+                        });
                         let mut missed = !matches!(flight, Flight::Flying) || done;
                         let mut hooked = false;
                         if let (Flight::Flying, Some((victim, mut k))) = (&flight, caught) {
@@ -1194,10 +1646,9 @@ pub fn actions(
                                 (missed, hooked, done) = (false, true, false);
                             }
                         }
-                        if hooked
-                            && let Ok((_, mut k)) = karts.get_mut(*owner) {
-                                k.cues.reaction = Some(true);
-                            }
+                        if hooked && let Ok((_, mut k)) = karts.get_mut(*owner) {
+                            k.cues.reaction = Some(true);
+                        }
                         if missed {
                             // The line snaps back.
                             sfx.play_at(id::HOOK_MISS, at);
@@ -1208,10 +1659,17 @@ pub fn actions(
                     Some(victim) => {
                         // Reel the two karts towards each other until they meet, or
                         // the one hooked is no longer ahead.
-                        let ends = (karts.get(*owner).map(|k| (k.1.pos, k.1.rot * Vec3::NEG_Z)), karts.get(victim).map(|k| (k.1.pos, k.1.shielded())));
+                        let ends = (
+                            karts.get(*owner).map(|k| (k.1.pos, k.1.rot * Vec3::NEG_Z)),
+                            karts.get(victim).map(|k| (k.1.pos, k.1.shielded())),
+                        );
                         if let (Ok((from, forward)), Ok((to, shielded))) = ends {
                             let rope = to - from;
-                            if shielded || rope.length() < HOOK_RELEASE_DISTANCE || rope.dot(forward) < 0.0 || done {
+                            if shielded
+                                || rope.length() < HOOK_RELEASE_DISTANCE
+                                || rope.dot(forward) < 0.0
+                                || done
+                            {
                                 sfx.play_at(id::HOOK_RELEASE, to);
                                 done = true;
                             } else {
@@ -1223,7 +1681,12 @@ pub fn actions(
                                     k.external_force -= pull;
                                 }
                                 tf.translation = to + Vec3::Y * 0.8;
-                                sfx.sustain_nearest(flight::HOOK_PULL, id::HOOK_PULL, flight_sound(to, Vec3::ZERO), FLIGHT_SOUND_RANGE.1);
+                                sfx.sustain_nearest(
+                                    flight::HOOK_PULL,
+                                    id::HOOK_PULL,
+                                    flight_sound(to, Vec3::ZERO),
+                                    FLIGHT_SOUND_RANGE.1,
+                                );
                             }
                         } else {
                             done = true;
@@ -1233,23 +1696,35 @@ pub fn actions(
             }
             // `LightningAction`: whoever it strikes it stays on for a second, and
             // strikes nobody else until then.
-            Action::Lightning { owner, time, crackle, shocked } => {
+            Action::Lightning {
+                owner,
+                time,
+                crackle,
+                shocked,
+            } => {
                 *time -= dt;
                 done = *time <= 0.0;
-                let wielder = karts.get(*owner).map(|(_, k)| (k.pos, (k.rot * Vec3::NEG_Z).normalize(), k.vel));
-                let Ok((from, forward, vel)) = wielder.or(beams.get(*owner).map(|b| (b.from, b.forward, Vec3::ZERO))) else {
+                let wielder = karts
+                    .get(*owner)
+                    .map(|(_, k)| (k.pos, (k.rot * Vec3::NEG_Z).normalize(), k.vel));
+                let Ok((from, forward, vel)) =
+                    wielder.or(beams.get(*owner).map(|b| (b.from, b.forward, Vec3::ZERO)))
+                else {
                     commands.entity(entity).despawn();
                     continue;
                 };
                 // The wand hums, sinking as it gives out, and crackles along its reach.
                 let fading = ((LIGHTNING_FADE.1 - *time) / LIGHTNING_FADE.1).clamp(0.0, 1.0);
-                let hum = Emitter::at(from).moving(vel).pitch(1.0 - LIGHTNING_FADE.0 * fading);
+                let hum = Emitter::at(from)
+                    .moving(vel)
+                    .pitch(1.0 - LIGHTNING_FADE.0 * fading);
                 sfx.sustain(entity, 0, id::LIGHTNING_LOOP, hum);
                 *crackle -= dt;
                 if *crackle <= 0.0 && *time > LIGHTNING_FADE.1 {
                     let along = sfx.roll((LIGHTNING_RANGE / UNIT) as u32) as f32 * UNIT;
                     sfx.play_at(id::LIGHTNING_CRACKLE, from + forward * along);
-                    *crackle = LIGHTNING_CRACKLE.0 + sfx.roll(1000) as f32 * 0.001 * LIGHTNING_CRACKLE.1;
+                    *crackle =
+                        LIGHTNING_CRACKLE.0 + sfx.roll(1000) as f32 * 0.001 * LIGHTNING_CRACKLE.1;
                 }
                 if done {
                     sfx.play_at(id::LIGHTNING_END, from);
@@ -1264,11 +1739,18 @@ pub fn actions(
                     }
                 }
                 let mut struck = false;
-                for victim in each_in_cone(&cars, from, forward, (LIGHTNING_MIN_RANGE, LIGHTNING_RANGE, LIGHTNING_CONE)) {
+                for victim in each_in_cone(
+                    &cars,
+                    from,
+                    forward,
+                    (LIGHTNING_MIN_RANGE, LIGHTNING_RANGE, LIGHTNING_CONE),
+                ) {
                     if shocked.is_some() || victim.entity == *owner {
                         continue;
                     }
-                    let Ok((_, mut k)) = karts.get_mut(victim.entity) else { continue };
+                    let Ok((_, mut k)) = karts.get_mut(victim.entity) else {
+                        continue;
+                    };
                     if k.shielded() {
                         k.cues.reaction = Some(true);
                         k.cues.shield_hit = true;
@@ -1279,41 +1761,67 @@ pub fn actions(
                         (*shocked, struck) = (Some((victim.entity, 0.0)), true);
                     }
                 }
-                if struck
-                    && let Ok((_, mut k)) = karts.get_mut(*owner) {
-                        k.cues.reaction = Some(true);
-                    }
+                if struck && let Ok((_, mut k)) = karts.get_mut(*owner) {
+                    k.cues.reaction = Some(true);
+                }
             }
             // `HomingMissileAction` and `HomingProjectile`.
-            Action::Missile { owner, target, at, heading, speed, dash, waypoint, gate, looked, spiral, time } => {
+            Action::Missile {
+                owner,
+                target,
+                at,
+                heading,
+                speed,
+                dash,
+                waypoint,
+                gate,
+                looked,
+                spiral,
+                time,
+            } => {
                 *time -= dt;
                 // `UpdateTargeting`: every so often, or when its target is no use, it
                 // takes the first car ahead of it that is.
                 *looked += dt;
-                let usable = |entity: Entity| karts.get(entity).is_ok_and(|(_, k)| k.spin_out <= 0.0 && k.warp <= 0.0 && k.out.is_none());
+                let usable = |entity: Entity| {
+                    karts
+                        .get(entity)
+                        .is_ok_and(|(_, k)| k.spin_out <= 0.0 && k.warp <= 0.0 && k.out.is_none())
+                };
                 if !target.is_some_and(usable) || *looked > MISSILE_LOOK {
                     *looked = 0.0;
-                    *target = each_in_cone(&cars, *at, *heading, MISSILE_AIM).map(|car| car.entity).find(|&car| car != *owner && usable(car));
+                    *target = each_in_cone(&cars, *at, *heading, MISSILE_AIM)
+                        .map(|car| car.entity)
+                        .find(|&car| car != *owner && usable(car));
                 }
                 // With no place on the road to make for, it takes the next checkpoint
                 // that is ahead of it and that it hasn't passed.
                 let gates = &track.course.checkpoints;
                 if waypoint.is_none() {
                     while let Some(found) = gate.and_then(|index| gates.get(index)) {
-                        if (found.position - *at).dot(*heading) > 0.0 && found.normal.dot(*at - found.position) >= 0.0 {
+                        if (found.position - *at).dot(*heading) > 0.0
+                            && found.normal.dot(*at - found.position) >= 0.0
+                        {
                             break;
                         }
                         *gate = found.next.first().copied().filter(|&next| {
-                            gates.get(next).is_some_and(|next| next.position.distance(*at) <= MISSILE_GATE_REACH && next.normal.dot(*heading) <= 0.0)
+                            gates.get(next).is_some_and(|next| {
+                                next.position.distance(*at) <= MISSILE_GATE_REACH
+                                    && next.normal.dot(*heading) <= 0.0
+                            })
                         });
                     }
                     if let Some(found) = gate.and_then(|index| gates.get(index)) {
-                        let ground = track.collision.ground(found.position + Vec3::Y * 5.0 * UNIT, 55.0 * UNIT);
+                        let ground = track
+                            .collision
+                            .ground(found.position + Vec3::Y * 5.0 * UNIT, 55.0 * UNIT);
                         *waypoint = ground.map(|hit| hit.point + Vec3::Y * MISSILE_CLEARANCE);
                     }
                 }
 
-                let aim = target.and_then(|t| karts.get(t).ok()).map(|(_, k)| k.pos + Vec3::Y * TARGET_HEIGHT);
+                let aim = target
+                    .and_then(|t| karts.get(t).ok())
+                    .map(|(_, k)| k.pos + Vec3::Y * TARGET_HEIGHT);
                 if let Some(aim) = aim {
                     *heading = aim - *at;
                 }
@@ -1323,7 +1831,8 @@ pub fn actions(
                     Some(aim) if aim.distance(*at) < MISSILE_SNAP_DISTANCE => {
                         *heading = heading.normalize_or(Vec3::NEG_Z);
                         next = *at + *heading * *dash * dt;
-                        reached = aim.distance(*at) < MISSILE_HIT_DISTANCE || (aim - next).dot(*heading) <= 0.0;
+                        reached = aim.distance(*at) < MISSILE_HIT_DISTANCE
+                            || (aim - next).dot(*heading) <= 0.0;
                         if reached {
                             next = aim;
                         }
@@ -1339,7 +1848,10 @@ pub fn actions(
                         *heading = heading.normalize_or(Vec3::NEG_Z);
                         next = *at + *heading * *speed * dt;
                         // It keeps its height over the road, and comes down gently.
-                        if let Some(hit) = track.collision.ground(next + Vec3::Y * 2.0 * UNIT, 2.0 * UNIT + MISSILE_CLEARANCE) {
+                        if let Some(hit) = track
+                            .collision
+                            .ground(next + Vec3::Y * 2.0 * UNIT, 2.0 * UNIT + MISSILE_CLEARANCE)
+                        {
                             next.y = hit.point.y + MISSILE_CLEARANCE;
                             if at.y > next.y {
                                 next.y = next.y.max(at.y - MISSILE_DESCENT * dt);
@@ -1351,12 +1863,25 @@ pub fn actions(
                 // `ApplySpiral`.
                 spiral.0 = (spiral.0 + MISSILE_SPIRAL.1 * dt).min(MISSILE_SPIRAL.0);
                 spiral.1 += MISSILE_SPIRAL.2 * dt;
-                let shown = if reached { next } else { next + Quat::from_axis_angle(*heading, spiral.1) * heading.any_orthonormal_vector() * spiral.0 };
+                let shown = if reached {
+                    next
+                } else {
+                    next + Quat::from_axis_angle(*heading, spiral.1)
+                        * heading.any_orthonormal_vector()
+                        * spiral.0
+                };
                 tf.look_to(*heading, Vec3::Y);
                 tf.translation = shown;
-                sfx.sustain_nearest(flight::MISSILE, id::MISSILE_FLIGHT, flight_sound(shown, *heading * *speed), FLIGHT_SOUND_RANGE.1);
+                sfx.sustain_nearest(
+                    flight::MISSILE,
+                    id::MISSILE_FLIGHT,
+                    flight_sound(shown, *heading * *speed),
+                    FLIGHT_SOUND_RANGE.1,
+                );
 
-                let struck = karts.iter_mut().find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, shown, KART_RADIUS));
+                let struck = karts
+                    .iter_mut()
+                    .find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, shown, KART_RADIUS));
                 if let Some((victim, mut k)) = struck {
                     let hit = k.pos;
                     done = true;
@@ -1365,7 +1890,8 @@ pub fn actions(
                         k.cues.shield_hit = true;
                         if k.shield_level >= DEFLECTING_SHIELD {
                             // Sent back at whoever fired it.
-                            (*target, *owner, *time, *looked, done) = (Some(*owner), victim, MISSILE_FLIGHT_TIME, 0.0, false);
+                            (*target, *owner, *time, *looked, done) =
+                                (Some(*owner), victim, MISSILE_FLIGHT_TIME, 0.0, false);
                             (*waypoint, *gate) = (None, None);
                         }
                     } else {
@@ -1381,7 +1907,10 @@ pub fn actions(
                         blasts.push((hit, CANNONBALL_BLAST, *owner));
                     }
                 } else if *time <= 0.0 || reached || track.collision.shot(pos, shown).is_some() {
-                    let burst = track.collision.shot(pos, shown).map_or(shown, |hit| hit.point);
+                    let burst = track
+                        .collision
+                        .shot(pos, shown)
+                        .map_or(shown, |hit| hit.point);
                     sfx.emit(id::MISSILE_EXPLODE, Emitter::at(burst).far());
                     blasts.push((burst, CANNONBALL_BLAST, *owner));
                     done = true;
@@ -1412,7 +1941,12 @@ pub fn actions(
             }
             // `DynamiteAction`: thrown, it goes off where it comes down or on whoever
             // it meets, and twice more close by.
-            Action::Dynamite { owner, shot, blasts: left, wait } => {
+            Action::Dynamite {
+                owner,
+                shot,
+                blasts: left,
+                wait,
+            } => {
                 let first = *left == DYNAMITE_BLASTS;
                 let mut at = pos;
                 let landed = match shot {
@@ -1421,7 +1955,10 @@ pub fn actions(
                         let flight = flying.fly(&mut tf.translation, dt, &track);
                         at = tf.translation;
                         tf.rotate_local_z(DYNAMITE_TUMBLE * dt);
-                        !matches!(flight, Flight::Flying) || karts.iter().any(|(e, k)| e != *owner && k.warp <= 0.0 && touching(k, at, KART_RADIUS))
+                        !matches!(flight, Flight::Flying)
+                            || karts.iter().any(|(e, k)| {
+                                e != *owner && k.warp <= 0.0 && touching(k, at, KART_RADIUS)
+                            })
                     }
                     None => {
                         *wait -= dt;
@@ -1433,7 +1970,10 @@ pub fn actions(
                         sfx.emit(id::EXPLOSION, Emitter::at(at).far());
                     } else {
                         // The later blasts wander a little.
-                        let mut wander = || (sfx.roll(DYNAMITE_SCATTER * 2 + 1) as f32 - DYNAMITE_SCATTER as f32) * UNIT;
+                        let mut wander = || {
+                            (sfx.roll(DYNAMITE_SCATTER * 2 + 1) as f32 - DYNAMITE_SCATTER as f32)
+                                * UNIT
+                        };
                         at += Vec3::new(wander(), 0.0, wander());
                         tf.translation = at;
                     }
@@ -1444,11 +1984,21 @@ pub fn actions(
             }
             // `MagnetAction`: waits for a car, then holds whoever comes right under it
             // and draws in anyone else in reach.
-            Action::Magnet { owner, time, state, held, stopped } => {
+            Action::Magnet {
+                owner,
+                time,
+                state,
+                held,
+                stopped,
+            } => {
                 *time -= dt;
                 sfx.sustain(entity, 0, id::MAGNET_LOOP, Emitter::at(pos));
                 for (e, mut k) in &mut karts {
-                    if e == *owner || *state == MagnetState::Fade || k.warp > 0.0 || !touching(&k, pos, TRAP_RADIUS) {
+                    if e == *owner
+                        || *state == MagnetState::Fade
+                        || k.warp > 0.0
+                        || !touching(&k, pos, TRAP_RADIUS)
+                    {
                         continue;
                     }
                     if k.shielded() {
@@ -1487,7 +2037,8 @@ pub fn actions(
                     match *state {
                         MagnetState::Fade => {
                             done = true;
-                            if let Some((_, mut k)) = held.and_then(|held| karts.get_mut(held).ok()) {
+                            if let Some((_, mut k)) = held.and_then(|held| karts.get_mut(held).ok())
+                            {
                                 k.magnet = 0.0;
                             }
                         }
@@ -1499,7 +2050,12 @@ pub fn actions(
             Action::Curse { owner, age } => {
                 *age += dt;
                 done = *age > CURSE_ARMED_TIME;
-                sfx.sustain(entity, 0, id::CURSE_LOOP, Emitter::at(pos + Vec3::Y * CURSE_HEIGHT));
+                sfx.sustain(
+                    entity,
+                    0,
+                    id::CURSE_LOOP,
+                    Emitter::at(pos + Vec3::Y * CURSE_HEIGHT),
+                );
                 for (e, mut k) in &mut karts {
                     if e == *owner || k.warp > 0.0 || !touching(&k, pos, TRAP_RADIUS) {
                         continue;
@@ -1517,12 +2073,17 @@ pub fn actions(
                 *age += dt;
                 done = *age > EXPLOSION_TIME;
                 let growth = blast_growth(age.min(EXPLOSION_TIME));
-                tf.scale = Vec3::splat(*radius * (BLAST_START + (1.0 - BLAST_START) * growth).min(1.0));
+                tf.scale =
+                    Vec3::splat(*radius * (BLAST_START + (1.0 - BLAST_START) * growth).min(1.0));
                 let reach = BLAST_CORE + (*radius - BLAST_CORE) * growth + KART_RADIUS;
                 let force = (2.0 * (1.0 - *age / EXPLOSION_TIME)).clamp(0.0, 1.0);
                 for (e, mut k) in &mut karts {
                     // The player's car is thrown once; the computer's as long as it is in reach.
-                    if Some(e) != *owner && !k.shielded() && touching(&k, pos, reach) && !(k.route.is_none() && k.spin_out > 0.0) {
+                    if Some(e) != *owner
+                        && !k.shielded()
+                        && touching(&k, pos, reach)
+                        && !(k.route.is_none() && k.spin_out > 0.0)
+                    {
                         k.launch(force);
                     }
                 }
@@ -1535,7 +2096,11 @@ pub fn actions(
 
     for (at, radius, owner) in blasts {
         commands.spawn((
-            Action::Explosion { age: 0.0, radius, owner: Some(owner) },
+            Action::Explosion {
+                age: 0.0,
+                radius,
+                owner: Some(owner),
+            },
             Mesh3d(assets.sphere.clone()),
             MeshMaterial3d(assets.fire.clone()),
             Transform::from_translation(at).with_scale(Vec3::splat(radius * BLAST_START)),
@@ -1575,7 +2140,9 @@ mod tests {
         let spawn = |world: &mut World, slot: usize, s: f32| {
             let mut kart = Kart::new(&track, slot);
             kart.place(&track, s, 0.0);
-            world.spawn((kart, Controls::default(), Transform::default())).id()
+            world
+                .spawn((kart, Controls::default(), Transform::default()))
+                .id()
         };
         let owner = spawn(&mut world, 0, 200.0);
         let victim = spawn(&mut world, 1, 200.0 + gap);
@@ -1597,7 +2164,9 @@ mod tests {
     fn ever(world: &mut World, seconds: f32, check: impl Fn(&World) -> bool) -> bool {
         let mut seen = false;
         for _ in 0..(seconds * 60.0) as usize {
-            world.resource_mut::<Time>().advance_by(Duration::from_secs_f32(1.0 / 60.0));
+            world
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(1.0 / 60.0));
             world.run_system_once(actions).unwrap();
             world.run_system_once(crate::kart::kart_physics).unwrap();
             seen |= check(world);
@@ -1673,8 +2242,14 @@ mod tests {
         let hazard = |level: u8, seconds: f32, check: fn(&Kart) -> bool| {
             let (mut world, owner, victim) = arena(-1.0);
             fire(&mut world, owner, Power::Yellow, level);
-            assert!(ever(&mut world, seconds, |w| check(kart(w, victim))), "yellow level {level}");
-            assert!(!check(kart(&world, owner)), "yellow level {level} caught its owner");
+            assert!(
+                ever(&mut world, seconds, |w| check(kart(w, victim))),
+                "yellow level {level}"
+            );
+            assert!(
+                !check(kart(&world, owner)),
+                "yellow level {level} caught its owner"
+            );
         };
         hazard(0, 1.0, |k| k.spin > 0.0);
         hazard(2, 1.0, |k| k.magnet > 0.0);
@@ -1696,7 +2271,16 @@ mod tests {
         let (mut world, owner, _) = arena(60.0);
         fire(&mut world, owner, Power::Red, 3);
         let mut missiles = world.query::<&Action>();
-        let targets: Vec<bool> = missiles.iter(&world).filter_map(|a| if let Action::Missile { target, .. } = a { Some(target.is_some()) } else { None }).collect();
+        let targets: Vec<bool> = missiles
+            .iter(&world)
+            .filter_map(|a| {
+                if let Action::Missile { target, .. } = a {
+                    Some(target.is_some())
+                } else {
+                    None
+                }
+            })
+            .collect();
         // One car ahead: the first missile has it, and the other two fan out.
         assert_eq!(targets.iter().filter(|t| **t).count(), 1);
         assert_eq!(targets.len(), 3);
@@ -1707,7 +2291,14 @@ mod tests {
         let (mut world, owner, victim) = arena(-1.0);
         fire(&mut world, owner, Power::Yellow, 3);
         assert!(ever(&mut world, 0.5, |w| kart(w, victim).cursed > 0.0));
-        assert_eq!(world.query::<&Action>().iter(&world).filter(|a| matches!(a, Action::Curse { .. })).count(), 1);
+        assert_eq!(
+            world
+                .query::<&Action>()
+                .iter(&world)
+                .filter(|a| matches!(a, Action::Curse { .. }))
+                .count(),
+            1
+        );
         assert_eq!(kart(&world, owner).cursed, 0.0);
         // A cursed car gets no turbo.
         fire(&mut world, victim, Power::Green, 0);
@@ -1718,7 +2309,8 @@ mod tests {
     fn turbo_and_warp_carry_the_kart_forward() {
         let (mut world, owner, _) = arena(100.0);
         fire(&mut world, owner, Power::Green, 0);
-        assert!(ever(&mut world, 1.0, |w| kart(w, owner).vel.length() > crate::physics::MAX_SPEED));
+        assert!(ever(&mut world, 1.0, |w| kart(w, owner).vel.length()
+            > crate::physics::MAX_SPEED));
 
         let (mut world, owner, _) = arena(100.0);
         let start = kart(&world, owner).s;

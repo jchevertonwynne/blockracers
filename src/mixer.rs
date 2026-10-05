@@ -48,7 +48,11 @@ pub struct Tone {
 
 impl Default for Tone {
     fn default() -> Self {
-        Tone { volume: 1.0, pan: 0.0, pitch: 1.0 }
+        Tone {
+            volume: 1.0,
+            pan: 0.0,
+            pitch: 1.0,
+        }
     }
 }
 
@@ -60,7 +64,13 @@ impl Tone {
         }
         let amplitude = |db: f32| 10f32.powf(db / 20.0);
         let level = amplitude((self.volume.min(1.0) - 1.0) * VOLUME_RANGE_DB);
-        let side = |pan: f32| if pan >= 1.0 { 0.0 } else { amplitude(-pan.max(0.0) * PAN_RANGE_DB) };
+        let side = |pan: f32| {
+            if pan >= 1.0 {
+                0.0
+            } else {
+                amplitude(-pan.max(0.0) * PAN_RANGE_DB)
+            }
+        };
         [level * side(self.pan), level * side(-self.pan)]
     }
 }
@@ -79,7 +89,8 @@ struct Voice {
 impl Voice {
     fn set(&mut self, tone: Tone) {
         self.target = tone.gains();
-        let frequency = (self.clip.rate as f32 * tone.pitch).clamp(FREQUENCY_RANGE.0, FREQUENCY_RANGE.1);
+        let frequency =
+            (self.clip.rate as f32 * tone.pitch).clamp(FREQUENCY_RANGE.0, FREQUENCY_RANGE.1);
         self.step = (frequency / OUTPUT_RATE as f32) as f64;
     }
 
@@ -104,11 +115,18 @@ impl Voice {
                 self.at %= frames as f64;
             }
             let (index, blend) = (self.at as usize, self.at.fract() as f32);
-            let next = if index + 1 < frames { index + 1 } else if self.looped { 0 } else { index };
+            let next = if index + 1 < frames {
+                index + 1
+            } else if self.looped {
+                0
+            } else {
+                index
+            };
             let glide = (i + 1) as f32 / count as f32;
             for (channel, value) in frame.iter_mut().enumerate() {
                 let gain = from[channel] + (self.target[channel] - from[channel]) * glide;
-                *value += (sample(index, channel) * (1.0 - blend) + sample(next, channel) * blend) * gain;
+                *value +=
+                    (sample(index, channel) * (1.0 - blend) + sample(next, channel) * blend) * gain;
             }
             self.at += self.step;
         }
@@ -133,7 +151,14 @@ impl Mixer {
         let mut voices = self.0.lock().unwrap();
         voices.next += 1;
         let id = voices.next;
-        let mut voice = Voice { clip: clip.clone(), at: 0.0, step: 1.0, gains: [0.0; 2], target: [0.0; 2], looped };
+        let mut voice = Voice {
+            clip: clip.clone(),
+            at: 0.0,
+            step: 1.0,
+            gains: [0.0; 2],
+            target: [0.0; 2],
+            looped,
+        };
         voice.set(tone);
         voice.gains = voice.target;
         voices.playing.insert(id, voice);
@@ -218,7 +243,11 @@ impl Decodable for MixerOutput {
     type Decoder = MixerStream;
 
     fn decoder(&self) -> MixerStream {
-        MixerStream { mixer: self.0.clone(), block: Vec::new(), at: 0 }
+        MixerStream {
+            mixer: self.0.clone(),
+            block: Vec::new(),
+            at: 0,
+        }
     }
 }
 
@@ -227,12 +256,23 @@ mod tests {
     use super::*;
 
     fn clip(samples: Vec<i16>, rate: u32) -> Arc<Clip> {
-        Arc::new(Clip { samples, channels: 1, rate })
+        Arc::new(Clip {
+            samples,
+            channels: 1,
+            rate,
+        })
     }
 
     #[test]
     fn volume_and_pan_follow_the_original_decibel_scales() {
-        let gains = |volume, pan| Tone { volume, pan, pitch: 1.0 }.gains();
+        let gains = |volume, pan| {
+            Tone {
+                volume,
+                pan,
+                pitch: 1.0,
+            }
+            .gains()
+        };
         assert_eq!(gains(1.0, 0.0), [1.0, 1.0]);
         assert_eq!(gains(0.004, 0.0), [0.0, 0.0]);
         // 0.7 is 9 dB down; nothing at all is 30 dB down, but never heard.
@@ -249,7 +289,14 @@ mod tests {
         let mut stream = MixerOutput(mixer.clone()).decoder();
         let sound = clip(vec![16384; 441], 44100);
         let once = mixer.play(&sound, false, Tone::default());
-        let looped = mixer.play(&sound, true, Tone { pitch: 0.5, ..default() });
+        let looped = mixer.play(
+            &sound,
+            true,
+            Tone {
+                pitch: 0.5,
+                ..default()
+            },
+        );
         let heard: Vec<f32> = stream.by_ref().take(BLOCK * 2 * 4).collect();
         assert!(heard[0] > 0.9 && heard[BLOCK * 2 * 4 - 1] > 0.4 && heard[BLOCK * 2 * 4 - 1] < 0.6);
         assert!(!mixer.playing(once) && mixer.playing(looped));
