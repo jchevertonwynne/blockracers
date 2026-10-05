@@ -110,6 +110,8 @@ pub struct Settings {
     /// Which of the garage's racers the player races as, counted from one; nought
     /// while there are none, when the game's stand-in races.
     pub racer: usize,
+    /// What the keys and a pad's buttons do in a race.
+    pub controls: crate::input::Bindings,
 }
 
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
@@ -193,6 +195,7 @@ impl Settings {
             name: "PLAYER".into(),
             car: 0,
             racer: 0,
+            controls: default(),
         }
     }
 
@@ -221,7 +224,7 @@ impl Settings {
             .iter()
             .map(|(name, value)| format!("{name}={value}\n"))
             .collect();
-        format!("{numbers}name={}\n", self.name)
+        format!("{numbers}name={}\n{}", self.name, self.controls.write())
     }
 
     /// Takes what a file of `write`'s has to say, leaving alone anything it doesn't
@@ -234,6 +237,9 @@ impl Settings {
                 .filter(|name| !name.is_empty())
             {
                 self.name = name.chars().take(NAME_LENGTH).collect();
+                continue;
+            }
+            if self.controls.read(line) {
                 continue;
             }
             let Some((name, Ok(value))) = line
@@ -263,6 +269,7 @@ impl Settings {
                 _ => {}
             }
         }
+        self.controls.mend();
     }
 
     /// Takes up the settings left by the last session, if there was one.

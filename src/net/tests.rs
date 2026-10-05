@@ -47,6 +47,9 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
         ))
         .insert_state(Screen::Race)
         .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<crate::input::Actions>()
+        .init_resource::<crate::input::Devices>()
+        .add_systems(PreUpdate, crate::input::read)
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<StandardMaterial>>()
         .init_resource::<Assets<Image>>()
@@ -1236,6 +1239,7 @@ fn a_built_racer_goes_over_the_wire_whole() {
         chassis: "crchas0".into(),
         car: vec![0, 1, 0, 15, 0, 0, 0, 3, 0, 0],
         stock: false,
+        trophies: 0,
     };
     let hello = ToHost::Hello {
         protocol: lobby_api::PROTOCOL,

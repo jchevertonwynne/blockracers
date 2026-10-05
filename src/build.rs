@@ -702,6 +702,9 @@ pub struct Catalogue {
     /// Each torso's material, and each pair of legs'.
     pub torsos: Vec<String>,
     pub legs: Vec<String>,
+    /// What each hat, face, torso and pair of legs is marked with, which says what
+    /// has to be won before it can be worn (`progress::Progress::part_open`).
+    marks: [Vec<u8>; 4],
 }
 
 const PARTS: &str = "/MENUDATA/PARTDB";
@@ -716,22 +719,41 @@ impl Catalogue {
             let Token::Key(key) = token else { continue };
             r.list_header()?;
             let mut names = Vec::new();
+            let mut marks: Vec<u8> = Vec::new();
             loop {
                 match r.next()? {
                     Token::RCurly => break,
-                    Token::Str(name) => names.push(name.to_lowercase()),
-                    // Which part of the figure a part is for, and what unlocks it.
+                    Token::Str(name) => {
+                        names.push(name.to_lowercase());
+                        marks.push(0);
+                    }
+                    // A torso and a pair of legs say which model they go on, and
+                    // every part ends with what it is marked with.
+                    Token::Int(mark) => {
+                        if let Some(last) = marks.last_mut() {
+                            *last = mark as u8;
+                        }
+                    }
                     _ => {}
                 }
             }
-            match key {
-                // The first names of these are the models the builder shows them on.
-                0x2a => catalogue.faces = names.split_off(1),
-                0x2b => catalogue.torsos = names.split_off(2),
-                0x2c => catalogue.legs = names.split_off(2),
-                0x2d => catalogue.hats = names,
-                _ => {}
-            }
+            // The first names of the faces, torsos and legs are the models the
+            // builder shows them on.
+            let (part, models) = match key {
+                0x2d => (0, 0),
+                0x2a => (1, 1),
+                0x2b => (2, 2),
+                0x2c => (3, 2),
+                _ => continue,
+            };
+            let names = names.split_off(models.min(names.len()));
+            catalogue.marks[part] = marks.split_off(models.min(marks.len()));
+            *[
+                &mut catalogue.hats,
+                &mut catalogue.faces,
+                &mut catalogue.torsos,
+                &mut catalogue.legs,
+            ][part] = names;
         }
         Some(catalogue)
     }
@@ -739,6 +761,11 @@ impl Catalogue {
     /// How many there are of a part to choose between.
     pub fn count(&self, part: usize) -> usize {
         [&self.hats, &self.faces, &self.torsos, &self.legs][part].len()
+    }
+
+    /// What a part is marked with.
+    pub fn mark(&self, part: usize, index: usize) -> u8 {
+        self.marks[part].get(index).copied().unwrap_or(0)
     }
 
     /// The files a figure's materials and their pictures are in, and where the
@@ -929,5 +956,25 @@ mod tests {
             let cosmetics = Cosmetics { hat, ..cosmetics };
             assert!(figure(&jam, &catalogue, cosmetics).is_some(), "hat {hat}");
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_catalogue_says_what_each_part_is_won_by() {
+    let Some(jam) = crate::world::jam() else {
+        return;
+    };
+    let catalogue = Catalogue::open(&jam).unwrap();
+    // No hat has to be won; the last face, torso and legs go with every record beaten.
+    assert!((0..catalogue.count(0)).all(|hat| catalogue.mark(0, hat) == 0));
+    for part in 1..4 {
+        assert_eq!(catalogue.marks[part].len(), catalogue.count(part));
+        assert_eq!(catalogue.mark(part, catalogue.count(part) - 1), 0x80);
+    }
+    assert_eq!((catalogue.mark(1, 1), catalogue.mark(2, 8)), (4, 3));
+    // Each circuit's winner is given the next of the part sets.
+    for (set, circuit) in ["c0", "c1", "c2", "c3", "c4", "c5", "c6"].iter().enumerate() {
+        assert_eq!(crate::roster::part_set(&jam, circuit), Some(set));
     }
 }

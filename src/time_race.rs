@@ -290,6 +290,7 @@ pub fn time_race(
     circuits: Res<Circuits>,
     variant: Res<Variant>,
     mut time_race: ResMut<TimeRace>,
+    mut progress: ResMut<crate::progress::Progress>,
     player: Query<&Kart, With<Player>>,
     mut ghosts: Query<(&Ghost, &mut Transform, &mut Visibility)>,
 ) {
@@ -362,12 +363,20 @@ pub fn time_race(
                 }
                 time_race.best.insert(folder, time_race.run.clone());
             }
-            time_race.result = Some(
-                time_race
-                    .record
-                    .as_ref()
-                    .is_some_and(|record| total < record.total()),
-            );
+            let beaten = time_race
+                .record
+                .as_ref()
+                .is_some_and(|record| total < record.total());
+            // `MenuManager::ProcessRecordBeaten`. A race run mirrored or backwards
+            // is the port's own, and is nobody's record.
+            if let (true, false, Some(race)) = (
+                beaten,
+                variant.mirror || variant.reverse,
+                circuits.0[settings.circuit].race.as_deref(),
+            ) {
+                progress.beat(race);
+            }
+            time_race.result = Some(beaten);
         }
         Phase::Finished => {}
     }

@@ -156,6 +156,16 @@ pub fn circuits(jam: &Jam) -> Vec<(String, Vec<RaceEntry>)> {
         .collect()
 }
 
+/// The part set a circuit's winner is given, counted from the first that is won
+/// (`CircuitDefinition::GetStringIndex`); a circuit may have none.
+pub fn part_set(jam: &Jam, circuit: &str) -> Option<usize> {
+    let tokens = tokenize(jam.get("/MENUDATA/LEGORACE.CRB")?);
+    let (_, fields) = entries(&tokens)
+        .into_iter()
+        .find(|(name, _)| name == circuit)?;
+    usize::try_from(number(fields, 0x2a)?).ok()
+}
+
 /// One driver, by the game's short name for them.
 pub fn driver(jam: &Jam, code: &str) -> Option<Driver> {
     let drivers = tokenize(jam.get("/GAMEDATA/COMMON/DRIVERS.DDB")?);

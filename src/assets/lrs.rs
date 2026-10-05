@@ -19,6 +19,8 @@ const CAR_SAVED: u8 = 0x80;
 const CHASSIS: usize = 0x21;
 const CAR: usize = 0x29;
 const CAR_LENGTH: usize = 0x202;
+/// The trophies, two bits to a circuit.
+const TROPHIES: usize = 0x22b;
 
 /// What a racer's minifigure is made of, each a place in the part catalogue's lists.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -41,9 +43,28 @@ pub struct Racer {
     pub car: Vec<u8>,
     /// Whether the car is one the game handed out and nothing has been done to since.
     pub stock: bool,
+    /// The trophy won on each circuit, two bits apiece: one is for first place,
+    /// two for second, three for third and nought is none.
+    pub trophies: u16,
 }
 
 impl Racer {
+    /// `SaveRecordList::Record::GetTrophy`.
+    pub fn trophy(&self, circuit: usize) -> u16 {
+        (self.trophies >> (circuit * 2)) & 3
+    }
+
+    /// `SaveRecordList::Record::SetTrophy`: the trophy for a place, unless there is
+    /// one as good already. Whether it was given.
+    pub fn award(&mut self, circuit: usize, place: usize) -> bool {
+        let had = self.trophy(circuit);
+        if !(1..=3).contains(&place) || circuit > 7 || (had != 0 && place as u16 >= had) {
+            return false;
+        }
+        self.trophies = (self.trophies & !(3 << (circuit * 2))) | ((place as u16) << (circuit * 2));
+        true
+    }
+
     fn from_record(data: &[u8]) -> Racer {
         let name = data[NAME..NAME + NAME_LENGTH * 2]
             .as_chunks::<2>()
@@ -70,6 +91,7 @@ impl Racer {
             chassis: String::from_utf8_lossy(chassis).to_lowercase(),
             car: data[CAR..CAR + length].to_vec(),
             stock: data[COSMETICS + 4] & CAR_SAVED != 0,
+            trophies: u16::from_le_bytes([data[TROPHIES], data[TROPHIES + 1]]),
         }
     }
 
@@ -92,6 +114,7 @@ impl Racer {
         data[CHASSIS..CHASSIS + length].copy_from_slice(&chassis[..length]);
         let length = self.car.len().min(CAR_LENGTH);
         data[CAR..CAR + length].copy_from_slice(&self.car[..length]);
+        data[TROPHIES..].copy_from_slice(&self.trophies.to_le_bytes());
         data
     }
 }
@@ -176,7 +199,13 @@ mod tests {
             chassis: "gm_chas0".into(),
             car: vec![0, 1, 0, 12, 0, 0, 0, 3, 0, 0],
             stock: false,
+            trophies: 0,
         };
+        // Third on the fourth circuit, then first; second after that is no better.
+        let mut racer = racer;
+        assert!(racer.award(3, 3) && racer.award(3, 1) && !racer.award(3, 2));
+        assert!(!racer.award(0, 4));
+        assert_eq!((racer.trophy(3), racer.trophy(0), racer.trophies), (1, 0, 1 << 6));
         assert_eq!(read(&write(std::slice::from_ref(&racer))), [racer]);
         assert!(read(b"not a save").is_empty());
     }

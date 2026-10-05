@@ -24,6 +24,15 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   to every game in the session whole (`net::protocol::Ride`), each making the car of
   it afresh. What to race as is chosen in a session's room, which has the garage
   off it ("build") and shows everyone's minifigure (`src/frontend/portraits.rs`).
+- **Keys and pads:** `src/input.rs` has what the keys and a gamepad's buttons are
+  bound to, which the race reads (`input::Actions`) instead of the keys themselves;
+  the menus read keys, and a pad's buttons are passed on to them as keys. The
+  bindings are changed on the options' controls page and kept with the settings.
+- **What has been won:** `src/progress.rs` keeps the circuits opened, the part sets
+  and minifigure parts won and the records beaten; a racer's trophies are in its own
+  record (`assets::lrs`). The build menu offers only what has been won. The films
+  the original shows for a circuit won are not ported: a page of the menu says what
+  was won instead (`frontend`'s `Page::Award`).
 - **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
   games drive their own car ahead of the host's word and are shown the rest. Online
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
@@ -77,14 +86,15 @@ menu instead. These combine with it:
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
 | `BRICK_EVENTS=18@3` | circuit events to set off, and when |
-| `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (`P` is photo mode; `R` at the finish is the replay; where bricks are placed the arrows move the brick, `R` turns it, `Enter` adds it, `Back` takes one off, `Tab` and `T` are the next brick and set, `Comma` and `Period` turn the car) |
+| `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (a demo's keys are bound as a new game's are: `W` or `Up` is the accelerator; `P` is photo mode; `R` at the finish is the replay; where bricks are placed the arrows move the brick, `R` turns it, `Enter` adds it, `Back` takes one off, `Tab` and `T` are the next brick and set, `Comma` and `Period` turn the car) |
 | `BRICK_SETTINGS=<file>` | where settings are kept (default `~/.brick_racers_settings`; demos neither read nor write it) |
 | `BRICK_START=1` | keep the drop-in and countdown (demos skip them) |
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |
 | `BRICK_TIME=1` | time race |
-| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks` | menu page to open on; the last five are of the build menu, with the racer `BRICK_RACER` names on the bench |
+| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|controls\|award\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks` | menu page to open on; the last five are of the build menu, with the racer `BRICK_RACER` names on the bench; `award` is the page for a circuit won, as it is the first time the first is |
 | `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brick_racers_garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
+| `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brick_racers_progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
 | `BRICK_RACER=4` | which of the garage's racers the player races as, counted from one |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |

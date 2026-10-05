@@ -391,7 +391,7 @@ pub fn draw(
     mut commands: Commands,
     time: Res<Time>,
     real: Res<Time<Real>>,
-    keys: Res<ButtonInput<KeyCode>>,
+    actions: Res<crate::input::Actions>,
     race: Res<Race>,
     settings: Res<Settings>,
     art: Res<Art>,
@@ -431,7 +431,7 @@ pub fn draw(
     let width = window.width() / fit;
     let dt = time.delta_secs();
     let state = &mut *state;
-    if keys.just_pressed(KeyCode::Tab) {
+    if actions.pressed(crate::input::Event::Display) {
         state.gadget = (state.gadget + 1) % 3;
     }
     let mut frame = Frame {

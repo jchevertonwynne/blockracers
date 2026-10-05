@@ -3,6 +3,7 @@
 
 use crate::assets::materials::Surface;
 use crate::audio::{Sfx, id};
+use crate::input::{Actions, Event};
 use crate::items::Power;
 use crate::menu::Settings;
 use crate::meshgen::*;
@@ -1096,7 +1097,7 @@ const BOOST_REST: f32 = 2.0;
 
 pub fn player_input(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    actions: Res<Actions>,
     race: Res<Race>,
     settings: Res<Settings>,
     pause: Res<crate::Pause>,
@@ -1116,21 +1117,21 @@ pub fn player_input(
         *c = Controls::default();
         return;
     }
-    let axis = |pos: [KeyCode; 2], neg: [KeyCode; 2]| {
-        keys.any_pressed(pos) as i32 as f32 - keys.any_pressed(neg) as i32 as f32
-    };
     // `PlayerControls::UpdateThrottle`: a slide is the slide key with the accelerator
     // down, and holds the accelerator full on; without it, accelerator and brake
     // together are half throttle.
     let (go, stop) = (
-        keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]),
-        keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]),
+        actions.held(Event::Accelerate),
+        actions.held(Event::Brake),
     );
-    c.steer = axis(
-        [KeyCode::KeyA, KeyCode::ArrowLeft],
-        [KeyCode::KeyD, KeyCode::ArrowRight],
-    );
-    c.drift = go && keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    // `PlayerControls::UpdateSteering`: a stick steers when neither key is down.
+    let (left, right) = (actions.held(Event::Left), actions.held(Event::Right));
+    c.steer = if left || right {
+        left as i32 as f32 - right as i32 as f32
+    } else {
+        actions.stick
+    };
+    c.drift = go && actions.held(Event::Slide);
     c.tight = stop;
     c.throttle = match (go, stop) {
         (true, _) if c.drift => 1.0,
@@ -1139,10 +1140,10 @@ pub fn player_input(
     };
     // The port's quick steering takes the keys as they are.
     c.direct = settings.quick_steering;
-    c.use_item = keys.just_pressed(KeyCode::Space);
+    c.use_item = actions.pressed(Event::Powerup);
 
     let dt = time.delta_secs();
-    let pressed = keys.any_just_pressed([KeyCode::KeyW, KeyCode::ArrowUp]);
+    let pressed = actions.pressed(Event::Accelerate);
     let racing = race.phase == Phase::Racing;
     let mut fire = false;
     start.window = (start.window - dt).max(0.0);

@@ -10,6 +10,7 @@ mod garage;
 mod gauntlet;
 mod hazards;
 mod hud;
+mod input;
 mod item_models;
 mod items;
 mod kart;
@@ -21,6 +22,7 @@ mod net;
 mod opponent;
 mod particles;
 mod physics;
+mod progress;
 mod racer_sounds;
 mod replay;
 mod roster;
@@ -315,7 +317,8 @@ fn main() {
     // `BRICK_TIME=1`: a demo's race is against the clock.
     settings.time_race = std::env::var("BRICK_TIME").is_ok();
     // `BRICK_SERIES=0`: a demo races this circuit's races rather than one on its own.
-    let mut championship = championship::Championship::load();
+    let progress = progress::Progress::open(demo.is_some(), world::jam().as_ref());
+    let mut championship = championship::Championship::load(progress.circuits);
     if let Some(series) = std::env::var("BRICK_SERIES")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -350,7 +353,12 @@ fn main() {
                 Update,
                 demo_shot.after(kart::ai_drive).before(items::use_items),
             );
-            app.add_systems(PreUpdate, demo_keys.after(bevy::input::InputSystems));
+            app.add_systems(
+                PreUpdate,
+                demo_keys
+                    .after(bevy::input::InputSystems)
+                    .before(input::read),
+            );
             // A demo online waits at the menu for its session's race to begin.
             app.insert_state(if on_menu || auto.is_some() {
                 Screen::Menu
@@ -385,11 +393,18 @@ fn main() {
         )
         .init_resource::<time_race::TimeRace>()
         .insert_resource(championship)
+        .insert_resource(progress)
         .add_systems(
             OnEnter(Screen::Loading),
             |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race),
         )
-        .add_plugins((menu::plugin, frontend::plugin, audio::plugin, net::plugin))
+        .add_plugins((
+            menu::plugin,
+            frontend::plugin,
+            audio::plugin,
+            net::plugin,
+            input::plugin,
+        ))
         .add_systems(
             Update,
             leave_online
@@ -781,7 +796,12 @@ fn race_flow(
     mut championship: ResMut<championship::Championship>,
     circuits: Res<Circuits>,
     mut settings: ResMut<Settings>,
-    (mut replay, photo): (ResMut<replay::Replay>, Res<replay::Photo>),
+    (mut replay, photo, mut progress, mut garage): (
+        ResMut<replay::Replay>,
+        Res<replay::Photo>,
+        ResMut<progress::Progress>,
+        ResMut<garage::Garage>,
+    ),
 ) {
     // In photo mode the keys are the camera's.
     if photo.0.is_some() {
@@ -881,8 +901,9 @@ fn race_flow(
         settle(&mut karts, race.time, &mut championship);
         let player = karts.iter().find(|k| k.1).map_or(0, |k| k.0.slot);
         sfx.play(audio::id::MENU_CONFIRM);
-        match championship.advance(player) {
-            Some(folder) => {
+        let step = championship.advance(player);
+        match &step {
+            championship::Step::Race(folder) => {
                 settings.circuit = circuits
                     .0
                     .iter()
@@ -890,9 +911,25 @@ fn race_flow(
                     .unwrap_or(settings.circuit);
                 next.set(Screen::Loading);
             }
-            None => {
+            _ => {
                 settings.championship = None;
                 next.set(Screen::Menu);
+            }
+        }
+        // `AwardCinematicScreen::GrantAwards`: the circuit raced to the end has a
+        // trophy for the racer who came in the first three, and more for the winner.
+        if let championship::Step::Finished {
+            series,
+            place,
+            opened,
+        } = step
+        {
+            progress.finish(place, opened, championship.series[series].parts);
+            let racer = settings.racer.checked_sub(1);
+            if let Some(racer) = racer.and_then(|racer| garage.racers.get_mut(racer))
+                && racer.award(series, place)
+            {
+                garage.keep();
             }
         }
         return;
@@ -1012,6 +1049,7 @@ fn chase_camera(
     time: Res<Time>,
     race: Res<Race>,
     keys: Res<ButtonInput<KeyCode>>,
+    actions: Res<input::Actions>,
     demo: Option<Res<DemoShot>>,
     karts: Query<(&Kart, Has<Player>)>,
     camera: Single<(&mut Transform, &mut Projection), With<Camera3d>>,
@@ -1072,11 +1110,12 @@ fn chase_camera(
         t.look_at(player.pos + Vec3::Y * 0.5, Vec3::Y);
         return;
     }
-    // C goes round the views; V looks behind for as long as it is held.
-    if keys.just_pressed(KeyCode::KeyC) {
+    // One of the player's keys goes round the views; another looks behind for as
+    // long as it is held.
+    if actions.pressed(input::Event::Camera) {
         rig.view = (rig.view + 1) % 4;
     }
-    rig.look_back = keys.pressed(KeyCode::KeyV);
+    rig.look_back = actions.held(input::Event::LookBack);
     // Its race run, the player's car is watched from in front.
     rig.finished(
         player.finished.is_some()

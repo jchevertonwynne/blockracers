@@ -34,6 +34,7 @@ use crate::build::{Car, Catalogue, Cursor, Palette, Refusal};
 use crate::garage::{self, Garage};
 use crate::menu::Settings;
 use crate::physics::UNIT;
+use crate::progress::Progress;
 use bevy::prelude::*;
 
 // Strings of `MENUTEXT.SRF`.
@@ -65,7 +66,7 @@ mod text {
 /// The pictures of the part sets, in the sets' order. The four the game begins
 /// with are matched to theirs by what is in them; nothing in the data says which
 /// is which.
-const SET_PICTURES: [&str; 12] = [
+pub const SET_PICTURES: [&str; 12] = [
     "bricks", "castle", "race", "space", "pirate", "islander", "magical", "adventur", "jungle",
     "alien", "rr", "vv",
 ];
@@ -247,12 +248,70 @@ fn button(art: &Art, screen: &str, name: &str, label: usize, act: Act) -> Item {
 }
 
 /// The widgets of one of the garage's pages.
+/// The trophy the racer on the bench has for a circuit: one for first place to
+/// three for third, and nought for none.
+pub fn trophy(bench: &Bench, circuit: usize) -> usize {
+    bench.racer.trophy(circuit) as usize
+}
+
+/// The part sets there are to build with, by their places among the sets: those
+/// every game begins with, those won, and any the car has a piece of already
+/// (`CarModelScreenBase::PopulateCategoryCarousel`).
+fn open_sets(bench: &Bench, progress: &Progress) -> Vec<usize> {
+    let Some(kit) = &bench.kit else {
+        return Vec::new();
+    };
+    let used = |kind: u16| {
+        let mut pieces = bench.car.pieces.iter();
+        pieces.any(|piece| piece.set == kind || piece.kind == kind)
+    };
+    (0..kit.sets.len())
+        .filter(|&set| progress.set_open(set) || used(kit.sets[set].kind))
+        .collect()
+}
+
+/// The choices there are of a part of the minifigure: those nothing has to be won
+/// for, those won, and the one the racer wore when it was last kept
+/// (`MenuRacerCarousel::CollectHats` and the rest).
+fn open_parts(bench: &Bench, garage: &Garage, progress: &Progress, part: usize) -> Vec<u8> {
+    let Some(kit) = &bench.kit else {
+        return Vec::new();
+    };
+    let kept = bench
+        .slot
+        .and_then(|slot| garage.racers.get(slot))
+        .map(|racer| worn(racer.cosmetics)[part]);
+    (0..kit.catalogue.count(part) as u8)
+        .filter(|&at| {
+            kept == Some(at) || progress.part_open(kit.catalogue.mark(part, at as usize))
+        })
+        .collect()
+}
+
+/// A minifigure's parts in the order the builder has them.
+fn worn(cosmetics: Cosmetics) -> [u8; 4] {
+    [
+        cosmetics.hat,
+        cosmetics.face,
+        cosmetics.torso,
+        cosmetics.legs,
+    ]
+}
+
+/// The choice `change` on from this one, round those there are.
+fn turned<T: Copy + PartialEq>(open: &[T], now: T, change: i32) -> Option<T> {
+    let at = open.iter().position(|choice| *choice == now).unwrap_or(0) as i32;
+    open.get((at + change).rem_euclid(open.len().max(1) as i32) as usize)
+        .copied()
+}
+
 pub fn items(
     page: Page,
     art: &Art,
     bench: &Bench,
     garage: &Garage,
     settings: &Settings,
+    progress: &Progress,
     online: bool,
 ) -> Vec<Item> {
     let selector = |area: Rect, picture: Option<String>, words: String, act: Act| Item {
@@ -359,11 +418,9 @@ pub fn items(
             leave("garage", Page::Garage),
         ],
         Page::Driver => {
-            let counts = bench.kit.as_ref().map(|kit| &kit.catalogue);
-            let c = bench.racer.cosmetics;
             let mut items: Vec<Item> = ["hatsel", "facesel", "torsosel", "legsel"]
                 .iter()
-                .zip([c.hat, c.face, c.torso, c.legs])
+                .zip(worn(bench.racer.cosmetics))
                 .enumerate()
                 .map(|(part, (name, chosen))| {
                     let place = art.place("editdrvr", name);
@@ -374,11 +431,13 @@ pub fn items(
                         place.max.x,
                         middle + 16.0,
                     );
-                    let of = counts.map_or(0, |catalogue| catalogue.count(part));
+                    // Counted among those there are to choose from.
+                    let open = open_parts(bench, garage, progress, part);
+                    let at = open.iter().position(|at| *at == chosen).unwrap_or(0);
                     selector(
                         area,
                         None,
-                        format!("{} OF {of}", chosen + 1),
+                        format!("{} OF {}", at + 1, open.len()),
                         Act::Part(part),
                     )
                 })
@@ -662,6 +721,7 @@ pub fn act(
     bench: &mut Bench,
     garage: &mut Garage,
     settings: &mut Settings,
+    progress: &Progress,
     menu: &Menu,
     sfx: &mut Sfx,
 ) -> Option<Page> {
@@ -702,7 +762,7 @@ pub fn act(
             return Some(Page::Garage);
         }
         Act::Part(part) if !chosen => {
-            let count = bench.kit.as_ref()?.catalogue.count(part);
+            let open = open_parts(bench, garage, progress, part);
             let c = &mut bench.racer.cosmetics;
             let value = match part {
                 0 => &mut c.hat,
@@ -710,12 +770,18 @@ pub fn act(
                 2 => &mut c.torso,
                 _ => &mut c.legs,
             };
-            *value = turn(*value as usize, count) as u8;
+            *value = turned(&open, *value, change)?;
         }
         Act::Mix if chosen => {
-            // `EditDriverScreen`: a part of each kind, picked at random.
-            let catalogue = &bench.kit.as_ref()?.catalogue;
-            let mut pick = |part: usize| sfx.roll(catalogue.count(part) as u32) as u8;
+            // `EditDriverScreen`: a part of each kind, picked at random from those
+            // there are.
+            let open: [Vec<u8>; 4] =
+                std::array::from_fn(|part| open_parts(bench, garage, progress, part));
+            let mut pick = |part: usize| {
+                let choices = &open[part];
+                let at = sfx.roll(choices.len().max(1) as u32) as usize;
+                choices.get(at).copied().unwrap_or(0)
+            };
             bench.racer.cosmetics = Cosmetics {
                 hat: pick(0),
                 face: pick(1),
@@ -741,8 +807,8 @@ pub fn act(
         }
         Act::Chassis if !chosen => {
             // `EditCarScreen::OnWidgetValueChanged`: the chassis alone, as handed out.
+            bench.set = turned(&open_sets(bench, progress), bench.set, change)?;
             let kit = bench.kit.as_ref()?;
-            bench.set = turn(bench.set, kit.sets.len());
             bench.car = Car::new(&kit.library, &kit.sets.get(bench.set)?.chassis);
             (bench.racer.stock, bench.brick) = (true, 0);
         }
@@ -764,7 +830,7 @@ pub fn act(
             (bench.quick, bench.racer.stock) = (next, true);
         }
         Act::Set if !chosen => {
-            bench.set = turn(bench.set, bench.kit.as_ref()?.sets.len());
+            bench.set = turned(&open_sets(bench, progress), bench.set, change)?;
             bench.brick = 0;
             bench.hold();
         }
@@ -850,6 +916,7 @@ pub fn keys(
     bench: &mut Bench,
     garage: &mut Garage,
     settings: &mut Settings,
+    progress: &Progress,
     menu: &Menu,
     sfx: &mut Sfx,
 ) -> bool {
@@ -899,7 +966,7 @@ pub fn keys(
     ];
     for (key, what, change) in acts {
         if keys.just_pressed(key) {
-            act(what, change, art, bench, garage, settings, menu, sfx);
+            act(what, change, art, bench, garage, settings, progress, menu, sfx);
             done = true;
         }
     }

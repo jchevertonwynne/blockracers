@@ -22,6 +22,8 @@ use crate::assets::{
 use crate::audio::{Sfx, id};
 use crate::championship::Championship;
 use crate::garage::Garage;
+use crate::input::{Bindings, Bound, Devices, EVENTS, PAD};
+use crate::progress::Progress;
 use crate::menu::{
     Circuits, DIFFICULTIES, Extra, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, NAME_LENGTH, Screen,
     Settings,
@@ -70,6 +72,7 @@ mod text {
     pub const VIDEO_OPTIONS: usize = 18;
     pub const AUDIO_OPTIONS: usize = 19;
     pub const CONTROLS: [usize; 2] = [23, 24];
+    pub const FINISH: usize = 30;
     pub const CIRCUIT_RACE: usize = 33;
     pub const SINGLE_RACE: usize = 34;
     pub const TIME_RACE: usize = 36;
@@ -80,7 +83,11 @@ mod text {
     pub const OPPONENTS: usize = 89;
     pub const MUSIC_VOLUME: usize = 93;
     pub const SOUND_VOLUME: usize = 94;
+    /// The first of the nine things a player's keys do, in the order they are bound.
+    pub const EVENTS: usize = 105;
     pub const OK: usize = 114;
+    pub const TIME_TRIAL_WON: usize = 73;
+    pub const NEW_CIRCUIT: usize = 124;
     pub const LANGUAGE: usize = 156;
 }
 
@@ -104,6 +111,12 @@ enum Page {
     GameOptions,
     VideoOptions,
     AudioOptions,
+    /// The original's `ControlConfigScreen`: what the keys and a pad's buttons do.
+    Controls,
+    /// What a circuit raced to the end, or the last record beaten, has won. The
+    /// port's own: the original says it with a film (`AwardCinematicScreen`), which
+    /// the port has no player for.
+    Award,
     Extras,
     /// The port's own, for racing online: where to host or join from, what to host
     /// as, the sessions there are to join, the password one of them wants, the wait
@@ -200,6 +213,8 @@ struct Wired<'a> {
     room: &'a Room,
     lobby: &'a Lobby,
     online: &'a Online,
+    devices: &'a Devices,
+    progress: &'a Progress,
 }
 
 impl Wired<'_> {
@@ -235,6 +250,24 @@ impl Page {
         }
     }
 }
+
+/// Where a circuit was finished, as the award page says it, and the trophy for it.
+const PLACES: [&str; 6] = ["FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH"];
+const TROPHIES: [&str; 3] = ["gtrophy", "strophy", "btrophy"];
+
+/// The rows of the controls page as `CONTROL.MIB` names them: the button a binding
+/// is shown on, and the words beside it that say what it is for.
+const CONTROL_ROWS: [(&str, &str); EVENTS] = [
+    ("turnleft", "lefttext"),
+    ("turnrght", "rghttext"),
+    ("acceler", "acletext"),
+    ("brake", "brketext"),
+    ("fire", "firetext"),
+    ("camera", "camtext"),
+    ("map", "maptext"),
+    ("slide", "pwsltext"),
+    ("lookback", "lkbktext"),
+];
 
 /// Where the rows of a page of the port's settings go: the rectangles the original
 /// gives the two rows of its game options, carried on down the screen.
@@ -308,6 +341,12 @@ enum Action {
     Map(usize),
     /// Something of the garage's.
     Bench(workshop::Act),
+    /// On the controls page: which set of bindings is shown, and giving one of the
+    /// things bound another key or button.
+    Device,
+    Bind(usize),
+    /// Taking what has been won, and going on to the main menu.
+    Collect,
 }
 
 enum Widget {
@@ -425,6 +464,7 @@ fn load_art() -> Option<Art> {
         ("main", "MAINMENU"),
         ("race", "SINGRACE"),
         ("options", "OPTIONS"),
+        ("control", "CONTROL"),
         ("garage", "GARAGE"),
         ("editdrvr", "EDITDRVR"),
         ("drvrlice", "DRVRLICE"),
@@ -440,7 +480,7 @@ fn load_art() -> Option<Art> {
     }
     // `0x27 "name" { 0x29 [0x2b r g b] }`: a picture and the colour that is see-through.
     let mut keys = HashMap::new();
-    for list in ["GIMAGES", "SINGRACE", "OPTIONS", "BUILDER"] {
+    for list in ["GIMAGES", "SINGRACE", "OPTIONS", "CONTROL", "BUILDER", "DRVRLICE"] {
         let tokens = tokenize(jam.get(&format!("{DIR}/{list}.IDB")).unwrap_or_default());
         for (i, token) in tokens.iter().enumerate() {
             let (Token::Key(0x27), Some(Token::Str(name)), Some(Token::LCurly)) =
@@ -553,7 +593,7 @@ fn items(
 ) -> Vec<Item> {
     if workshop::mine(page) {
         let online = wired.role != Role::Offline;
-        return workshop::items(page, art, bench, garage, settings, online);
+        return workshop::items(page, art, bench, garage, settings, wired.progress, online);
     }
     let button =
         |screen: &str, name: &str, label: usize, action: Action, icon: Option<&'static str>| Item {
@@ -721,7 +761,7 @@ fn items(
                 "options",
                 "player1",
                 text::CONTROLS[0],
-                Action::Nothing,
+                Action::Go(Page::Controls),
                 None,
             ),
             button(
@@ -777,6 +817,59 @@ fn items(
             items.push(back("options", Page::Options));
             items
         }
+        Page::Controls => {
+            // `ControlConfigScreen::CreateWidgets`: the device, the nine things bound
+            // and the way out. A pad is steered with its stick, and has no button to
+            // give turning (`ControlConfigScreen::Update`).
+            let entry = wired.devices.entry();
+            let device = selector(
+                art.place("control", "contcon"),
+                Some(if entry == PAD { "gamepad" } else { "keyboard" }.into()),
+                String::new(),
+                Action::Device,
+            );
+            let binds = CONTROL_ROWS.iter().enumerate().map(|(event, (name, _))| {
+                let stick = entry == PAD && event < 2;
+                let label = if wired.devices.awaiting == Some(event) {
+                    ".......".into()
+                } else if stick {
+                    "STICK".into()
+                } else {
+                    crate::input::name(settings.controls.0[entry][event])
+                };
+                Item {
+                    widget: Widget::Button {
+                        at: art.place("control", name).min,
+                        label,
+                        icon: None,
+                    },
+                    action: Action::Bind(event),
+                    enabled: !stick,
+                }
+            });
+            let out = Item {
+                widget: Widget::Button {
+                    at: art.place("control", "goback").min,
+                    label: art.string(text::FINISH),
+                    icon: Some("txtarol"),
+                },
+                action: Action::Go(Page::Options),
+                enabled: true,
+            };
+            std::iter::once(device)
+                .chain(binds)
+                .chain(std::iter::once(out))
+                .collect()
+        }
+        Page::Award => vec![Item {
+            widget: Widget::Button {
+                at: art.place("options", "goback").min,
+                label: art.string(text::OK),
+                icon: None,
+            },
+            action: Action::Collect,
+            enabled: true,
+        }],
         Page::AudioOptions => vec![
             Item {
                 widget: Widget::Slider {
@@ -1228,6 +1321,7 @@ fn plain(at: Vec2, label: &str, action: Action) -> Item {
 /// font and colour, and whether centred there.
 fn notes(
     page: Page,
+    art: &Art,
     wired: &Wired,
     settings: &Settings,
     circuits: &Circuits,
@@ -1260,6 +1354,45 @@ fn notes(
         )
     };
     match page {
+        Page::Award => {
+            let Some(award) = wired.progress.award else {
+                return Vec::new();
+            };
+            let line = |row: f32, words: String| {
+                let at = Rect::new(320.0, 250.0 + row * 34.0, 320.0, 282.0 + row * 34.0);
+                (at, words, "font_ths", LABEL, true)
+            };
+            let title = match award.place {
+                Some(place) => format!("{} PLACE", PLACES[(place - 1).min(PLACES.len() - 1)]),
+                None => art.string(text::TIME_TRIAL_WON),
+            };
+            let mut notes = vec![banner(&title)];
+            let mut row = 0.0;
+            if award.circuit {
+                // The game's own words for it are one line too long for the screen.
+                let words = art.string(text::NEW_CIRCUIT).replacen("! ", "!\n", 1);
+                notes.push(line(row, words));
+                row += 2.0;
+            }
+            if award.parts.is_some() {
+                notes.push(line(row, "NEW BRICKS TO BUILD WITH".into()));
+            }
+            notes
+        }
+        Page::Controls => CONTROL_ROWS
+            .iter()
+            .enumerate()
+            .map(|(event, (_, name))| {
+                let at = art.place("control", name).min;
+                (
+                    Rect::from_corners(at, at + Vec2::new(0.0, ICON)),
+                    art.string(text::EVENTS + event),
+                    "font_ths",
+                    LABEL,
+                    false,
+                )
+            })
+            .collect(),
         Page::Online => {
             let mut notes = vec![
                 banner("ONLINE RACE"),
@@ -1619,6 +1752,8 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
             );
             labels
         }
+        // What each binding is for is in `notes`, which can write from the left.
+        Page::Controls => vec![banner(text::CONTROLS[0])],
         Page::AudioOptions => vec![
             banner(text::AUDIO_OPTIONS),
             beside("mvoltext", art.string(text::MUSIC_VOLUME)),
@@ -1641,9 +1776,27 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
     }
 }
 
-fn enter(mut menu: ResMut<Menu>, mut session: ResMut<Session>) {
+fn enter(
+    mut menu: ResMut<Menu>,
+    mut session: ResMut<Session>,
+    mut progress: ResMut<Progress>,
+) {
     *menu = Menu::default();
     menu.focus = 2;
+    // `BRICK_MENU=award` shows what winning the first circuit for the first time
+    // looks like, for screenshots.
+    if std::env::var("BRICK_MENU").as_deref() == Ok("award") {
+        progress.award = Some(crate::progress::Award {
+            place: Some(1),
+            circuit: true,
+            parts: Some(0),
+        });
+    }
+    // Something has just been won, and is said before anything else.
+    if progress.award.is_some() {
+        (menu.page, menu.focus) = (Page::Award, 0);
+        return;
+    }
     // Out of a session, the way back in is where the menu opens.
     if std::mem::take(&mut session.left) || session.notice.is_some() {
         (menu.page, menu.focus) = (Page::Online, 2);
@@ -1659,6 +1812,7 @@ fn enter(mut menu: ResMut<Menu>, mut session: ResMut<Session>) {
         Ok("audio") => Page::AudioOptions,
         Ok("video") => Page::VideoOptions,
         Ok("extras") => Page::Extras,
+        Ok("controls") => Page::Controls,
         Ok("online") => Page::Online,
         Ok("host") => Page::Host,
         Ok("join") => Page::Join,
@@ -1776,7 +1930,18 @@ fn input(
     mut commands: Commands,
     mut typed: MessageReader<KeyboardInput>,
     time: Res<Time<Real>>,
-    (role, mut session, mut room, mut lobby, mut online, mut wire, mut garage, mut bench): (
+    (
+        role,
+        mut session,
+        mut room,
+        mut lobby,
+        mut online,
+        mut wire,
+        mut garage,
+        mut bench,
+        mut devices,
+        mut progress,
+    ): (
         Res<Role>,
         ResMut<Session>,
         ResMut<Room>,
@@ -1785,8 +1950,30 @@ fn input(
         Option<ResMut<net::Wire>>,
         ResMut<Garage>,
         ResMut<Bench>,
+        ResMut<Devices>,
+        ResMut<Progress>,
     ),
 ) {
+    // `ControlConfigScreen::HandleKeyDown`: the page is waiting to be told what to
+    // bind something to, and the next key or button is it, or is refused.
+    if let (Page::Controls, Some(event)) = (menu.page, devices.awaiting) {
+        typed.clear();
+        let entry = devices.entry();
+        let key = keys.get_just_pressed().next().map(|key| Bound::Key(*key));
+        let button = devices.pressed.first().map(|button| Bound::Button(*button));
+        match key.or(button) {
+            Some(to) if Bindings::allowed(entry, to) => {
+                settings.controls.set(entry, event, to);
+                devices.awaiting = None;
+                sfx.play(id::MENU_CONFIRM);
+            }
+            Some(_) => sfx.play(id::MENU_REFUSE),
+            None => return,
+        }
+        menu.drawn = false;
+        return;
+    }
+    devices.awaiting = None;
     // The lobby has said what a code is for: its session is joined, by way of its
     // password if it has one, or there is none.
     if let (Page::Code, Some(true), Some(found)) = (menu.page, online.seeking, lobby.found.take()) {
@@ -1867,6 +2054,8 @@ fn input(
             room: &room,
             lobby: &lobby,
             online: &online,
+            devices: &devices,
+            progress: &progress,
         },
         &garage,
         &bench,
@@ -1886,6 +2075,7 @@ fn input(
             &mut bench,
             &mut garage,
             &mut settings,
+            &progress,
             &menu,
             &mut sfx,
         )
@@ -2007,8 +2197,14 @@ fn input(
             | Page::TimeRace
             | Page::Options
             | Page::Online => Some(Page::Main),
-            Page::GameOptions | Page::VideoOptions | Page::AudioOptions | Page::Extras => {
-                Some(Page::Options)
+            Page::GameOptions
+            | Page::VideoOptions
+            | Page::AudioOptions
+            | Page::Extras
+            | Page::Controls => Some(Page::Options),
+            Page::Award => {
+                progress.award = None;
+                Some(Page::Main)
             }
             Page::Host | Page::Join => Some(Page::Online),
             Page::Password | Page::Code => Some(Page::Join),
@@ -2065,6 +2261,8 @@ fn input(
                 room: &room,
                 lobby: &lobby,
                 online: &online,
+                devices: &devices,
+                progress: &progress,
             }
             .wish(&settings, &circuits)
         });
@@ -2120,6 +2318,7 @@ fn input(
                     (settings.sound as i32 + change).clamp(0, MAX_VOLUME as i32) as usize
             }
             Action::Extra(extra) => settings.turn(extra, change),
+            Action::Device => devices.turn(change),
             // Fewer than are here already puts nobody out, and lets nobody else in.
             Action::Limit => {
                 session.limit = Some(
@@ -2160,6 +2359,7 @@ fn input(
             &mut bench,
             &mut garage,
             &mut settings,
+            &progress,
             &menu,
             &mut sfx,
         );
@@ -2171,6 +2371,20 @@ fn input(
     }
     if chosen {
         match action {
+            // `ControlConfigScreen::OnIconFocused`: what it was bound to is gone,
+            // and the page waits for what it is to be bound to instead.
+            Action::Collect => {
+                progress.award = None;
+                sfx.play(id::MENU_CONFIRM);
+                go(&mut menu, Page::Main, Page::Main.first());
+            }
+            Action::Bind(event) => {
+                let entry = devices.entry();
+                settings.controls.0[entry][event] = Bound::None;
+                devices.awaiting = Some(event);
+                sfx.play(id::MENU_CONFIRM);
+                menu.drawn = false;
+            }
             Action::Go(page) => {
                 let forward = !matches!(page, Page::Main | Page::Room)
                     && !(page == Page::Options && menu.page != Page::Main)
@@ -2298,6 +2512,8 @@ fn input(
                     room: &room,
                     lobby: &lobby,
                     online: &online,
+                    devices: &devices,
+                    progress: &progress,
                 }
                 .wish(&settings, &circuits);
                 wish.circuit = circuit;
@@ -2357,7 +2573,7 @@ fn draw(
     championship: Res<Championship>,
     window: Single<&Window, With<PrimaryWindow>>,
     roots: Query<Entity, With<Root>>,
-    (role, session, room, lobby, online, garage, bench, portraits): (
+    (role, session, room, lobby, online, garage, bench, portraits, devices, progress): (
         Res<Role>,
         Res<Session>,
         Res<Room>,
@@ -2366,6 +2582,8 @@ fn draw(
         Res<Garage>,
         Res<Bench>,
         Res<Portraits>,
+        Res<Devices>,
+        Res<Progress>,
     ),
 ) {
     // The whole screen is scaled to fit the window.
@@ -2387,6 +2605,8 @@ fn draw(
         room: &room,
         lobby: &lobby,
         online: &online,
+        devices: &devices,
+        progress: &progress,
     };
     let items = items(
         menu.page,
@@ -2399,7 +2619,7 @@ fn draw(
         &bench,
     );
     let labels = labels(menu.page, art);
-    let mut notes = notes(menu.page, &wired, &settings, &circuits);
+    let mut notes = notes(menu.page, art, &wired, &settings, &circuits);
     notes.extend(workshop::notes(menu.page, art, &bench, &garage));
     let focus = menu.focus.min(items.len() - 1);
 
@@ -2440,6 +2660,42 @@ fn draw(
     }
     if menu.page == Page::Main {
         picture!("racers", art.place("main", "racers").min, Color::WHITE);
+    }
+    if menu.page == Page::Licence {
+        // `DriverLicenseScreen::CreateWidgets`: the trophy the racer has for each
+        // circuit, where the licence has a place for it.
+        let card = art.place("drvrlice", "license").min;
+        for circuit in 0..8 {
+            let trophy = workshop::trophy(&bench, circuit);
+            if let Some(name) = trophy.checked_sub(1).and_then(|at| TROPHIES.get(at)) {
+                let at = art.place("drvrlice", &format!("trophy{}", circuit + 1)).min;
+                picture!(name, card + at, Color::WHITE);
+            }
+        }
+    }
+    if let (Page::Award, Some(award)) = (menu.page, progress.award) {
+        // The trophy for the place, and beside it the part set won.
+        let trophy = award
+            .place
+            .and_then(|place| TROPHIES.get(place - 1).copied());
+        let set = award
+            .parts
+            .and_then(|set| workshop::SET_PICTURES.get(crate::progress::FREE_SETS + set));
+        let shown: Vec<&str> = trophy.into_iter().chain(set.copied()).collect();
+        let sizes: Vec<Vec2> = shown
+            .iter()
+            .map(|name| art.picture(name, &mut images).map_or(Vec2::ZERO, |p| p.1))
+            .collect();
+        let width: f32 = sizes.iter().map(|size| size.x + 24.0).sum::<f32>() - 24.0;
+        let mut left = 320.0 - width / 2.0;
+        for (name, size) in shown.iter().zip(&sizes) {
+            picture!(
+                name,
+                Vec2::new(left, 160.0 - size.y / 2.0).round(),
+                Color::WHITE
+            );
+            left += size.x + 24.0;
+        }
     }
     if matches!(
         menu.page,
