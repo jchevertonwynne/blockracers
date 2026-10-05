@@ -105,6 +105,16 @@ const DRIVERS: &[Driver] = &[
     },
 ];
 
+/// How a car's laps have gone: the lap it is on and when it began it, on the race's
+/// clock, and how long its last and its quickest took.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+pub struct LapTimes {
+    pub lap: i32,
+    pub began: f32,
+    pub last: Option<f32>,
+    pub best: Option<f32>,
+}
+
 #[derive(Component)]
 pub struct Kart {
     pub name: std::borrow::Cow<'static, str>,
@@ -162,6 +172,9 @@ pub struct Kart {
     pub finished: Option<f32>,
     /// When the car was put out of an elimination race.
     pub out: Option<f32>,
+    /// Its laps as the host of a race online has timed them (the port's own; a
+    /// game alone times only the player's, in the display).
+    pub laps: LapTimes,
 
     // Power-ups and their effects (timers in seconds).
     pub held: Option<Power>,
@@ -324,6 +337,7 @@ impl Kart {
             place: slot + 1,
             finished: None,
             out: None,
+            laps: LapTimes::default(),
             held: None,
             whites: 0,
             white_drops: 0,

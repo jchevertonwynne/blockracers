@@ -1122,6 +1122,20 @@ fn someone_with_no_car_in_the_race_watches_it() {
         steps.push(now.distance(was));
         was = now;
     }
+    // The car's laps are as the host has timed them, whenever the watching began.
+    car_mut(&mut pair.host, HOSTS).lap = 1;
+    for _ in 0..30 {
+        pair.step();
+    }
+    let (timed, told) = (
+        car(&mut pair.host, HOSTS).laps,
+        car(&mut pair.guest, HOSTS).laps,
+    );
+    assert!(
+        timed.lap == 1 && timed.began > 0.0,
+        "the host should have timed the lap: {timed:?}"
+    );
+    assert_eq!(told, timed);
     let uneven = steps
         .windows(2)
         .map(|pair| (pair[1] - pair[0]).abs())

@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::items::Power;
-use crate::kart::Kart;
+use crate::kart::{Kart, LapTimes};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Standing {
@@ -17,6 +17,7 @@ pub struct Standing {
     pub place: u8,
     pub progress: f32,
     pub finished: Option<f32>,
+    pub laps: LapTimes,
 }
 
 impl Standing {
@@ -26,12 +27,14 @@ impl Standing {
             place: k.place as u8,
             progress: k.progress,
             finished: k.finished,
+            laps: k.laps,
         }
     }
 
     pub fn put(self, k: &mut Kart) {
         (k.lap, k.place, k.progress, k.finished) =
             (self.lap, self.place as usize, self.progress, self.finished);
+        k.laps = self.laps;
     }
 }
 

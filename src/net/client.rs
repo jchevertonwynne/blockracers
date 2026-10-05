@@ -148,6 +148,8 @@ pub fn receive(
             }
         } else if let Some(state) = &snapshot.own {
             kart.place = standing.map_or(kart.place, |standing| standing.place as usize);
+            // Its laps are timed by the host, whose clock the race is run on.
+            kart.laps = standing.map_or(kart.laps, |standing| standing.laps);
             // A white brick taken sounds as it does where the race is run, a note
             // higher for each one carried.
             if state.whites() > kart.whites {

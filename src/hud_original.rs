@@ -518,11 +518,16 @@ pub fn draw(
         }
         (state.lap, state.lap_started) = (player.lap, racing_time);
     }
-    let on_lap = racing_time - state.lap_started;
+    // Online the host times every car's laps, so that a car followed from part of
+    // the way through a lap is shown that lap's time and not the time followed.
+    let (began, last_lap, best_lap) = if *role != crate::net::Role::Offline {
+        (player.laps.began, player.laps.last, player.laps.best)
+    } else {
+        (state.lap_started, state.last_lap, state.best_lap)
+    };
+    let on_lap = racing_time - began;
     // A finished lap's time is held up for a moment, blinking.
-    let held = state
-        .last_lap
-        .filter(|_| on_lap < LAP_HOLD || player.finished.is_some());
+    let held = last_lap.filter(|_| on_lap < LAP_HOLD || player.finished.is_some());
     let shown = held.unwrap_or(on_lap);
     let blink = held.is_some() && (on_lap / BLINK) as u32 % 2 == 1 && player.finished.is_none();
     let time_width = frame.width("font_ths", "0:00:00", 1.0);
@@ -549,7 +554,7 @@ pub fn draw(
             1.0,
             white,
         );
-        if let Some(best) = state.best_lap {
+        if let Some(best) = best_lap {
             let y = TOP + line * 7.0 / 8.0;
             let label = string(text::BEST);
             frame.write("font_ths", &clock(best), Vec2::new(time_x, y), 1.0, white);

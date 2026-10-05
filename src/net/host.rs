@@ -5,7 +5,7 @@
 //! players' cars are driven by what their games say they are pressing, a step at a
 //! time, and thirty times a second each player is told how everything stands.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
@@ -81,9 +81,6 @@ pub struct Flow {
     waited: f32,
     /// How long the result has been looked at.
     shown: f32,
-    /// Each car's laps, by grid slot: the lap it is on, when it began it, and the
-    /// quickest it has finished.
-    laps: HashMap<usize, (i32, f32, Option<f32>)>,
     /// The cars that were still out when the race was ended for them.
     unfinished: Vec<usize>,
 }
@@ -168,15 +165,17 @@ pub fn flow(
     if !matches!(race.phase, Phase::Racing | Phase::Finished) {
         return;
     }
-    // Each car's laps are timed as the display times the player's.
-    for (k, ..) in &karts {
+    // Every car's laps are timed, as the display times the player's for a game
+    // alone: whoever follows a car is shown its times, and the results have its best.
+    for (mut k, ..) in &mut karts {
         let now = k.finished.unwrap_or(race.time);
-        let (lap, began, best) = flow.laps.entry(k.slot).or_insert((k.lap, now, None));
-        if k.lap > *lap {
-            if *lap >= 1 {
-                *best = Some(best.map_or(now - *began, |best| best.min(now - *began)));
+        if k.lap > k.laps.lap {
+            if k.laps.lap >= 1 {
+                let taken = now - k.laps.began;
+                k.laps.last = Some(taken);
+                k.laps.best = Some(k.laps.best.map_or(taken, |best| best.min(taken)));
             }
-            (*lap, *began) = (k.lap, now);
+            (k.laps.lap, k.laps.began) = (k.lap, now);
         }
     }
     // The players still out are given a while after the first of them is home; the
@@ -219,7 +218,7 @@ pub fn flow(
                 let time = k
                     .finished
                     .filter(|_| k.out.is_none() && !flow.unfinished.contains(&k.slot));
-                let best = flow.laps.get(&k.slot).and_then(|laps| laps.2);
+                let best = k.laps.best;
                 (
                     k.place,
                     Finish {
