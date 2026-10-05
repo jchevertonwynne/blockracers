@@ -458,13 +458,13 @@ fn load_circuit_bank(
 }
 
 /// What a film asks of the sound: its own sounds in the circuit's place
-/// (`id::AMBIENT`) from its folder, and one of the menus' tunes played once
-/// (`MenuGameScreen::StartMenuMusic`); and, when it is over, the menus' theme back.
+/// (`id::AMBIENT`) from its folder, and one of the menus' tunes, played once or
+/// round and round (`MenuGameScreen::StartMenuMusic`); and, when it is over, the menus' theme back.
 #[derive(Resource, Default)]
 pub enum Cue {
     #[default]
     Nothing,
-    Film(String, Option<usize>),
+    Film(String, Option<(usize, bool)>),
     Theme,
 }
 
@@ -489,7 +489,7 @@ fn film_sound(
             let list = String::from_utf8_lossy(jam.get("/MENUDATA/LEGOMSC").unwrap_or_default())
                 .into_owned();
             let mut tunes = list.lines().map(str::trim).filter(|l| l.ends_with(".tun"));
-            tune.and_then(|tune| Some((tunes.nth(tune)?.to_string(), false)))
+            tune.and_then(|(tune, looped)| Some((tunes.nth(tune)?.to_string(), looped)))
         }
     };
     if let Some((tune, looped)) = tune {

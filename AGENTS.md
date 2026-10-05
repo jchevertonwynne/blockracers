@@ -37,9 +37,13 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   and ends when, a `.CEB` of what that sets off, and world files of models) with
   the scenery's models and animations. The four for the places of a circuit are
   shown, and after a circuit won for the first time the film for its part set: the
-  champion beside their car, or Rocket Racer's. The film for Veronica Voltage's
-  set, the one before Rocket Racer's circuit, the credits and the game's opening
-  ones are not shown yet. While a film plays the
+  champion beside their car, or Rocket Racer's and then the credits, which the
+  options have too. Every record beaten has Veronica Voltage's film, every
+  circuit race begins with its circuit's, and the game opens on its notice (not
+  in a demo). The two videos the original opens with (`HVSCmp.avi`,
+  `introcmp.avi`, Indeo 5) are not films of this kind and are not shown; nor is
+  the turning view of a circuit on the single race page (`SINGRACE/PST.CDB`),
+  which is one of these with a frame to each circuit. While a film plays the
   menus neither draw nor take keys (`film::Showing`). Online, the film for first
   place is shown about whoever won a race, before the room shows its results.
 - **Minifigures standing:** `build::figure` makes one sitting, for a car, or
@@ -107,7 +111,7 @@ menu instead. These combine with it:
 | `BRICK_TIME=1` | time race |
 | `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|controls\|award\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks` | menu page to open on; the last five are of the build menu, with the racer `BRICK_RACER` names on the bench; `award` is a circuit won, as it is the first time the first is: its film (eleven and a half seconds), then the page that says what was won |
 | `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brick_racers_garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
-| `BRICK_FILM=C_AWARD1` | a film to show as the menu opens, by its folder in `/MENUDATA` (`C_AWARD1` to `C_AWARD4` are the circuit's places, `WINCAR` a champion's car set won, `WINCAR:c3` being the fourth circuit's, and `WINRRCAR` Rocket Racer's, which is thirty-seven seconds; a key ends it after a second) |
+| `BRICK_FILM=C_AWARD1` | a film to show as the menu opens, by its folder in `/MENUDATA` (`C_AWARD1` to `C_AWARD4` are the circuit's places, `WINCAR` a champion's car set won, `WINCAR:c3` being the fourth circuit's, `WINRRCAR` Rocket Racer's, which is thirty-seven seconds, `WINVVCAR` Veronica Voltage's, `CIRCUIT1` to `CIRCUIT7` those before each circuit, `LEGAL` the opening notice and `CREDITS` the credits, which are two minutes; a key ends it after a second) |
 | `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brick_racers_progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
 | `BRICK_RACER=4` | which of the garage's racers the player races as, counted from one |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |

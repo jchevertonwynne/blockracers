@@ -107,6 +107,9 @@ pub struct Library<'a> {
     dirs: Vec<String>,
     materials: HashMap<String, materials::Material>,
     textures: HashMap<String, materials::Texture>,
+    /// A material with no picture is drawn in its own colour, and not left white
+    /// for its model's own colours to show.
+    plain: bool,
 }
 
 impl<'a> Library<'a> {
@@ -116,6 +119,7 @@ impl<'a> Library<'a> {
             dirs: dirs.iter().map(|d| d.to_string()).collect(),
             materials: HashMap::new(),
             textures: HashMap::new(),
+            plain: false,
         };
         for file in files {
             let Some(data) = jam.get(file) else { continue };
@@ -128,9 +132,32 @@ impl<'a> Library<'a> {
         library
     }
 
+    /// Has materials with no picture drawn in their own colours: for models that
+    /// are lit by the game as it draws them, and carry no colours of their own.
+    pub fn plain(&mut self) {
+        self.plain = true;
+    }
+
+    /// Has one material stand for another, where a model names a part for
+    /// someone else to fill in: a figure's "torso", say.
+    pub fn alias(&mut self, name: &str, of: &str) {
+        if let Some(material) = self.materials.get(of).cloned() {
+            self.materials.insert(name.to_string(), material);
+        }
+    }
+
     /// The picture a material is drawn with.
     pub fn texture(&self, material: &str) -> Option<image::Pixels> {
-        let name = self.materials.get(material)?.texture.clone()?;
+        let info = self.materials.get(material)?;
+        if let (None, true) = (&info.texture, self.plain) {
+            let [red, green, blue, _] = info.diffuse;
+            return Some(image::Pixels {
+                width: 1,
+                height: 1,
+                rgba: vec![red, green, blue, info.alpha.unwrap_or(255)],
+            });
+        }
+        let name = info.texture.clone()?;
         let definition = self.textures.get(&name).cloned().unwrap_or_default();
         let mut pixels = self.picture(&name, &definition)?;
         if definition.flip {

@@ -351,6 +351,8 @@ enum Action {
     Bind(usize),
     /// Taking what has been won, and going on to the main menu.
     Collect,
+    /// Seeing who made the game.
+    Credits,
 }
 
 enum Widget {
@@ -397,6 +399,8 @@ struct Menu {
     page: Page,
     focus: usize,
     drawn: bool,
+    /// A race is to begin as soon as the film before it is over.
+    starting: bool,
 }
 
 #[derive(Component)]
@@ -797,7 +801,7 @@ fn items(
                 None,
             ),
             button("options", "language", text::LANGUAGE, Action::Nothing, None),
-            button("options", "credits", text::CREDITS, Action::Nothing, None),
+            button("options", "credits", text::CREDITS, Action::Credits, None),
             back("options", Page::Main),
         ],
         Page::GameOptions => {
@@ -1810,9 +1814,14 @@ fn enter(
     settings: Res<Settings>,
     championship: Res<Championship>,
     art: Option<Res<Art>>,
+    mut opened: Local<bool>,
 ) {
     *menu = Menu::default();
     menu.focus = 2;
+    // `LegoRacers::Init`: the game opens on its notice. A demo has no time for it.
+    if !std::mem::replace(&mut *opened, true) && std::env::var("BRICK_DEMO").is_err() {
+        showing.request = Some(Request::legal());
+    }
     // `BRICK_MENU=award` shows what winning the first circuit for the first time
     // looks like, for screenshots.
     if std::env::var("BRICK_MENU").as_deref() == Ok("award") {
@@ -1833,8 +1842,16 @@ fn enter(
             // car, or for Rocket Racer's the racer who won it.
             let circuit = award.parts.and_then(|set| championship.series.get(set));
             if let (Some(circuit), Some(art)) = (circuit, &art) {
-                showing.next = Request::car_set(art.jam(), &circuit.code, racer);
+                showing.next = Vec::from_iter(Request::car_set(art.jam(), &circuit.code, racer));
+                // `AwardCinematicScreen::Navigate`: after Rocket Racer's, who made
+                // the game.
+                if showing.next.iter().any(|film| film.folder == "WINRRCAR") {
+                    showing.next.push(Request::credits());
+                }
             }
+        } else if award.parts == Some(crate::progress::RECORD_SET) {
+            // `MenuManager::ProcessRecordBeaten`: every record beaten has its film.
+            showing.request = Some(Request::records());
         }
         (menu.page, menu.focus) = (Page::Award, 0);
         return;
@@ -2022,6 +2039,10 @@ fn input(
     // While a film is shown the keys are its own.
     if showing.busy() {
         typed.clear();
+        return;
+    }
+    if std::mem::take(&mut menu.starting) {
+        next.set(Screen::Race);
         return;
     }
     // `ControlConfigScreen::HandleKeyDown`: the page is waiting to be told what to
@@ -2447,6 +2468,10 @@ fn input(
         match action {
             // `ControlConfigScreen::OnIconFocused`: what it was bound to is gone,
             // and the page waits for what it is to be bound to instead.
+            Action::Credits => {
+                sfx.play(id::MENU_CONFIRM);
+                showing.request = Some(Request::credits());
+            }
             Action::Collect => {
                 progress.award = None;
                 sfx.play(id::MENU_CONFIRM);
@@ -2624,7 +2649,16 @@ fn input(
                         .position(|c| c.race.as_deref() == Some(folder.as_str()))
                         .unwrap_or(0);
                     settings.time_race = false;
-                    next.set(Screen::Race);
+                    // `PickRacerScreen::Navigate`: the circuit's film comes first,
+                    // and the race when it is over.
+                    let racer = garage.racing(&settings);
+                    showing.request = Request::circuit(
+                        art.jam(),
+                        championship.chosen,
+                        racer.map_or(Cosmetics::default(), |racer| racer.cosmetics),
+                        racer.cloned(),
+                    );
+                    menu.starting = true;
                 }
                 None => sfx.play(id::MENU_REFUSE),
             },

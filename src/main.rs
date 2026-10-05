@@ -798,11 +798,12 @@ fn race_flow(
     mut championship: ResMut<championship::Championship>,
     circuits: Res<Circuits>,
     mut settings: ResMut<Settings>,
-    (mut replay, photo, mut progress, mut garage): (
+    (mut replay, photo, mut progress, mut garage, mut showing): (
         ResMut<replay::Replay>,
         Res<replay::Photo>,
         ResMut<progress::Progress>,
         ResMut<garage::Garage>,
+        ResMut<film::Showing>,
     ),
 ) {
     // In photo mode the keys are the camera's.
@@ -917,6 +918,14 @@ fn race_flow(
                 settings.championship = None;
                 next.set(Screen::Menu);
             }
+        }
+        // `CircuitRaceRunner::Run`: a player with too few points to go on is sent
+        // off with the film for those who came nowhere, and nothing else.
+        if step == championship::Step::Out {
+            let racer = settings.racer.checked_sub(1);
+            let racer = racer.and_then(|racer| garage.racers.get(racer));
+            let cosmetics = racer.map_or(default(), |racer| racer.cosmetics);
+            showing.request = Some(film::Request::award(4, cosmetics));
         }
         // `AwardCinematicScreen::GrantAwards`: the circuit raced to the end has a
         // trophy for the racer who came in the first three, and more for the winner.

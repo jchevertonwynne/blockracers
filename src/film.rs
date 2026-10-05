@@ -7,23 +7,31 @@
 //!
 //! The port draws its models unlit, so a film's lights are not cast: everything in
 //! it is made as bright as its lights come to. Of what a `.CEB` file can set off,
-//! the films the port shows use sounds, fades and words, and those are what is
-//! here; pictures, sprays of particles and streamed sound are not.
+//! the films the port shows use sounds, fades, words and pictures, and those are
+//! what is here; sprays of particles, things moved about and streamed sound are
+//! not. The game's two opening films are video files, and not films of this kind.
 //!
 //! `BRICK_FILM=<folder>` shows a film of `/MENUDATA` when the menu opens: `C_AWARD1`
 //! to `C_AWARD4` are those for the places of a circuit, `WINCAR` the one for a
-//! champion's car set won (`WINCAR:c2` for the third circuit's champion) and
-//! `WINRRCAR` the one for Rocket Racer's.
+//! champion's car set won (`WINCAR:c2` for the third circuit's champion),
+//! `WINRRCAR` and `WINVVCAR` those for Rocket Racer's and Veronica Voltage's,
+//! `CIRCUIT1` to `CIRCUIT7` those before each circuit, `CREDITS` and `LEGAL`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use bevy::{mesh::skinning::SkinnedMeshInverseBindposes, prelude::*};
+use bevy::{
+    asset::RenderAssetUsages,
+    mesh::skinning::SkinnedMeshInverseBindposes,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
 
 use crate::assets::{
     Jam,
     adb::Animation,
     font::load_strings,
+    image::decode_bmp,
     gdb::parse_skeleton,
     lrs::Cosmetics,
     tokens::{Token, tokenize},
@@ -63,6 +71,8 @@ const LOOKS: [(&str, &str); 6] = [
 const BEAM_SHARE: f32 = 0.5;
 /// The screen the films' words are placed on.
 const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
+/// Where nothing is.
+const NOWHERE: Vec3 = Vec3::new(0.0, -4000.0, 0.0);
 /// The longest step a film is run on by, as the animations are.
 const LONGEST_STEP: f32 = 0.05;
 
@@ -206,10 +216,13 @@ enum Mount {
 enum Effect {
     /// One of the film's own sounds.
     Sound(usize),
-    /// A colour coming over the screen in so many seconds.
-    Fade(f32, Color),
-    /// Words across the screen, this far down it.
-    Words(String, f32),
+    /// A colour over the screen for so many seconds: coming over it, or, if it
+    /// `falls`, going from it.
+    Fade { seconds: f32, colour: Color, falls: bool },
+    /// Words across the screen, this far down it, in a colour if they have one.
+    Words(String, f32, Option<Color>),
+    /// A picture in the middle of the screen, by its file.
+    Picture(String),
 }
 
 /// A film, read and ready to be put on.
@@ -236,11 +249,15 @@ pub struct Film {
     riders: Vec<(String, Rig, Vec3, Quat)>,
     /// The car the film is about, if it is about one.
     car: Option<Racer>,
+    /// The materials of the champion a film is the introduction of, for the parts
+    /// of a figure the film's models leave to be filled in.
+    champion: Option<Vec<(&'static str, String)>>,
 }
 
 const SOUND: u16 = 0x2f;
 const FADE: u16 = 0x60;
 const WORDS: u16 = 0x3f;
+const PICTURE: u16 = 0x4d;
 
 impl Film {
     /// The film in a folder of `/MENUDATA`, with the racer it is about made of
@@ -270,6 +287,15 @@ impl Film {
             props: Vec::new(),
             riders: Vec::new(),
             car: None,
+            champion: request.wearing.and_then(|worn| {
+                let catalogue = build::Catalogue::open(jam)?;
+                let part = |names: &[String], at: u8| names.get(at as usize).cloned();
+                Some(vec![
+                    ("face", format!("{}dflt", build::face(&catalogue, worn)?)),
+                    ("torso", part(&catalogue.torsos, worn.torso)?),
+                    ("legs", part(&catalogue.legs, worn.legs)?),
+                ])
+            }),
         };
         let part = |fields: &[Token]| {
             number(fields, 0x2d, 0)
@@ -317,7 +343,7 @@ impl Film {
         for (_, fields) in entries(frame, 0x3a) {
             film.beams.push((Span::of(fields), colour(fields)));
         }
-        film.worlds(jam, &dir, &worlds, cosmetics);
+        film.worlds(jam, &dir, &worlds, (!request.own).then_some(cosmetics));
         film.effects(jam, &dir);
         // `AwardCinematicScreen::CreateWidgets`: of the words that name a champion,
         // only the beaten one's are left.
@@ -326,15 +352,35 @@ impl Film {
             *kind != WORDS || !CHAMPIONS_WORDS.contains(&name.as_str()) || named.as_ref() == Some(name)
         });
         film.car = request.car.clone();
+        // A film about a racer's car has nothing to show for a racer without one.
+        if film.car.is_none() && !request.own {
+            film.cues.retain(|cue| cue.model != CAR);
+        }
         Some(film)
     }
 
     /// The models, the cameras and what they ride, from the film's world files.
-    fn worlds(&mut self, jam: &Jam, dir: &str, worlds: &[String], cosmetics: Cosmetics) {
-        let mut lists: Vec<&str> = jam.list(dir).collect();
-        lists.retain(|file| file.ends_with(".MDB") || file.ends_with(".TDB"));
-        lists.sort();
-        let library = Library::new(jam, lists.iter().copied(), &[dir]);
+    fn worlds(&mut self, jam: &Jam, dir: &str, worlds: &[String], cosmetics: Option<Cosmetics>) {
+        // A champion in a film of their own is made of the minifigures' parts, and
+        // their car's wheels are the bricks' own: the materials and pictures of
+        // those are with them and not with the film. What the film has of its own
+        // comes after, and is what a name of both means.
+        let (parts, folders) = build::Catalogue::files();
+        let bricks = build::Palette::files(true);
+        let mut own: Vec<&str> = jam.list(dir).collect();
+        own.retain(|file| file.ends_with(".MDB") || file.ends_with(".TDB"));
+        own.sort();
+        let shared = parts.iter().chain(&bricks).map(String::as_str);
+        let lists: Vec<&str> = shared.chain(own).collect();
+        let folders = [dir, folders[0], folders[1], crate::assets::leb::DIR];
+        let mut library = Library::new(jam, lists.iter().copied(), &folders);
+        library.plain();
+        // What the film leaves to be filled in is the champion's own.
+        if let Some(champion) = &self.champion {
+            for (part, material) in champion {
+                library.alias(part, material);
+            }
+        }
         let files: Vec<String> = worlds
             .iter()
             .map(|world| format!("{dir}/{}.WDB", world.to_uppercase()))
@@ -392,7 +438,7 @@ impl Film {
         }
         let files: Vec<&str> = files.iter().map(String::as_str).collect();
         self.props = scenery::load_files(jam, dir, &files, &library, |_, _| true);
-        let racer = self.racer(jam, dir, &animations, cosmetics);
+        let racer = cosmetics.is_some_and(|cosmetics| self.racer(jam, dir, &animations, cosmetics));
         // Each model has the tracks its cues will set going, and the pictures of
         // no others: a film's animations have a great many tracks between them.
         let mut reels: HashMap<(usize, usize, Vec<usize>), Arc<Vec<ReelDef>>> = HashMap::new();
@@ -500,16 +546,30 @@ impl Film {
             let seconds = number(fields, 0x61, 0).unwrap_or(0.0) / 1000.0;
             let colour = vec3(fields, 0x66, 0).unwrap_or_default() / 255.0;
             let colour = Color::srgb(colour.x, colour.y, colour.z);
-            self.effects.insert((FADE, name), Effect::Fade(seconds, colour));
+            // `mode on` is the colour going, and `mode off` its coming.
+            let falls = fields.windows(2).any(|pair| pair == [Token::Key(0x62), Token::Key(0x63)]);
+            let fade = Effect::Fade {
+                seconds,
+                colour,
+                falls,
+            };
+            self.effects.insert((FADE, name), fade);
         }
         for (name, fields) in entries(&tokens, WORDS) {
             let table = number(fields, 0x40, 0).unwrap_or(0.0) as usize;
             let line = number(fields, 0x40, 1).unwrap_or(0.0) as usize;
             let words = strings.get(table).and_then(|table| table.get(line));
             let down = number(fields, 0x44, 0).unwrap_or(0.5);
+            let colour = vec3(fields, 0x66, 0).map(|c| Color::srgb(c.x / 255.0, c.y / 255.0, c.z / 255.0));
             if let Some(words) = words {
                 self.effects
-                    .insert((WORDS, name), Effect::Words(words.clone(), down));
+                    .insert((WORDS, name), Effect::Words(words.clone(), down, colour));
+            }
+        }
+        for (name, fields) in entries(&tokens, PICTURE) {
+            if let Some(picture) = text(fields, PICTURE) {
+                let file = format!("{dir}/{}.BMP", picture.to_uppercase());
+                self.effects.insert((PICTURE, name), Effect::Picture(file));
             }
         }
         // `"mark" { kind attached "effect" }`
@@ -549,6 +609,13 @@ pub struct Request {
     pub car: Option<Racer>,
     /// The champion it names in its words, by the game's code for them.
     pub champion: Option<String>,
+    /// The film's own figure is who it is about, and stays.
+    pub own: bool,
+    /// What the film's own figures wear where their models don't say: the parts
+    /// of the champion it is the introduction of.
+    pub wearing: Option<Cosmetics>,
+    /// Its tune goes round until the film is over.
+    pub looped: bool,
 }
 
 impl Request {
@@ -573,6 +640,74 @@ impl Request {
             folder: folder.into(),
             cosmetics,
             tune: Some(tune),
+            ..default()
+        }
+    }
+
+    /// `MenuManager::ProcessRecordBeaten`: the film for every record beaten, which
+    /// is Veronica Voltage's, and about her.
+    pub fn records() -> Request {
+        Request {
+            folder: "WINVVCAR".into(),
+            tune: Some(15),
+            own: true,
+            ..default()
+        }
+    }
+
+    /// `CircuitSelectScreen`, and for the last circuit `AwardCinematicScreen`: the
+    /// film before a circuit is raced, by which circuit it is of the seven. The
+    /// first six are their champions'; Rocket Racer's has the racer who has come
+    /// to race him, and their car. Any key ends it.
+    pub fn circuit(
+        jam: &Jam,
+        circuit: usize,
+        cosmetics: Cosmetics,
+        car: Option<Racer>,
+    ) -> Option<Request> {
+        let folder = format!("CIRCUIT{}", circuit + 1);
+        let champion = roster::field(jam, &format!("c{circuit}")).into_iter().next();
+        let wearing = champion.and_then(|champion| roster::cosmetics_of(jam, &champion.code));
+        match circuit {
+            0..=5 => Some(Request {
+                folder,
+                tune: Some(5 + circuit),
+                skippable: true,
+                own: true,
+                wearing,
+                ..default()
+            }),
+            6 => Some(Request {
+                folder,
+                cosmetics,
+                tune: Some(12),
+                skippable: true,
+                car,
+                wearing,
+                ..default()
+            }),
+            _ => None,
+        }
+    }
+
+    /// `SplashCinematicScreen`: the notice the game opens on, which any key ends.
+    pub fn legal() -> Request {
+        Request {
+            folder: "LEGAL".into(),
+            skippable: true,
+            own: true,
+            ..default()
+        }
+    }
+
+    /// `SplashCinematicScreen`: who made the game, which any key ends.
+    pub fn credits() -> Request {
+        Request {
+            folder: "CREDITS".into(),
+            tune: Some(17),
+            skippable: true,
+            own: true,
+            looped: true,
             ..default()
         }
     }
@@ -610,15 +745,15 @@ impl Request {
 #[derive(Resource, Default)]
 pub struct Showing {
     pub request: Option<Request>,
-    /// The film to show after that one.
-    pub next: Option<Request>,
+    /// The films to show after that one, in their order.
+    pub next: Vec<Request>,
     playing: Option<Playing>,
 }
 
 impl Showing {
     /// Whether the screen is a film's, and not the menus'.
     pub fn busy(&self) -> bool {
-        self.request.is_some() || self.next.is_some() || self.playing.is_some()
+        self.request.is_some() || !self.next.is_empty() || self.playing.is_some()
     }
 }
 
@@ -635,10 +770,11 @@ struct Playing {
     /// How bright everything was last made.
     lit: Vec3,
     materials: Vec<Handle<StandardMaterial>>,
-    /// The fade there is: how far through it is, how long it takes and its colour.
-    fade: Option<(f32, f32, Color)>,
-    /// The words on the screen, by their effect's name.
-    words: HashMap<String, Entity>,
+    /// The fade there is: how far through it is, how long it takes, its colour and
+    /// whether the colour is going.
+    fade: Option<(f32, f32, Color, bool)>,
+    /// The words and pictures on the screen, by their effect's kind and name.
+    words: HashMap<(u16, String), Entity>,
     /// What is laid over the film: the fade, and on it the page the words go on.
     veil: Entity,
     page: Entity,
@@ -685,6 +821,7 @@ fn leave(
     all: Query<Entity, With<Piece>>,
 ) {
     showing.request = None;
+    showing.next.clear();
     if let Some(playing) = showing.playing.take() {
         let (transform, lens, camera) = &mut *camera;
         playing.close(&mut commands, all.iter(), (&mut **transform, &mut **lens, &mut **camera));
@@ -696,7 +833,7 @@ fn open(
     mut commands: Commands,
     mut showing: ResMut<Showing>,
     art: Option<Res<Art>>,
-    mut camera: Single<(&Transform, &Projection, &mut Camera), Screens>,
+    mut camera: Single<(&mut Transform, &Projection, &mut Camera), Screens>,
     mut sound: ResMut<crate::audio::Cue>,
     (mut meshes, mut materials, mut images, mut binds): (
         ResMut<Assets<Mesh>>,
@@ -708,11 +845,12 @@ fn open(
     if showing.playing.is_some() {
         return;
     }
-    let Some(request) = showing.request.take().or_else(|| showing.next.take()) else {
+    let queued = |showing: &mut Showing| (!showing.next.is_empty()).then(|| showing.next.remove(0));
+    let Some(request) = showing.request.take().or_else(|| queued(&mut showing)) else {
         return;
     };
     let Some(art) = art else {
-        showing.next = None;
+        showing.next.clear();
         return;
     };
     let Some(mut film) = Film::load(art.jam(), &request) else {
@@ -788,7 +926,13 @@ fn open(
         .spawn((Piece, whole, BackgroundColor(Color::NONE), GlobalZIndex(10)))
         .add_child(page)
         .id();
-    *sound = crate::audio::Cue::Film(film.folder.clone(), request.tune);
+    let tune = request.tune.map(|tune| (tune, request.looped));
+    *sound = crate::audio::Cue::Film(film.folder.clone(), tune);
+    // A film with no camera of its own is words on a dark screen: the screen's
+    // camera is turned on nothing.
+    if film.shots.is_empty() {
+        *camera.0 = Transform::from_translation(NOWHERE).looking_to(Vec3::NEG_Y, Vec3::Z);
+    }
     showing.playing = Some(Playing {
         film,
         seconds: 0.0,
@@ -963,10 +1107,12 @@ fn play(
             for (_, kind, effect) in film.begun.iter().filter(|bound| bound.0 == *name) {
                 match film.effects.get(&(*kind, effect.clone())) {
                     Some(Effect::Sound(sound)) => sfx.play(crate::audio::id::AMBIENT + sound),
-                    Some(Effect::Fade(seconds, colour)) => {
-                        playing.fade = Some((0.0, *seconds, *colour))
-                    }
-                    Some(Effect::Words(words, down)) => {
+                    Some(Effect::Fade {
+                        seconds,
+                        colour,
+                        falls,
+                    }) => playing.fade = Some((0.0, *seconds, *colour, *falls)),
+                    Some(Effect::Words(words, down, colour)) => {
                         let written = art
                             .as_mut()
                             .and_then(|art| art.write("font_ths", words, true, &mut images));
@@ -980,9 +1126,47 @@ fn play(
                                 height: Val::Px(size.y),
                                 ..default()
                             };
-                            let line = commands.spawn((node, ImageNode::new(picture))).id();
+                            let mut picture = ImageNode::new(picture);
+                            if let Some(colour) = colour {
+                                picture.color = *colour;
+                            }
+                            let line = commands.spawn((node, picture)).id();
                             commands.entity(playing.page).add_child(line);
-                            playing.words.insert(effect.clone(), line);
+                            playing.words.insert((*kind, effect.clone()), line);
+                        }
+                    }
+                    Some(Effect::Picture(file)) => {
+                        let pixels = art
+                            .as_ref()
+                            .and_then(|art| decode_bmp(art.jam().get(file)?, None));
+                        if let Some(pixels) = pixels {
+                            // `CutsceneVisual::ComputeLayout`: in the middle, as
+                            // large as it is.
+                            let size = Vec2::new(pixels.width as f32, pixels.height as f32);
+                            let corner = ((SCREEN - size) / 2.0).round();
+                            let node = Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(corner.x),
+                                top: Val::Px(corner.y),
+                                width: Val::Px(size.x),
+                                height: Val::Px(size.y),
+                                ..default()
+                            };
+                            let extent = Extent3d {
+                                width: pixels.width,
+                                height: pixels.height,
+                                depth_or_array_layers: 1,
+                            };
+                            let picture = images.add(Image::new(
+                                extent,
+                                TextureDimension::D2,
+                                pixels.rgba,
+                                TextureFormat::Rgba8UnormSrgb,
+                                RenderAssetUsages::default(),
+                            ));
+                            let shown = commands.spawn((node, ImageNode::new(picture))).id();
+                            commands.entity(playing.page).add_child(shown);
+                            playing.words.insert((*kind, effect.clone()), shown);
                         }
                     }
                     None => {}
@@ -991,7 +1175,7 @@ fn play(
         }
         if span.ends(frame) {
             for (_, kind, effect) in film.ended.iter().filter(|bound| bound.0 == *name) {
-                if let Some(line) = playing.words.remove(effect) {
+                if let Some(line) = playing.words.remove(&(*kind, effect.clone())) {
                     commands.entity(line).despawn();
                 }
                 if *kind == FADE {
@@ -1000,11 +1184,12 @@ fn play(
             }
         }
     }
-    // `MenuAnimationList::Entry`: the colour comes over the screen, and is gone
-    // again the moment after it is whole.
+    // `MenuAnimationList::Entry`: the colour comes over the screen or goes from it,
+    // and is gone the moment after it has.
     let mut veiled = Color::NONE;
-    if let Some((through, seconds, colour)) = &mut playing.fade {
-        veiled = colour.with_alpha((*through / seconds.max(1e-3)).min(1.0));
+    if let Some((through, seconds, colour, falls)) = &mut playing.fade {
+        let part = (*through / seconds.max(1e-3)).min(1.0);
+        veiled = colour.with_alpha(if *falls { 1.0 - part } else { part });
         if *through > *seconds {
             playing.fade = None;
         } else {
@@ -1024,14 +1209,27 @@ fn asked(mut showing: ResMut<Showing>) {
     let (folder, circuit) = asked.split_once(':').unwrap_or((&asked, "c0"));
     // The films about a car set are about a circuit's champion too.
     let circuit = if folder == "WINRRCAR" { "c6" } else { circuit };
-    let car_set = matches!(folder, "WINCAR" | "WINRRCAR")
-        .then(|| Request::car_set(&crate::world::jam()?, circuit, Cosmetics::default()))
-        .flatten();
+    let about = match folder {
+        "WINCAR" | "WINRRCAR" => crate::world::jam()
+            .and_then(|jam| Request::car_set(&jam, circuit, Cosmetics::default())),
+        "WINVVCAR" => Some(Request::records()),
+        "LEGAL" => Some(Request::legal()),
+        circuit if circuit.starts_with("CIRCUIT") => {
+            let number = circuit["CIRCUIT".len()..].parse::<usize>().unwrap_or(1);
+            // The last is about a racer and their car: the first of the game's own.
+            let jam = crate::world::jam();
+            let car = jam.as_ref().and_then(|jam| crate::garage::stock(jam).into_iter().next());
+            let cosmetics = car.as_ref().map_or(Cosmetics::default(), |car| car.cosmetics);
+            jam.and_then(|jam| Request::circuit(&jam, number.saturating_sub(1), cosmetics, car))
+        }
+        "CREDITS" => Some(Request::credits()),
+        _ => None,
+    };
     showing.request = Some(Request {
         folder: folder.to_string(),
         skippable: true,
         tune: None,
-        ..car_set.unwrap_or_default()
+        ..about.unwrap_or_default()
     });
 }
 
@@ -1083,7 +1281,7 @@ mod tests {
         ));
         assert!(matches!(
             film.effects.get(&(FADE, "fade".into())),
-            Some(Effect::Fade(seconds, _)) if *seconds == 2.0
+            Some(Effect::Fade { seconds, falls: false, .. }) if *seconds == 2.0
         ));
         assert!(film.begun.contains(&("fw".into(), SOUND, "firewrks".into())));
         assert_eq!((film.glows.len(), film.beams.len()), (26, 4));
@@ -1114,7 +1312,7 @@ mod tests {
         let film = Film::load(&jam, &Request::award(4, Cosmetics::default())).unwrap();
         assert!(matches!(
             film.effects.get(&(WORDS, "text1".into())),
-            Some(Effect::Words(words, _)) if !words.is_empty()
+            Some(Effect::Words(words, ..)) if !words.is_empty()
         ));
         assert!(film.ended.iter().any(|bound| bound.1 == WORDS));
     }
@@ -1150,6 +1348,63 @@ mod tests {
         assert_eq!((film.length, film.shots.len()), (1100, 3));
         assert!(film.props.iter().any(|prop| prop.name() == RACER));
         assert_eq!(film.effects.keys().filter(|key| key.0 == WORDS).count(), 7);
+    }
+
+    #[test]
+    fn veronica_voltage_s_film_is_her_own_and_the_credits_are_words() {
+        let Some(jam) = crate::world::jam() else {
+            return;
+        };
+        // Her film keeps the figure it was made with, and her car is a model of it.
+        let film = Film::load(&jam, &Request::records()).unwrap();
+        let racer = film.cues.iter().find(|cue| cue.model == RACER).unwrap();
+        assert!(!racer.tracks.is_empty() && film.car.is_none());
+        assert!(film.props.iter().any(|prop| prop.name() == "vv_car"));
+        assert!(!film.shots.is_empty());
+        // The credits have no camera and nothing to look at: pages of words, each
+        // coming out of the dark and going back into it.
+        let credits = Film::load(&jam, &Request::credits()).unwrap();
+        assert_eq!((credits.length, credits.shots.len(), credits.cues.len()), (3510, 0, 0));
+        assert!((credits.seconds() - 117.0).abs() < 0.01);
+        let fade = |name: &str| match credits.effects.get(&(FADE, name.into())) {
+            Some(Effect::Fade { seconds, falls, .. }) => Some((*seconds, *falls)),
+            _ => None,
+        };
+        assert_eq!((fade("transin"), fade("transout")), (Some((1.0, true)), Some((1.0, false))));
+        let coloured = |effect: &Effect| matches!(effect, Effect::Words(_, _, Some(_)));
+        assert_eq!(credits.effects.values().filter(|effect| coloured(effect)).count(), 81);
+    }
+
+    #[test]
+    fn every_circuit_has_its_film_and_the_game_its_notice() {
+        let Some(jam) = crate::world::jam() else {
+            return;
+        };
+        let racer = crate::garage::stock(&jam).into_iter().next().unwrap();
+        for circuit in 0..7 {
+            let car = Some(racer.clone());
+            let request = Request::circuit(&jam, circuit, racer.cosmetics, car).unwrap();
+            assert_eq!(request.folder, format!("CIRCUIT{}", circuit + 1));
+            // The first six are the champions' own; the last has the racer in it.
+            assert_eq!((request.own, request.skippable), (circuit < 6, true));
+            let film = Film::load(&jam, &request).unwrap();
+            assert!(film.length > 300 && !film.shots.is_empty(), "{}", request.folder);
+            assert_eq!(film.champion.as_ref().map(Vec::len), Some(3));
+            for cue in &film.cues {
+                let rider = film.riders.iter().any(|rider| rider.0 == cue.model);
+                let prop = film.props.iter().any(|prop| prop.name() == cue.model);
+                assert!(rider || prop, "{} {}", request.folder, cue.model);
+            }
+            assert_eq!(film.car.is_some(), circuit == 6);
+        }
+        assert!(Request::circuit(&jam, 7, racer.cosmetics, None).is_none());
+        // The notice is a picture that comes out of the dark and goes back into it.
+        let notice = Film::load(&jam, &Request::legal()).unwrap();
+        assert_eq!((notice.length, notice.marks.len()), (150, 3));
+        assert!(matches!(
+            notice.effects.get(&(PICTURE, "splash1".into())),
+            Some(Effect::Picture(file)) if jam.get(file).is_some()
+        ));
     }
 
     #[test]
