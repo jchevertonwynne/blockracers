@@ -21,9 +21,10 @@
 //! The engine hums (`RaceForceFeedback::CreateEngineEffect`, `UpdateEngineEffect`):
 //! the original plays a sine on a wheel of magnitude 2000 in 10000 whose period is
 //! 0.2 s less the speed; a pad's motors cannot play a sine of a chosen period, so
-//! the nearest thing is done instead: a steady rumble of the sine's magnitude, on
-//! the strong motor while the sine is slow and on the weak one as it quickens
-//! (`hum`).
+//! the nearest thing is done instead: a rumble that rises to the sine's magnitude
+//! and falls away again once in each of its periods, on the strong motor while the
+//! sine is slow and on the weak one as it quickens (`hum`), and steady once the
+//! sine is too quick to be played a frame at a time.
 
 use std::time::Duration;
 
@@ -817,9 +818,20 @@ fn hum_period(speed: f32) -> f32 {
     HUM_PERIOD - speed.abs().min(HUM_PERIOD)
 }
 
+/// A sine is played to a pad as a swell: this many steps of it at the least, each a
+/// frame long. One too quick for that is a steady rumble of its magnitude.
+const HUM_STEPS: f32 = 4.0;
+
+/// How strongly the motors turn this far through one period of the sine: nothing
+/// where it begins, its magnitude half way, and nothing again at its end.
+fn swell(through: f32) -> f32 {
+    0.5 - 0.5 * (through * std::f32::consts::TAU).cos()
+}
+
 /// What the engine's hum is on a pad at this speed, as strengths of the strong and
-/// the weak motor. A pad's motors cannot play a sine of a chosen period, so the hum
-/// is a steady rumble of the sine's magnitude on the motor that suits its frequency.
+/// the weak motor. A pad's motors cannot play a sine of a chosen period by
+/// themselves, so their strength is made to rise and fall at that period
+/// (`engine_hum`), on the motor that suits its frequency.
 fn hum(speed: f32) -> GamepadRumbleIntensity {
     let period = hum_period(speed);
     let hertz = if period > 0.0 { 1.0 / period } else { f32::INFINITY };
@@ -842,6 +854,7 @@ fn engine_hum(
     mut requests: MessageWriter<GamepadRumbleRequest>,
     mut left: Local<f32>,
     mut humming: Local<bool>,
+    mut through: Local<f32>,
 ) {
     let kart = karts.single().ok().filter(|kart| kart.finished.is_none());
     let on = pause.0.is_none()
@@ -856,17 +869,30 @@ fn engine_hum(
         *left = 0.0;
         return;
     };
-    *left -= time.delta_secs();
-    if *left > 0.0 {
-        return;
-    }
-    *left = HUM_STEP;
+    let (speed, frame) = (kart.vel.length() / UNIT / 1000.0, time.delta_secs());
+    let (period, mut intensity) = (hum_period(speed), hum(speed));
+    // A sine slow enough to be played a frame at a time is; one that isn't is asked
+    // for as a steady rumble, afresh as each request ends.
+    let length = if frame > 0.0 && period >= HUM_STEPS * frame {
+        *through = (*through + frame / period).fract();
+        let strength = swell(*through);
+        intensity.strong_motor *= strength;
+        intensity.weak_motor *= strength;
+        *left = 0.0;
+        frame
+    } else {
+        *left -= frame;
+        if *left > 0.0 {
+            return;
+        }
+        *left = HUM_STEP;
+        HUM_STEP
+    };
     *humming = true;
-    let intensity = hum(kart.vel.length() / UNIT / 1000.0);
     for gamepad in &pads {
         requests.write(GamepadRumbleRequest::Add {
             gamepad,
-            duration: Duration::from_secs_f32(HUM_STEP),
+            duration: Duration::from_secs_f32(length),
             intensity,
         });
     }
@@ -1051,6 +1077,8 @@ mod tests {
         let quick = hum(0.2);
         assert!(near(quick.weak_motor, 0.2) && quick.strong_motor == 0.0);
         assert!(near(hum(-0.5).weak_motor, 0.2));
+        // The sine itself: still where it begins and ends, full half way through.
+        assert!(near(swell(0.0), 0.0) && near(swell(0.5), 1.0) && near(swell(0.25), 0.5));
     }
 
     #[test]

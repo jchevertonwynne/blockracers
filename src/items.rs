@@ -123,6 +123,12 @@ pub const HOOK_PULL_SECONDS: f32 = HOOK_PULL_TIME;
 /// Acceleration on both ends of the rope.
 const HOOK_PULL: f32 = 180.0 * UNIT;
 const HOOK_RELEASE_DISTANCE: f32 = 12.0 * UNIT;
+/// `GrapplingHookAction::ReleaseHook` and `TetherProjectile::UpdateReleased`: the rope
+/// has half a second to wind in, its end coming back at `g_tetherRetractSpeed` until
+/// it is within the root of `g_tetherRetractRadius` of where it is tied to the car.
+const HOOK_RETRACT_TIME: f32 = 0.5;
+const HOOK_RETRACT_SPEED: f32 = 250.0 * UNIT;
+const HOOK_RETRACT_NEAR: f32 = 6.0 * UNIT;
 const LIGHTNING_TIME: f32 = 7.0;
 pub const LIGHTNING_SECONDS: f32 = LIGHTNING_TIME;
 const LIGHTNING_RANGE: f32 = 50.0 * UNIT;
@@ -360,12 +366,15 @@ pub enum Action {
         shot: Shot,
         on_hit: Option<i32>,
     },
-    /// Flying until `pulling` is set, then reeling owner and victim together.
+    /// Flying until `pulling` is set, then reeling owner and victim together, and
+    /// once `released` winding its rope back in from where it let go.
     Hook {
         owner: Entity,
         shot: Shot,
         time: f32,
         pulling: Option<Entity>,
+        #[serde(default)]
+        released: bool,
     },
     /// `shocked` is the car it has struck, and how long ago.
     Lightning {
@@ -1370,6 +1379,7 @@ pub fn use_items(
                         shot,
                         time: HOOK_FLIGHT_TIME,
                         pulling: None,
+                        released: false,
                     },
                     &assets.cube,
                     &assets.grey,
@@ -1740,10 +1750,24 @@ pub fn actions(
                 shot,
                 time,
                 pulling,
+                released,
             } => {
                 *time -= dt;
                 done = *time <= 0.0;
                 match *pulling {
+                    // `TetherProjectile::UpdateReleased`: the end of the rope comes
+                    // home, and touches nothing on the way.
+                    _ if *released => {
+                        let home = karts
+                            .get(*owner)
+                            .map(|k| k.1.pos + Vec3::Y * crate::beams::ROPE_ATTACH * UNIT);
+                        match home.map(|home| home - tf.translation) {
+                            Ok(gap) if gap.length() >= HOOK_RETRACT_NEAR => {
+                                tf.translation += gap.normalize() * HOOK_RETRACT_SPEED * dt;
+                            }
+                            _ => done = true,
+                        }
+                    }
                     None => {
                         let flight = shot.fly(&mut tf.translation, dt, &track);
                         let at = tf.translation;
@@ -1818,6 +1842,11 @@ pub fn actions(
                             done = true;
                         }
                     }
+                }
+                // `ReleaseHook`: whatever ends its flight or its pull, the rope is
+                // wound in before the hook is done with.
+                if done && !*released {
+                    (*released, *time, done) = (true, HOOK_RETRACT_TIME, false);
                 }
             }
             // `LightningAction`: whoever it strikes it stays on for a second, and
@@ -2342,6 +2371,40 @@ mod tests {
         let gap = |w: &World| kart(w, owner).pos.distance(kart(w, victim).pos);
         let before = gap(&world);
         assert!(ever(&mut world, 3.0, |w| gap(w) < before - 5.0));
+    }
+
+    /// With nobody ahead the hook flies until it lands or its time is up, and its rope
+    /// then comes back to the car before it is done with.
+    #[test]
+    fn a_hook_that_misses_winds_its_rope_in() {
+        let (mut world, owner, _) = arena(-40.0);
+        fire(&mut world, owner, Power::Red, 1);
+        let hook = |w: &mut World| {
+            let mut hooks = w.query::<(&Action, &Transform)>();
+            hooks.iter(w).find_map(|(action, at)| match action {
+                Action::Hook { released, .. } => Some((*released, at.translation)),
+                _ => None,
+            })
+        };
+        let step = |w: &mut World| ever(w, 0.02, |_| false);
+        let mut steps = 0;
+        while !hook(&mut world).expect("a hook in the air").0 {
+            step(&mut world);
+            steps += 1;
+            assert!(steps < 240, "the hook never let go");
+        }
+        let mut nearest = f32::MAX;
+        for _ in 0..40 {
+            let Some((_, at)) = hook(&mut world) else {
+                assert!(nearest < f32::MAX, "the rope was never wound in");
+                return;
+            };
+            let now = at.distance(kart(&world, owner).pos);
+            assert!(now <= nearest + 0.5, "the rope's end went away again");
+            nearest = now;
+            step(&mut world);
+        }
+        panic!("the hook was never done with");
     }
 
     #[test]

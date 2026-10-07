@@ -1340,6 +1340,19 @@ pub fn hazards(
 }
 
 /// Shows the code puzzle's answer on its three lights.
+/// The mesh of a picture laid on the road (`Collision::decal`'s triangles), a little
+/// off it so as to be seen.
+fn laid(corners: &[(Vec3, Vec2)], up: Vec3) -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::PrimitiveTopology;
+    let places: Vec<[f32; 3]> = corners.iter().map(|c| (c.0 + up * 0.03).into()).collect();
+    let on: Vec<[f32; 2]> = corners.iter().map(|c| c.1.into()).collect();
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![up.to_array(); places.len()])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, places)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, on)
+}
+
 /// What hazards show beyond their own models: the crane's shadow on the road, and the
 /// ghost's after-images.
 pub fn hazard_looks(
@@ -1382,7 +1395,6 @@ pub fn hazard_looks(
                         continue;
                     };
                     let (mesh, material) = shadow_look.get_or_insert_with(|| {
-                        let size = CRANE_SHADOW_SIZE * UNIT;
                         let material = StandardMaterial {
                             base_color_texture: Some(picture.clone()),
                             unlit: true,
@@ -1390,10 +1402,10 @@ pub fn hazard_looks(
                             cull_mode: None,
                             ..default()
                         };
-                        (
-                            meshes.add(Plane3d::default().mesh().size(size, size)),
-                            materials.add(material),
-                        )
+                        // The renderer can't hold a mesh of nothing, so it begins as a
+                        // triangle with no size.
+                        let nothing = [(Vec3::ZERO, Vec2::ZERO); 3];
+                        (meshes.add(laid(&nothing, Vec3::Y)), materials.add(material))
                     });
                     let entity = commands
                         .spawn((
@@ -1401,6 +1413,7 @@ pub fn hazard_looks(
                             MeshMaterial3d(material.clone()),
                             Transform::default(),
                             Visibility::Hidden,
+                            bevy::camera::visibility::NoFrustumCulling,
                             DespawnOnExit(crate::menu::Screen::Race),
                         ))
                         .id();
@@ -1408,27 +1421,28 @@ pub fn hazard_looks(
                     continue;
                 }
                 let entity = made[&index][0];
-                let Ok((mut transform, mut visibility)) = things.get_mut(entity) else {
+                let Ok((_, mut visibility)) = things.get_mut(entity) else {
                     continue;
                 };
-                // Under the crane's hook, laid on the road below it, with the crane's
-                // own X for its up.
+                // Under the crane's hook, laid on whatever of the road is below it
+                // (`MovingObstacleHazard`'s decal), with the crane's own X for its up.
                 let centre = animated.bone_position(prop, 3, 0.0);
-                let ground = track.collision.ground(
-                    centre + Vec3::Y * CRANE_SHADOW_DEPTH * 0.5 * UNIT,
-                    CRANE_SHADOW_DEPTH * UNIT,
+                let size = CRANE_SHADOW_SIZE * UNIT;
+                let lies = track.collision.decal(
+                    centre,
+                    Vec3::NEG_Y,
+                    to_world(prop.rotation * Vec3::X),
+                    [size, size, CRANE_SHADOW_DEPTH * UNIT],
                 );
-                let Some(ground) = ground.filter(|_| hazard.active) else {
+                if lies.is_empty() || !hazard.active {
                     visibility.set_if_neq(Visibility::Hidden);
                     continue;
-                };
-                let up = to_world(prop.rotation * Vec3::X).with_y(0.0);
-                let yaw = Quat::from_rotation_arc(
-                    Vec3::NEG_Z,
-                    up.try_normalize().unwrap_or(Vec3::NEG_Z),
-                );
-                transform.rotation = Quat::from_rotation_arc(Vec3::Y, ground.normal) * yaw;
-                transform.translation = ground.point + ground.normal * 0.03;
+                }
+                if let Some((mesh, _)) = &*shadow_look
+                    && let Some(mut mesh) = meshes.get_mut(mesh)
+                {
+                    *mesh = laid(&lies, Vec3::Y);
+                }
                 visibility.set_if_neq(Visibility::Inherited);
             }
             Kind::Ghost { .. } => {

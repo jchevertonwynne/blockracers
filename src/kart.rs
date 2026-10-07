@@ -236,6 +236,9 @@ pub struct Kart {
 
     // The car itself.
     pub wheels: [Vec3; 4],
+    /// How wide the skid marks of the front wheels and of the back are
+    /// (`ChassisModelTable::Item::m_skidWidths`).
+    pub skid: [f32; 2],
     pub body: [Vec3; 4],
     /// Half-width, and the Z of the car's nose and tail, for bumping into other cars.
     pub outline: [f32; 3],
@@ -384,6 +387,7 @@ impl Kart {
             crossed_backward: false,
             zones: [0, 2, 1],
             wheels: physics::WHEELS,
+            skid: [0.28; 2],
             body: physics::BODY_POINTS,
             outline: [1.2, -1.6, 1.6],
             stats: Stats::from_ratings([50.0; 3]),
@@ -414,7 +418,7 @@ impl Kart {
             self.pace,
             self.ignore_surfaces,
         );
-        let (mass, centre) = (self.mass, self.centre);
+        let (mass, centre, skid) = (self.mass, self.centre, self.skid);
         let (name, mut route) = (self.name.clone(), self.route.take());
         if let Some(route) = &mut route {
             route.restart();
@@ -423,6 +427,7 @@ impl Kart {
             mass,
             centre,
             wheels,
+            skid,
             body,
             outline,
             stats,
@@ -441,6 +446,7 @@ impl Kart {
         // The game's cars have X forward and Y left; ours face -Z with X to the right.
         let local = |v: Vec3| Vec3::new(-v.y, 0.0, -v.x) * UNIT;
         self.wheels = chassis.wheels.map(local);
+        self.skid = chassis.skid.map(|wide| wide * UNIT);
         let half = chassis.footprint * 0.5;
         self.body = [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)].map(|(x, z)| {
             Vec3::new(
@@ -1639,7 +1645,12 @@ impl Kart {
         {
             k.boost = TURBO_FADE;
         }
+        let floating = k.hover;
         k.hover = turbo || (k.magnet > 0.0 && (k.hover || k.halted()));
+        // `RacerCarBody::StartSliding`: the nose comes up as the car leaves the ground.
+        if k.hover && !floating && k.route.is_none() {
+            k.nose(-3.0, 0.15);
+        }
         let rise =
             |lift: f32, target: f32, rate: f32| lift + (target - lift).clamp(-rate * dt, rate * dt);
         k.hover_lift = match (k.hover || warping, k.route.is_some()) {
@@ -1671,6 +1682,17 @@ impl Kart {
         if lat.abs() > 40.0 {
             // A long way from where we last were; look everywhere.
             (idx, s, lat) = track.project(k.pos, track.nearest(k.pos));
+        }
+        // A byway hands the car on to the road at its far end, which may be no
+        // distance at all from the road it left.
+        for branch in &track.branches {
+            let (along, across) = branch.place(k.pos);
+            if along > branch.length() / 2.0 && across.abs() < branch.wall {
+                let on = track.project(k.pos, branch.ends[1]);
+                if on.2.abs() < lat.abs() {
+                    (idx, s, lat) = on;
+                }
+            }
         }
         (k.idx, k.s, k.lat) = (idx, s, lat);
         // A speed pad under the wheels sets the car off as the weakest turbo does.
@@ -1892,8 +1914,15 @@ pub fn sync_karts(mut q: Query<(&Kart, &mut Transform, &mut Visibility, Has<Play
             -k.steer * 0.07 * (k.vel.length() / MAX_SPEED).min(1.0)
         };
         // The player's warp is seen from a tunnel, which is put well away from the circuit.
+        // A car that drives is where it floats; one on a recording, or in a warp, is
+        // only shown there.
+        let lifted = if k.hover && k.route.is_none() {
+            0.0
+        } else {
+            k.hover_lift
+        };
         t.translation = k.pos
-            + Vec3::Y * k.hover_lift
+            + Vec3::Y * lifted
             + if is_player && k.warp > 0.0 {
                 TUNNEL
             } else {
@@ -2246,6 +2275,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `RacerCarBody::UpdateSlideContacts`: the strongest turbo lifts the car itself
+    /// off the road, as high as it floats, and it is back on its wheels afterwards.
+    #[test]
+    fn the_strongest_turbo_floats_the_car_over_the_road() {
+        let track = Track::built(crate::track::Layout::Brick);
+        let mut kart = Kart::new(&track, 0);
+        let (c, dt) = (Controls { throttle: 1.0, ..default() }, 1.0 / 60.0);
+        let over = |kart: &Kart| {
+            let ground = track.collision.ground(kart.pos + Vec3::Y, 20.0);
+            kart.pos.y - ground.expect("road under the car").point.y
+        };
+        for _ in 0..30 {
+            kart.advance(&c, &track, dt);
+        }
+        assert!(over(&kart) < 0.1 && kart.contacts == 4, "{}", over(&kart));
+        kart.start_boost(2);
+        let mut highest = 0.0f32;
+        while kart.boost > 0.0 {
+            kart.advance(&c, &track, dt);
+            highest = highest.max(over(&kart));
+        }
+        // It is held up by its back axle, nose in the air, so its middle is higher yet.
+        assert!((HOVER_HEIGHT..HOVER_HEIGHT + 0.6).contains(&highest), "{highest}");
+        for _ in 0..120 {
+            kart.advance(&c, &track, dt);
+        }
+        assert!(over(&kart) < 0.1 && kart.contacts == 4, "{}", over(&kart));
     }
 
     #[test]

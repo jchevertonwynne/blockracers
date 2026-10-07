@@ -443,23 +443,46 @@ fn main() {
                 .run_if(net::online),
         )
         .add_systems(Startup, setup_scene)
+        // A race is loaded in steps, which the loading screen takes one to a frame
+        // (`loading::STEPS`); whatever it hasn't taken is done as the race is entered.
+        .add_systems(loading::Step(0), (load_race, net::enter_race).chain())
         .add_systems(
-            OnEnter(Screen::Race),
+            loading::Step(1),
             (
-                load_race,
-                net::enter_race,
                 world::spawn_world.run_if(resource_exists::<LoadedWorld>),
                 scenery::spawn_scenery.run_if(resource_exists::<LoadedWorld>),
+            )
+                .chain(),
+        )
+        .add_systems(
+            loading::Step(2),
+            (
                 sky::spawn.run_if(resource_exists::<LoadedWorld>),
                 setup_brick_world.run_if(resource_exists::<BrickWorld>),
-                kart::spawn_karts,
-                time_race::spawn_ghosts,
-                items::setup_items,
+            )
+                .chain(),
+        )
+        .add_systems(
+            loading::Step(3),
+            (kart::spawn_karts, time_race::spawn_ghosts).chain(),
+        )
+        .add_systems(loading::Step(4), items::setup_items)
+        .add_systems(
+            loading::Step(5),
+            (
                 hud::original::load,
                 hud::setup_text_hud.run_if(not(resource_exists::<hud::original::Art>)),
                 net::client::loaded.run_if(net::joined),
             )
                 .chain(),
+        )
+        // What a step puts in the world is the race's from the frame it is put there.
+        .add_systems(
+            Update,
+            tag_race_entities
+                .after(loading::go_on)
+                .after(hud::original::draw)
+                .run_if(in_state(Screen::Race).or_else(in_state(Screen::Loading))),
         )
         .add_systems(
             Update,
@@ -523,7 +546,6 @@ fn main() {
                 hud::original::draw
                     .run_if(resource_exists::<hud::original::Art>)
                     .run_if(not(replay::shooting)),
-                tag_race_entities,
             )
                 .chain()
                 .run_if(in_state(Screen::Race)),
@@ -689,6 +711,8 @@ fn tag_race_entities(
                 Added<items::Action>,
             )>,
             Without<ChildOf>,
+            // The loading screen's picture goes with the loading screen.
+            Without<DespawnOnExit<Screen>>,
         ),
     >,
 ) {

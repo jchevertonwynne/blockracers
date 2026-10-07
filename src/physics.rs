@@ -8,9 +8,10 @@
 //! speed and sideways grip drops. Engine thrust is balanced by quadratic drag chosen so
 //! that the terminal speed is the kart's top speed.
 //!
-//! A floating car (`Kart::hover`, the original's "slide" body) is shown lifted and
-//! leaning by `kart`; here it only stops feeling the surface under it and bounces
-//! off any landing.
+//! A floating car (`Kart::hover`, the original's "slide" body) is held up off the
+//! ground by `probe_hover`, on two probes where a car on its wheels has four, stops
+//! feeling the surface under it and bounces off any landing; `kart` says how high it
+//! floats and shows it leaning.
 //!
 //! The body is the original's rigid body (`RacerRigidBody`, `RacerCarBody`): it has a
 //! mass, a centre of mass and the inertia of the box every car is given, and carries
@@ -19,8 +20,7 @@
 //! the body's position and attitude, then the tilt limit), and then four wheel probes
 //! find the ground and, with two wheels or more in contact, set the body on it
 //! (`UpdateWheelContacts`, `SnapToContacts`). A car floating on its turbo or a magnet
-//! (the original's slide body) is still levelled by `level` and has no angular
-//! momentum but its yaw.
+//! is set on the ground under its axles instead (`UpdateSlideContacts`).
 
 use crate::collision::Collision;
 use crate::kart::{Controls, Kart};
@@ -118,11 +118,10 @@ const UPRIGHT_MIN_COS: f32 = 0.70710677;
 /// Each wheel in contact is held up with this share of a gravity (`1 / (wheels + 8)`)
 /// that the body's torque is worked out from.
 const CONTACT_SHARE: f32 = 8.0;
-/// `g_defaultRideHeight` (0.2 units) is left out: the port's wheel points are already
-/// where the tyres meet the road, and lifting the body by it catches on the byways of
-/// the circuits built here. How far, a millisecond, a wheel looks below itself for the
-/// ground while the car is on it.
-const RIDE_HEIGHT: f32 = 0.0;
+/// `g_defaultRideHeight`: how far above the ground under it `SnapToContacts` sets the
+/// wheel it sets the car down by. How far, a millisecond, a wheel looks below itself
+/// for the ground while the car is on it.
+pub const RIDE_HEIGHT: f32 = 0.2 * UNIT;
 const SUPPORT_SWEEP: f32 = 0.04 * UNIT;
 /// `g_wheelLengthwiseIndices`, `g_wheelSidewaysIndices` and `g_wheelDiagonalIndices`:
 /// the wheel in line with each lengthwise, across and corner to corner.
@@ -271,6 +270,9 @@ pub const SPIN_OUT_TIME: f32 = 0.6;
 const STEP_UP: f32 = 0.5;
 /// How far below a wheel the ground may be and still count as contact.
 const CONTACT_PADDING: f32 = 0.4 * UNIT;
+/// `g_slideSweepScale`: how far, a millisecond, an axle of a floating car looks below
+/// itself for the ground while the car is over it.
+const SLIDE_SWEEP: f32 = 0.01 * UNIT;
 
 fn tangent(v: Vec3, normal: Vec3, fallback: Vec3) -> Vec3 {
     v.reject_from_normalized(normal)
@@ -648,42 +650,28 @@ fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
     k.vel.y = k.vel.y.min(WALL_MAX_RISE);
 }
 
-/// A floating car's ground: each wheel's, averaged, and the body levelled onto it.
+/// `UpdateSlideContacts`: a floating car's ground, looked for under the middle of each
+/// axle, as far below it as the car floats (`Kart::hover_lift`). Whichever has the
+/// higher ground is the one the car is set by, the lift above it; with both on the
+/// ground the body points along the line from the back one's ground to the front
+/// one's, keeping its own up. It bounces off any landing.
 fn probe_hover(k: &mut Kart, world: &Collision, dt: f32) {
-    let was_grounded = k.contacts > 0 && k.spin_out <= 0.0;
-    let reach = if was_grounded { CONTACT_PADDING } else { 0.0 };
-    let mut hits = [None; 4];
-    let mut lift = 0.0;
-    let mut normal_sum = Vec3::ZERO;
     let had_contact = k.contacts > 0;
-    k.contacts = 0;
-    k.wheel_mask = 0;
-    let mut force = Vec3::ZERO;
-    for (index, (wheel, hit_point)) in k.wheels.iter().zip(&mut hits).enumerate() {
-        let foot = k.pos + k.rot * *wheel;
-        let Some(hit) = world.ground(foot + Vec3::Y * STEP_UP, STEP_UP + reach) else {
-            continue;
-        };
-        *hit_point = Some(hit.point);
-        lift += hit.point.y - foot.y;
-        normal_sum += if hit.normal.y < 0.0 {
-            -hit.normal
-        } else {
-            hit.normal
-        };
-        force += Vec3::from(hit.surface.force);
-        if k.contacts == 0 {
-            k.surface = hit.surface;
-        } else {
-            k.surface.rolling_resistance += hit.surface.rolling_resistance;
-            k.surface.lateral_grip += hit.surface.lateral_grip;
-            k.surface.friction += hit.surface.friction;
-            k.surface.support += hit.surface.support;
-        }
-        k.wheel_mask |= 1 << index;
-        k.contacts += 1;
-    }
-    if k.contacts == 0 {
+    // How far below itself an axle looks for the ground it floats over.
+    let reach = if had_contact { SLIDE_SWEEP * dt * MS } else { 0.0 } + k.hover_lift;
+    let feet = k.wheels.map(|wheel| k.pos + k.rot * wheel);
+    let axles = [(feet[0] + feet[1]) / 2.0, (feet[2] + feet[3]) / 2.0];
+    let hits = axles.map(|axle| world.ground(axle + Vec3::Y * STEP_UP, STEP_UP + reach));
+    // How far above the bottom of its sweep each axle's ground is.
+    let rise = |axle: usize| {
+        hits[axle]
+            .as_ref()
+            .map_or(f32::NEG_INFINITY, |hit| hit.point.y - (axles[axle].y - reach))
+    };
+    let selected = if rise(1) > rise(0) { 1 } else { 0 };
+    let Some(set_by) = &hits[selected] else {
+        k.contacts = 0;
+        k.wheel_mask = 0;
         if had_contact {
             k.vel.y -= AIRBORNE_DROP;
         }
@@ -691,8 +679,30 @@ fn probe_hover(k: &mut Kart, world: &Collision, dt: f32) {
         k.surface = default();
         k.air_time += dt;
         return;
+    };
+    let limit = (rise(selected) - CONTACT_PADDING).max(0.0);
+    let down = [rise(0) >= limit, rise(1) >= limit];
+    let mut normal_sum = Vec3::ZERO;
+    let mut force = Vec3::ZERO;
+    let mut touching = 0;
+    for hit in hits.iter().flatten() {
+        force += Vec3::from(hit.surface.force);
+        if touching == 0 {
+            k.surface = hit.surface;
+        } else {
+            k.surface.rolling_resistance += hit.surface.rolling_resistance;
+            k.surface.lateral_grip += hit.surface.lateral_grip;
+            k.surface.friction += hit.surface.friction;
+            k.surface.support += hit.surface.support;
+        }
+        touching += 1;
     }
-    let count = k.contacts as f32;
+    for (axle, hit) in hits.iter().enumerate() {
+        if let (true, Some(hit)) = (down[axle], hit) {
+            normal_sum += hit.normal * hit.normal.y.signum();
+        }
+    }
+    let count = touching as f32;
     k.surface.rolling_resistance /= count;
     k.surface.lateral_grip /= count;
     k.surface.friction /= count;
@@ -707,40 +717,39 @@ fn probe_hover(k: &mut Kart, world: &Collision, dt: f32) {
             ..default()
         };
     }
-    k.pos.y += lift / count;
-
-    // With all four wheels down, the diagonals give the plane the kart sits on.
-    let mut normal = normal_sum.normalize_or(Vec3::Y);
-    if let [Some(fl), Some(fr), Some(rl), Some(rr)] = hits {
-        let n = (fl - rr).cross(fr - rl);
-        if let Some(n) = (n * n.y.signum()).try_normalize() {
-            normal = n;
+    // `SetDirectionUp`: along the ground from axle to axle, with the body's own up.
+    let normal = match (&hits, down) {
+        ([Some(front), Some(rear)], [true, true]) => {
+            if let Some(forward) = (front.point - rear.point).try_normalize() {
+                let up = k.rot * Vec3::Y;
+                k.rot = Transform::IDENTITY.looking_to(forward, up).rotation;
+            }
+            k.rot * Vec3::Y
         }
-    }
-    let into = k.vel.dot(normal);
-    // `UpdateWheelContacts`: after a long enough fall a hard landing bounces the car
-    // back into the air.
-    // A floating car bounces off any landing, and harder (`UpdateSlideContacts`).
-    let (bounces, bounce) = if k.hover {
-        (true, HOVER_BOUNCE)
-    } else {
-        (k.air_time > LANDING_AIR_TIME, LANDING_BOUNCE)
+        _ => normal_sum.normalize_or(Vec3::Y),
     };
-    if !was_grounded && bounces && into < -LANDING_BOUNCE_SPEED {
-        k.vel.y -= into * bounce;
-        k.contacts = 0;
-        k.ground_normal = Vec3::Y;
-        k.air_time += dt;
-        return;
+    k.pos.y += set_by.point.y - axles[selected].y + k.hover_lift;
+    // An axle on the ground has both its wheels on it.
+    k.wheel_mask = [0b0011, 0b1100]
+        .into_iter()
+        .zip(down)
+        .filter_map(|(wheels, down)| down.then_some(wheels))
+        .sum();
+    k.contacts = down.iter().filter(|down| **down).count() as u8;
+    let into = k.vel.dot(normal);
+    if !had_contact && into < 0.0 {
+        if into < -LANDING_BOUNCE_SPEED {
+            k.vel.y -= into * HOVER_BOUNCE;
+            k.contacts = 0;
+            k.wheel_mask = 0;
+            k.ground_normal = Vec3::Y;
+            k.air_time += dt;
+            return;
+        }
+        k.vel.y -= into;
     }
     k.air_time = 0.0;
     k.ground_normal = normal;
-    if into < 0.0 {
-        k.vel -= normal * into;
-    }
-    let forward = tangent(k.rot * Vec3::NEG_Z, normal, Vec3::NEG_Z);
-    let level = Transform::IDENTITY.looking_to(forward, normal).rotation;
-    k.rot = k.rot.slerp(level, (15.0 * dt).min(1.0));
 }
 
 /// `UpdateWheelContacts` and `SnapToContacts`: finds the ground under each wheel.

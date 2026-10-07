@@ -201,6 +201,85 @@ impl Collision {
         self.segment(from, from - Vec3::Y * depth, |n| n.y.abs() >= WALKABLE)
     }
 
+    /// A picture laid on whatever is under it, as `RaceDecalManager::Trail::Decal`
+    /// lays one (`Project`, `ComputeProjection`, `EmitPolygon`): a box `width` by
+    /// `length` about `centre` and `depth` deep along `down`, its length lying along
+    /// `along`. Every triangle in the box that faces back up it is cut down to the
+    /// box's sides and given the picture's coordinates, which run from nought to one
+    /// across it. What comes back is triangles, three corners at a time.
+    ///
+    /// The original takes its triangles from the leaves of the circuit's tree that the
+    /// box's corners are in, and from the circuit's model; these are the solid
+    /// world's, between the centre and the box's depth.
+    pub fn decal(
+        &self,
+        centre: Vec3,
+        down: Vec3,
+        along: Vec3,
+        [width, length, depth]: [f32; 3],
+    ) -> Vec<(Vec3, Vec2)> {
+        let down = down.normalize_or_zero();
+        let along = (along - down * along.dot(down)).normalize_or_zero();
+        let across = along.cross(down);
+        let mut out = Vec::new();
+        if along == Vec3::ZERO {
+            return out;
+        }
+        let reach = (across.abs() * width + along.abs() * length) * 0.5 + down.abs() * depth;
+        let (lo, hi) = (centre - reach, centre + reach);
+        let (lo, hi) = (cell_of(lo.x, lo.z), cell_of(hi.x, hi.z));
+        let mut seen = std::collections::HashSet::new();
+        for x in lo.0..=hi.0 {
+            for z in lo.1..=hi.1 {
+                for &i in self.cells.get(&(x, z)).into_iter().flatten() {
+                    let tri = &self.triangles[i as usize];
+                    let gone = self.passable.get(tri.tag).is_some_and(|&p| p)
+                        || self.shots_pass.get(tri.tag).is_some_and(|&p| p);
+                    if gone || (tri.normal.dot(down) < 0.0) == self.mirrored || !seen.insert(i) {
+                        continue;
+                    }
+                    let corner = |at: Vec3| {
+                        let from = at - centre;
+                        let on = Vec2::new(from.dot(across) / width, from.dot(along) / length);
+                        (at, on + 0.5)
+                    };
+                    let mut shape = vec![
+                        corner(tri.a),
+                        corner(tri.a + tri.ab),
+                        corner(tri.a + tri.ac),
+                    ];
+                    // Cut to each side of the picture in turn.
+                    for (axis, edge) in [(0, 0.0), (0, 1.0), (1, 0.0), (1, 1.0)] {
+                        let inside = |on: Vec2| (on[axis] >= edge) == (edge == 0.0);
+                        let mut cut = Vec::with_capacity(shape.len() + 1);
+                        for (n, &(at, on)) in shape.iter().enumerate() {
+                            let (next_at, next_on) = shape[(n + 1) % shape.len()];
+                            if inside(on) {
+                                cut.push((at, on));
+                            }
+                            if inside(on) != inside(next_on) {
+                                let t = (edge - on[axis]) / (next_on[axis] - on[axis]);
+                                cut.push((at.lerp(next_at, t), on.lerp(next_on, t)));
+                            }
+                        }
+                        shape = cut;
+                    }
+                    if shape.len() < 3 {
+                        continue;
+                    }
+                    let middle = shape.iter().map(|c| c.0).sum::<Vec3>() / shape.len() as f32;
+                    if !(0.0..=depth).contains(&(middle - centre).dot(down)) {
+                        continue;
+                    }
+                    for n in 1..shape.len() - 1 {
+                        out.extend([shape[0], shape[n], shape[n + 1]]);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Anything at all between two points.
     pub fn any(&self, from: Vec3, to: Vec3) -> Option<Hit> {
         self.segment(from, to, |_| true)
@@ -270,4 +349,46 @@ fn a_doorway_tells_going_in_from_coming_out() {
         world.touched(west, east).unwrap().surface.touch_event,
         back.surface.touch_event
     );
+}
+
+#[cfg(test)]
+#[test]
+fn a_decal_is_cut_to_its_box_and_lies_only_on_what_faces_it() {
+    let mut world = Collision::default();
+    let mut floor = |y: f32, up: bool| {
+        let corners = [
+            Vec3::new(-10.0, y, -10.0),
+            Vec3::new(-10.0, y, 10.0),
+            Vec3::new(10.0, y, 10.0),
+            Vec3::new(10.0, y, -10.0),
+        ];
+        let [a, b, c, d] = corners;
+        for [a, b, c] in [[a, b, c], [a, c, d]] {
+            world.add(if up { [a, b, c] } else { [a, c, b] }, Surface::default());
+        }
+    };
+    // A floor, a ceiling over it that faces down, and a floor too far below.
+    floor(0.0, true);
+    floor(2.0, false);
+    floor(-20.0, true);
+    let lies = world.decal(Vec3::new(1.0, 5.0, 1.0), Vec3::NEG_Y, Vec3::X, [4.0, 6.0, 10.0]);
+    assert!(!lies.is_empty() && lies.len() % 3 == 0);
+    let mut area = 0.0;
+    for corners in lies.chunks_exact(3) {
+        area += (corners[1].0 - corners[0].0)
+            .cross(corners[2].0 - corners[0].0)
+            .length()
+            / 2.0;
+        for (at, on) in corners {
+            assert_eq!(at.y, 0.0);
+            assert!(on.min_element() >= -1e-4 && on.max_element() <= 1.0001);
+            // The picture's length lies along X, its middle over the centre.
+            assert!(((at.x - 1.0) / 6.0 + 0.5 - on.y).abs() < 1e-4);
+        }
+    }
+    assert!((area - 24.0).abs() < 1e-3, "{area}");
+    // Mirrored, every face is the other one, and it lies on the ceiling.
+    world.set_mirrored(true);
+    let lies = world.decal(Vec3::new(1.0, 5.0, 1.0), Vec3::NEG_Y, Vec3::X, [4.0, 6.0, 10.0]);
+    assert!(lies.iter().all(|corner| corner.0.y == 2.0) && !lies.is_empty());
 }

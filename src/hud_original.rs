@@ -29,6 +29,9 @@ const HEIGHT: f32 = 480.0;
 /// Text sits this far from the top.
 const TOP: f32 = 7.0;
 const MAP_SIZE: f32 = 128.0;
+/// `g_hudMapDirectionScale`: how much of the screen one of the game's units is on the
+/// map that turns.
+const MAP_TURN_SCALE: f32 = 0.12;
 /// A warp's wash of blue comes and goes over this long, and is this blue.
 const WARP_WASH: f32 = 0.2;
 const WARP_BLUE: f32 = 100.0 / 255.0;
@@ -97,6 +100,9 @@ pub struct Art {
     /// The picture of the circuit and the part of the world it covers:
     /// least and greatest X, then greatest and least Y, in the original's units.
     map: Option<(Handle<Image>, [f32; 4])>,
+    /// The map that turns: the circuit's picture again, to be read, and the picture
+    /// of what its window shows, which is made afresh each frame.
+    turning: Option<(Pixels, Handle<Image>)>,
     white: Handle<Image>,
     /// The player's mark on the map, pointing right.
     arrow: Handle<Image>,
@@ -112,7 +118,8 @@ pub struct State {
     place: usize,
     pulse: Option<f32>,
     speed: f32,
-    /// 0 the map, 1 the speedometer, 2 neither.
+    /// 0 the map, 1 the speedometer, 2 the map turning with the view, 3 nothing
+    /// (`Racer::CycleHudGadget`, which goes round the same four).
     gadget: u8,
     /// How much of a warp's blue is over the screen.
     wash: f32,
@@ -223,10 +230,24 @@ pub fn load(
                 _ => 0.0,
             };
             Some((
-                image(pixels, &mut images).0,
+                pixels,
                 [number(0), number(1), number(2), number(3)],
             ))
         });
+    let turning = map.as_ref().map(|(pixels, _)| {
+        let pane = Pixels {
+            width: PANE,
+            height: PANE,
+            rgba: vec![0; (PANE * PANE * 4) as usize],
+        };
+        let read = Pixels {
+            width: pixels.width,
+            height: pixels.height,
+            rgba: pixels.rgba.clone(),
+        };
+        (read, image(pane, &mut images).0)
+    });
+    let map = map.map(|(pixels, bounds)| (image(pixels, &mut images).0, bounds));
     let white = image(
         Pixels {
             width: 1,
@@ -242,9 +263,39 @@ pub fn load(
         strings,
         pictures,
         map,
+        turning,
         white,
         arrow,
     });
+}
+
+/// How many pixels across the picture of the turning map's window is.
+const PANE: u32 = 256;
+
+/// What the turning map's window shows (`RaceHud::DrawRotatingMap`, which clips the
+/// turned picture to the window's square): `map` laid over `range` of the game's units
+/// at `per_unit` of the window's `MAP_SIZE` each, `own` (from the picture's bottom
+/// right corner) at the middle, and turned by `turn`. Outside the picture is clear.
+fn pane(map: &Pixels, range: Vec2, own: Vec2, per_unit: f32, turn: Rot2, mirror: bool) -> Vec<u8> {
+    let back = turn.inverse();
+    let mut rgba = vec![0; (PANE * PANE * 4) as usize];
+    for (i, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let at = Vec2::new((i as u32 % PANE) as f32, (i as u32 / PANE) as f32) + 0.5;
+        let from_middle = (at / PANE as f32 - 0.5) * MAP_SIZE;
+        let mut across = (own + back * from_middle / per_unit + range) / range;
+        if mirror {
+            across.y = 1.0 - across.y;
+        }
+        if across.cmpge(Vec2::ZERO).all() && across.cmplt(Vec2::ONE).all() {
+            let (x, y) = (
+                (across.x * map.width as f32) as usize,
+                (across.y * map.height as f32) as usize,
+            );
+            let from = (y * map.width as usize + x) * 4;
+            pixel.copy_from_slice(&map.rgba[from..from + 4]);
+        }
+    }
+    rgba
 }
 
 /// The arrow `RaceHud::DrawMapArrow` draws for the player: a green triangle inside a
@@ -403,7 +454,7 @@ pub fn draw(
     pause: Res<crate::Pause>,
     championship: Res<crate::championship::Championship>,
     time_race: Res<crate::time_race::TimeRace>,
-    (variant, replay, role, watching, lineup, camera, cars): (
+    (variant, replay, role, watching, lineup, camera, cars, mut images): (
         Res<crate::variant::Variant>,
         Res<crate::replay::Replay>,
         Res<crate::net::Role>,
@@ -411,6 +462,7 @@ pub fn draw(
         Option<Res<crate::net::Lineup>>,
         Single<(&Camera, &Transform), With<Camera3d>>,
         Query<(&Kart, &Transform), Without<Camera3d>>,
+        ResMut<Assets<Image>>,
     ),
 ) {
     for root in &roots {
@@ -432,7 +484,7 @@ pub fn draw(
     let dt = time.delta_secs();
     let state = &mut *state;
     if actions.pressed(crate::input::Event::Display) {
-        state.gadget = (state.gadget + 1) % 3;
+        state.gadget = (state.gadget + 1) % 4;
     }
     let mut frame = Frame {
         art: &art,
@@ -651,15 +703,46 @@ pub fn draw(
         }
     }
 
-    // Bottom right: the map with everyone on it, or the speedometer.
+    // Bottom right: the map with everyone on it, the speedometer, or the map again
+    // with the player in the middle of it and the way the camera looks at the top.
     let forward = player.rot * Vec3::NEG_Z;
     let speed = player.vel.dot(forward) / UNIT / 1000.0;
     state.speed = state.speed * 0.8 + speed * 0.2;
     let corner = Vec2::new(width - MAP_INSET, HEIGHT - MAP_INSET);
     match (state.gadget, &art.map) {
-        (0, Some((picture, [min_x, max_y, max_x, min_y]))) => {
+        (0 | 2, Some((picture, [min_x, max_y, max_x, min_y]))) => {
+            let turning = state.gadget == 2;
             let range = Vec2::new(max_x - min_x, max_y - min_y);
-            let per_unit = MAP_SIZE / range.max_element();
+            // Where a car is from the map's bottom right corner, in the game's units:
+            // east is right and north is up.
+            let from_corner = |k: &Kart| {
+                let north = if variant.mirror {
+                    k.pos.z / UNIT - max_y
+                } else {
+                    min_y + k.pos.z / UNIT
+                };
+                Vec2::new(k.pos.x / UNIT - max_x, north)
+            };
+            // `DrawRotatingMap`: a square window with the player at its middle, the
+            // map at a scale of its own and turned so that the camera looks up it.
+            let middle = corner - MAP_SIZE / 2.0;
+            let ahead = camera.1.forward();
+            let ahead = Vec2::new(ahead.x, ahead.z).normalize_or(Vec2::NEG_Y);
+            let turn = Rot2::radians(-ahead.x.atan2(-ahead.y));
+            let per_unit = if turning {
+                MAP_TURN_SCALE
+            } else {
+                MAP_SIZE / range.max_element()
+            };
+            let own = from_corner(player);
+            let at = |from: Vec2| {
+                if turning {
+                    middle + turn * ((from - own) * per_unit)
+                } else {
+                    corner + from * per_unit
+                }
+            };
+            let spot = |k: &Kart| at(from_corner(k));
             let size = range * per_unit;
             // Mirrored, the map is turned over top to bottom, as `RaceHud` draws it.
             let node = ImageNode {
@@ -668,18 +751,30 @@ pub fn draw(
                 flip_y: variant.mirror,
                 ..default()
             };
-            frame
-                .nodes
-                .push((place(corner - size, size), node, UiTransform::IDENTITY));
-            // East is right and north is up.
-            let spot = |k: &Kart| {
-                let north = if variant.mirror {
-                    k.pos.z / UNIT - max_y
-                } else {
-                    min_y + k.pos.z / UNIT
-                };
-                corner + Vec2::new(k.pos.x / UNIT - max_x, north) * per_unit
-            };
+            if turning {
+                // The renderer can't cut a turned picture down to a square, so what
+                // the window shows is a picture of its own.
+                if let Some((pixels, shown)) = &art.turning {
+                    if let Some(mut image) = images.get_mut(shown) {
+                        image.data =
+                            Some(pane(pixels, range, own, per_unit, turn, variant.mirror));
+                    }
+                    let node = ImageNode {
+                        image: shown.clone(),
+                        image_mode: NodeImageMode::Stretch,
+                        ..default()
+                    };
+                    frame.nodes.push((
+                        place(corner - MAP_SIZE, Vec2::splat(MAP_SIZE)),
+                        node,
+                        UiTransform::IDENTITY,
+                    ));
+                }
+            } else {
+                frame
+                    .nodes
+                    .push((place(corner - size, size), node, UiTransform::IDENTITY));
+            }
             // The marker picture holds four; the first is the one for other racers.
             if let Some((handle, _)) = art.pictures[10].clone() {
                 for (kart, _) in karts.iter().filter(|k| !k.1 && k.0.out.is_none()) {
@@ -718,8 +813,12 @@ pub fn draw(
                     Color::WHITE,
                 );
             }
-            // The player: an arrow pointing the way the kart is.
-            let heading = Vec2::new(forward.x, forward.z);
+            // The player: an arrow pointing the way the kart is, or up the window.
+            let heading = if turning {
+                Vec2::NEG_Y
+            } else {
+                Vec2::new(forward.x, forward.z)
+            };
             let turn = UiTransform {
                 rotation: Rot2::radians(heading.y.atan2(heading.x)),
                 ..UiTransform::IDENTITY
@@ -734,6 +833,14 @@ pub fn draw(
                 node,
                 turn,
             ));
+            // The window's edge, a line of white all the way round.
+            if turning {
+                let (pane, long) = (corner - MAP_SIZE, Vec2::new(MAP_SIZE, 1.0));
+                frame.block(pane, long, white);
+                frame.block(pane + Vec2::new(0.0, MAP_SIZE - 1.0), long, white);
+                frame.block(pane, long.yx(), white);
+                frame.block(pane + Vec2::new(MAP_SIZE - 1.0, 0.0), long.yx(), white);
+            }
         }
         (1, _) => {
             let size = art.pictures[0].as_ref().map_or(Vec2::ZERO, |p| p.1);

@@ -48,8 +48,8 @@ pub fn dress_actions(
     models: Option<Res<Models>>,
     emitters: Option<Res<Emitters>>,
     new: Query<(Entity, &Action, &Transform), Added<Action>>,
-    actions: Query<&Transform, (With<Action>, Without<Dressing>)>,
-    mut dressings: Query<(Entity, &mut Dressing, &mut Transform), Without<Action>>,
+    actions: Query<(&Transform, &Action), Without<Dressing>>,
+    mut dressings: Query<(Entity, &mut Dressing, &mut Transform, &mut Visibility), Without<Action>>,
 ) {
     let (Some(models), Some(emitters)) = (models, emitters) else {
         return;
@@ -125,11 +125,17 @@ pub fn dress_actions(
         }
     }
 
-    for (entity, mut dressing, mut transform) in &mut dressings {
-        let Ok(target) = actions.get(dressing.of) else {
+    for (entity, mut dressing, mut transform, mut seen) in &mut dressings {
+        let Ok((target, action)) = actions.get(dressing.of) else {
             commands.entity(entity).despawn();
             continue;
         };
+        // `GrapplingHookAction::Draw`: a hook that has let go is its rope alone. (The
+        // puff the original shows where it let go, a picture that faces the camera,
+        // is not drawn.)
+        if matches!(action, Action::Hook { released: true, .. }) {
+            seen.set_if_neq(Visibility::Hidden);
+        }
         let moved = target.translation - dressing.last;
         if dressing.aimed && moved.length_squared() > 1e-6 {
             transform.look_to(moved, Vec3::Y);

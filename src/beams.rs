@@ -38,7 +38,7 @@ const JITTERS: usize = 20;
 const ROPE_COLOURS: [Rgba; 3] = [[0x64, 0x3c, 0x0e, 255], [0x8f, 0x5a, 0x1c, 255], [0x14, 0x14, 0x00, 255]];
 const ROPE_THICKNESS: f32 = 0.6;
 const ROPE_WAVE: f32 = 4.0;
-const ROPE_ATTACH: f32 = 3.0;
+pub const ROPE_ATTACH: f32 = 3.0;
 
 /// What a ribbon's cross-section is: three corners across and down, and where each is
 /// along the picture's width.
@@ -369,11 +369,11 @@ pub fn beams(
                 let Some(track) = &track else { continue };
                 lightning(tf, *time, *shocked, &track, &karts, &jitter, right)
             }
-            Action::Hook { owner, shot, pulling, time } => {
+            Action::Hook { owner, shot, pulling, time, released } => {
                 let Ok(from) = karts.get(*owner).map(|k| k.pos + Vec3::Y * ROPE_ATTACH * UNIT) else {
                     continue;
                 };
-                rope(from, tf.translation, shot, *pulling, *time)
+                rope(from, tf.translation, shot, *pulling, *time, *released)
             }
             _ => continue,
         };
@@ -445,8 +445,16 @@ fn lightning(
 
 /// `TetherProjectile::RebuildBeam` and `UpdateAttached`: the rope follows the way the
 /// hook has flown, bowing less as it nears where it was aimed, and goes taut once it has
-/// hold of a car.
-fn rope(from: Vec3, to: Vec3, shot: &crate::items::Shot, pulling: Option<Entity>, left: f32) -> Ribbon {
+/// hold of a car. `UpdateReleased`: let go, it is wound in along a straight line, the
+/// slack it has (`m_tension`) being gone in the first step of that.
+fn rope(
+    from: Vec3,
+    to: Vec3,
+    shot: &crate::items::Shot,
+    pulling: Option<Entity>,
+    left: f32,
+    released: bool,
+) -> Ribbon {
     let tension = pulling.map_or(0.0, |_| ((crate::items::HOOK_PULL_SECONDS - left) / 1.0).clamp(0.0, 1.0));
     let flying = 1.0 - shot.progress();
     let amount = if pulling.is_some() { 0.0 } else { flying * ROPE_WAVE };
@@ -463,11 +471,15 @@ fn rope(from: Vec3, to: Vec3, shot: &crate::items::Shot, pulling: Option<Entity>
         } else {
             arc
         };
+        if released {
+            spans.push((straight, 0.0));
+            continue;
+        }
         // The line is drawn from the hook's end, which the arc began from.
         spans.push((Vec3::new(straight.x, high.max(straight.y.min(to.y) - 1.0), straight.z), bow));
         bow = -bow;
     }
-    spans.push((to, bow));
+    spans.push((to, if released { 0.0 } else { bow }));
     let no_shift = |_: usize, _: usize| 0.0;
     Beam {
         origin: from,

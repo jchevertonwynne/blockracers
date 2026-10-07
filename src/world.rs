@@ -688,6 +688,8 @@ pub struct Chassis {
     pub mount: Vec3,
     /// Where each wheel meets the ground: front left, front right, rear left, rear right.
     pub wheels: [Vec3; 4],
+    /// How wide the skid marks of the front wheels and of the back are.
+    pub skid: [f32; 2],
     /// Width and length of the car's footprint.
     pub footprint: Vec2,
     /// Handling, top speed and acceleration, 0..100.
@@ -735,6 +737,7 @@ fn chassis_entry(jam: &Jam, name: &str) -> Option<(Chassis, String)> {
     // Contact points come after two skid-mark widths: front right, front left, rear
     // right, rear left (Y is left).
     let contacts = numbers(0x30, 2, 12)?;
+    let skid = numbers(0x30, 0, 2)?;
     let footprint = numbers(0x2e, 0, 2)?;
     // The first of the models the entry names is the wheels at their most detailed.
     let wheels = entry.iter().find_map(|t| match t {
@@ -749,6 +752,7 @@ fn chassis_entry(jam: &Jam, name: &str) -> Option<(Chassis, String)> {
             vec3(&contacts[9..12]),
             vec3(&contacts[6..9]),
         ],
+        skid: [skid[0], skid[1]],
         footprint: Vec2::new(footprint[0], footprint[1]),
         stats: [
             numbers(0x3a, 0, 1)?[0],
@@ -1451,4 +1455,22 @@ fn every_driver_on_the_roster_can_be_raced_as() {
             && loaded.field[4].name == "Pharaoh Hotep"
     );
     assert!(!recast(&mut loaded, 4, "nobody"));
+}
+
+/// Every driver's chassis says how wide its skid marks are, front and back, and they
+/// are narrower than the car.
+#[cfg(test)]
+#[test]
+fn every_chassis_has_the_widths_of_its_skid_marks() {
+    let Some(jam) = open_jam() else { return };
+    for (code, ..) in roster::NAMES {
+        let Some(driver) = roster::driver(&jam, code) else {
+            continue;
+        };
+        let chassis = chassis(&jam, &driver.chassis).expect("a chassis");
+        let across = (chassis.wheels[0].y - chassis.wheels[1].y).abs();
+        for wide in chassis.skid {
+            assert!(wide > 0.0 && wide < across, "{code}: {:?} of {across}", chassis.skid);
+        }
+    }
 }

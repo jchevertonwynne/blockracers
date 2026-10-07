@@ -19,14 +19,20 @@ const SMOKE_PUFFS: u32 = 4;
 const SMOKE_HEIGHT: f32 = 2.0 * UNIT;
 /// A landing counts once the car has been off the ground this long.
 const AIRBORNE: f32 = 0.4;
-/// Skid marks are this wide and laid in pieces at least this long. A wheel's trail
-/// of them is as long as a second of its skid, a quarter of that in a powerslide, and
-/// all of it goes the moment the wheel stops skidding (`CarVisuals`, with
-/// `RaceDecalManager::Trail`, which keeps only its last few segments).
-const MARK_WIDTH: f32 = 0.28;
+/// Skid marks are as wide as the car's chassis says and laid in pieces at least this
+/// long. A wheel's trail of them is as long as a second of its skid, a quarter of
+/// that in a powerslide (`CarVisuals::UpdateSkidMarks`, with `RaceDecalManager::Trail`,
+/// which keeps only its last few segments). Which wheels leave one is `marking`'s to
+/// say. A wheel that stops marking while the car still skids loses its trail at once;
+/// when the skid is over what is left fades for a second (`StopSkidEffects`).
 const MARK_STEP: f32 = 0.25;
 const MARK_LIFE: f32 = 1.0;
 const MARK_LIFE_SLIDING: f32 = 0.25;
+const MARK_FADE: f32 = 1.0;
+/// `g_raceDecalTrailOffsetZ` and `g_raceDecalDefaultDepth`: a mark's box begins this
+/// far above the wheel and is this deep.
+const MARK_ABOVE: f32 = 6.0 * UNIT;
+const MARK_DEPTH: f32 = 15.0 * UNIT;
 /// They and the shadows sit this far off the road, to be seen.
 const MARK_LIFT: f32 = 0.03;
 
@@ -42,14 +48,34 @@ pub struct Effects {
     airborne: bool,
     contacts: u8,
     toss: u32,
-    /// Where each back wheel's skid mark has got to.
-    marks: [Option<Vec3>; 2],
+    /// Where each wheel's skid mark has got to.
+    marks: [Option<Vec3>; 4],
+    /// The trails left when a skid ended: what they are drawn with, black and
+    /// burning, and how long they have been fading.
+    fades: Vec<([Handle<StandardMaterial>; 2], f32)>,
 }
 
-/// A piece of skid mark: how long it has lain, how long it stays, and which back wheel
-/// it is of.
+/// A piece of skid mark: how long it has lain, how long it stays, which wheel it is
+/// of, and whether a turbo burnt it. One that is fading out is `Faded`.
 #[derive(Component)]
-pub struct Mark(f32, f32, usize);
+pub struct Mark(f32, f32, usize, bool);
+
+/// A piece of a trail that is fading, with how long it has been.
+#[derive(Component)]
+pub struct Faded(f32);
+
+/// `CarVisuals::UpdateSkidMarks`: which wheels (front left, front right, rear left,
+/// rear right) leave a mark while the car skids. In a spin all four do, under a turbo
+/// the back two, and otherwise the two of the side the car is sliding towards.
+fn marking(spinning: bool, turbo: bool, leftward: bool) -> [bool; 4] {
+    if spinning {
+        [true; 4]
+    } else if turbo {
+        [false, false, true, true]
+    } else {
+        [leftward, !leftward, leftward, !leftward]
+    }
+}
 
 /// What marks and shadows are drawn with.
 pub struct Looks {
@@ -74,14 +100,22 @@ pub fn kart_effects(
     mut player: Query<(&mut Kart, &mut Effects), With<Player>>,
     mut sources: Query<(&mut Emitter, &mut Transform)>,
     time: Res<Time>,
-    mut marks: Query<(Entity, &mut Mark)>,
+    mut marks: Query<(Entity, &mut Mark), Without<Faded>>,
+    mut faded: Query<(Entity, &mut Faded)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut looks: Local<Option<Looks>>,
+    track: Option<Res<crate::track::Track>>,
 ) {
     for (entity, mut mark) in &mut marks {
         mark.0 += time.delta_secs();
         if mark.0 > mark.1 {
+            commands.entity(entity).despawn();
+        }
+    }
+    for (entity, mut fade) in &mut faded {
+        fade.0 += time.delta_secs();
+        if fade.0 >= MARK_FADE {
             commands.entity(entity).despawn();
         }
     }
@@ -194,22 +228,85 @@ pub fn kart_effects(
         (false, None) => {}
     }
 
-    // Marks on the road behind the back wheels for as long as they skid.
-    for (side, wheel_index) in [2, 3].into_iter().enumerate() {
-        if !skidding {
-            // The whole trail goes at once.
-            if fx.marks[side].take().is_some() {
-                for (entity, mark) in &marks {
-                    // Those that have lasted their time are gone already.
-                    if mark.2 == side && mark.0 <= mark.1 {
-                        commands.entity(entity).despawn();
-                    }
-                }
+    // Trails left by skids that are over fade away.
+    fx.fades.retain_mut(|(shades, age)| {
+        *age += time.delta_secs();
+        let left = 1.0 - *age / MARK_FADE;
+        for (shade, full) in shades.iter().zip([&looks.skid, &looks.burn]) {
+            let full = materials.get(full).map_or(1.0, |m| m.base_color.alpha());
+            if let Some(mut shade) = materials.get_mut(shade) {
+                shade.base_color.set_alpha(full * left.max(0.0));
             }
+        }
+        if left <= 0.0 {
+            shades.iter().for_each(|shade| {
+                materials.remove(shade);
+            });
+        }
+        left > 0.0
+    });
+    // The skid over, every trail is let go together, to fade.
+    if !skidding && fx.marks.iter().any(Option::is_some) {
+        fx.marks = [None; 4];
+        let shades = [&looks.skid, &looks.burn].map(|look| {
+            let copy = materials.get(look).cloned().unwrap_or_default();
+            materials.add(copy)
+        });
+        for (entity, mark) in &marks {
+            // Those that have lasted their time are gone already.
+            if mark.0 <= mark.1 {
+                commands.entity(entity).insert((
+                    Faded(0.0),
+                    MeshMaterial3d(shades[mark.3 as usize].clone()),
+                ));
+            }
+        }
+        fx.fades.push((shades, 0.0));
+    }
+    // Marks on the road behind the wheels that skid, for as long as they do.
+    let leftward = k.vel.dot(k.rot * Vec3::X) < 0.0;
+    let marking = marking(k.spin > 0.0, boosting && k.boost_level > 0, leftward);
+    for (wheel_index, marking) in marking.into_iter().enumerate() {
+        if !skidding {
             continue;
         }
+        // A powerslide's trail is a shorter one, and a trail of the one kind is
+        // dropped for the other (`UpdateSkidMarks`), as is a wheel's that has
+        // stopped marking.
+        let life = if k.sliding {
+            MARK_LIFE_SLIDING
+        } else {
+            MARK_LIFE
+        };
+        let other = marks
+            .iter()
+            .any(|(_, mark)| mark.2 == wheel_index && mark.1 != life);
+        if !marking || other {
+            fx.marks[wheel_index] = None;
+            for (entity, mark) in &marks {
+                if mark.2 == wheel_index && mark.0 <= mark.1 {
+                    commands.entity(entity).despawn();
+                }
+            }
+            if !marking {
+                continue;
+            }
+        }
+        let side = wheel_index;
         let up = k.rot * Vec3::Y;
-        let at = wheel(wheel_index) + up * MARK_LIFT;
+        // `RaceDecalManager::Trail::AddSample`: a mark is laid on whatever of the
+        // road is under the wheel, from a little above it to well below, so that a
+        // car riding over the road, or floating over it, still marks it.
+        let under = track.as_ref().and_then(|track| {
+            track
+                .collision
+                .ground(wheel(wheel_index) + Vec3::Y * MARK_ABOVE, MARK_DEPTH)
+        });
+        let Some(under) = under else {
+            fx.marks[wheel_index] = None;
+            continue;
+        };
+        let at = under.point + under.normal * MARK_LIFT;
         let Some(from) = fx.marks[side] else {
             fx.marks[side] = Some(at);
             continue;
@@ -222,17 +319,9 @@ pub fn kart_effects(
         let material = if boosting { &looks.burn } else { &looks.skid };
         let piece = Transform::from_translation(from + along / 2.0)
             .looking_to(along, up)
-            .with_scale(Vec3::new(MARK_WIDTH, 1.0, along.length()));
+            .with_scale(Vec3::new(k.skid[wheel_index / 2], 1.0, along.length()));
         commands.spawn((
-            Mark(
-                0.0,
-                if k.sliding {
-                    MARK_LIFE_SLIDING
-                } else {
-                    MARK_LIFE
-                },
-                side,
-            ),
+            Mark(0.0, life, side, boosting),
             Mesh3d(looks.square.clone()),
             MeshMaterial3d(material.clone()),
             piece,
@@ -346,5 +435,19 @@ pub fn shadows(
                 visibility.set_if_neq(Visibility::Hidden);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::marking;
+
+    /// Front left, front right, rear left, rear right.
+    #[test]
+    fn the_wheels_that_mark_the_road_are_the_original_s() {
+        assert_eq!(marking(true, true, false), [true; 4]);
+        assert_eq!(marking(false, true, true), [false, false, true, true]);
+        assert_eq!(marking(false, false, true), [true, false, true, false]);
+        assert_eq!(marking(false, false, false), [false, true, false, true]);
     }
 }

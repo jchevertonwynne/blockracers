@@ -36,8 +36,10 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   bindings are changed on the options' controls page and kept with the settings.
   An axis can be bound to the accelerator and the brake (`input::Bound::Axis`; a
   pad's triggers to begin with), and from the countdown to the finish a pad hums
-  with the engine (`input::engine_hum`: a steady shake where the original has a
-  sine, which a pad's motors can't play). No pad has been tried on any of this.
+  with the engine (`input::engine_hum`: a shake that swells and dies away at the
+  period of the original's sine, which a pad's motors can't play outright, and a
+  steady one once that is too quick to play a frame at a time). No pad has been
+  tried on any of this.
 - **What has been won:** `src/progress.rs` keeps the circuits opened, the part sets
   and minifigure parts won and the records beaten; a racer's trophies are in its own
   record (`assets::lrs`). The build menu offers only what has been won. A circuit
@@ -88,18 +90,25 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   driven where the player likes, but the computer (a demo's driver too) follows
   the ring and not the road, and nothing ends the drive but leaving it.
 - **Loading:** `src/loading.rs` shows the race's `LOADSCRN.LSB` picture and its
-  ticks (`LoadingScreen`) for the frames before a race, which is loaded in one go.
+  ticks (`LoadingScreen`) while a race is loaded behind it, a step to a frame
+  (`loading::Step`, `STEPS`), the ticks filling in as the steps are done. A race
+  come to without the screen takes whatever steps are left as it is entered.
 - **The car's body:** `src/physics.rs` follows `RacerCarBody` and
   `RacerRigidBody`: angular momentum and its impulses (`physics::Rigid`, sent
   online in `net::state::State`), with a mass and centre of mass (`Kart::mass`,
-  `centre`) that a built car takes from its bricks (`build::Car::weight`). A
-  floating car is still levelled by an averaged probe; the original's slide body
-  is not ported, and nor is its ride height (`RIDE_HEIGHT` is 0, and says why).
+  `centre`) that a built car takes from its bricks (`build::Car::weight`). A car
+  on its wheels is set a ride height above the ground (`RIDE_HEIGHT`); one
+  floating on a turbo or a magnet is the original's slide body
+  (`physics::probe_hover`): held up over the ground under its two axles, its nose
+  lifted as it leaves the road and left so until it is back on its wheels.
 - **Ribbons:** `src/beams.rs` draws the lightning's bolt, the hook's rope and the
   streaks behind missiles and cannon balls (`BeamMesh`, `RaceTrailManager`) from
-  the `Action`s in the world; `hazards::hazard_looks` draws the crane's shadow (a
-  flat square, where the original lays a decal on the road) and the ghost's
-  after-images. The rope does not wind back in, and front wheels leave no marks.
+  the `Action`s in the world; `hazards::hazard_looks` draws the crane's shadow,
+  laid on the road as the original's decals are (`Collision::decal`), and the
+  ghost's after-images. A hook that lets go winds its rope in (the puff the
+  original shows where it let go is not drawn). Skid marks are `kart_effects`':
+  from whichever wheels the original marks with, laid flat on the road under
+  them and not cut to its shape as the crane's shadow is.
 - **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
   games drive their own car ahead of the host's word and are shown the rest. Online
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
@@ -170,7 +179,7 @@ menu instead. These combine with it:
 | `BRICK_FILM=C_AWARD1` | a film to show as the menu opens, by its folder in `/MENUDATA` (`C_AWARD1` to `C_AWARD4` are the circuit's places, `WINCAR` a champion's car set won, `WINCAR:c3` being the fourth circuit's, `WINRRCAR` Rocket Racer's, which is thirty-seven seconds, `WINVVCAR` Veronica Voltage's, `CIRCUIT1` to `CIRCUIT7` those before each circuit, `LEGAL` the opening notice and `CREDITS` the credits, which are two minutes; a key ends it after a second) |
 | `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brick_racers_progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
 | `BRICK_CHEATS=FSTFRWRD,NWHLS` | the licence's cheat codes, as if each were typed as its name (`NSLWJ`, `FLYSKYHGH`, `PGLLRD`, `PGLLYLL`, `PGLLGRN`, `LNFRRRM`, `RPCRNLY`, `MXPMX`, `FSTFRWRD`, `NWHLS`, `NCHSSS`, `NDRVR`; `NMRCHTS` clears them) |
-| `BRICK_LOADING=4` | begin on the loading screen and hold it that many seconds of the real clock, its ticks filling in (demos otherwise skip it) |
+| `BRICK_LOADING=4` | begin on the loading screen and hold it that many seconds of the real clock, its ticks filling in (demos otherwise skip it); `0` shows the load itself, as long as it takes |
 | `BRICK_RACER=4` | which of the garage's racers the player races as, counted from one |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |
