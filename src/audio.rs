@@ -321,13 +321,13 @@ pub fn plugin(app: &mut App) {
         .init_resource::<VoicePlaces>()
         .init_resource::<Cue>()
         .add_systems(Update, film_sound)
-        // Before the first screen is entered, which wants its music.
-        .add_systems(PreStartup, (load_banks, start_mixer))
+        .add_systems(PreStartup, start_mixer)
         .add_systems(OnEnter(Screen::Menu), menu_music)
         .add_systems(OnEnter(Screen::Race), load_circuit_bank)
         .add_systems(Update, music_volume)
         .add_systems(Update, race_cues.run_if(in_state(Screen::Race)))
         .add_systems(PostUpdate, flush);
+    load_banks(&mut app.world_mut().resource_mut::<Library>());
 }
 
 fn jam_path() -> PathBuf {
@@ -414,7 +414,10 @@ fn load_voices(jam: &Jam, racers: &[[String; 2]]) -> (Bank, Vec<usize>) {
 #[derive(Resource, Default)]
 pub struct VoicePlaces(pub Vec<usize>);
 
-fn load_banks(mut library: ResMut<Library>) {
+/// The sounds every screen has. They are loaded as the game is put together and not
+/// as it starts, because the first screen is entered, and wants its music, before
+/// anything that runs at the start has run.
+fn load_banks(library: &mut Library) {
     let Some(jam) = Jam::open(jam_path()) else {
         return;
     };

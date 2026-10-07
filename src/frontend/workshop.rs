@@ -1156,7 +1156,7 @@ pub fn show(
     mut bench: ResMut<Bench>,
     mut clear: ResMut<ClearColor>,
     mut camera: Single<
-        &mut Transform,
+        (&mut Transform, &mut Projection),
         (
             With<Camera3d>,
             Without<Turntable>,
@@ -1187,9 +1187,17 @@ pub fn show(
     let (eye, at) = match page {
         Page::Driver | Page::Licence => (Vec3::new(-1.6, 1.8, 4.6), Vec3::new(-1.6, 0.6, 0.0)),
         Page::Bricks => (Vec3::new(-1.2, 3.2, 6.0), Vec3::new(-1.2, 0.7, 0.0)),
+        // Lower, to stand clear of the name or the question written above the racer.
+        Page::Garage | Page::Racer | Page::Scrap => {
+            (Vec3::new(-1.3, 2.6, 6.0), Vec3::new(-1.3, 1.0, 0.0))
+        }
         _ => (Vec3::new(-1.3, 2.0, 6.0), Vec3::new(-1.3, 0.4, 0.0)),
     };
-    **camera = Transform::from_translation(eye).looking_at(at, Vec3::Y);
+    *camera.0 = Transform::from_translation(eye).looking_at(at, Vec3::Y);
+    // A race leaves the camera seeing wider than the garage is laid out for.
+    if let Projection::Perspective(lens) = &mut *camera.1 {
+        lens.fov = PerspectiveProjection::default().fov;
+    }
     clear.0 = WALL;
     let building = page == Page::Bricks;
     for mut table in &mut tables {
@@ -1299,7 +1307,13 @@ pub fn show(
 }
 
 /// Clears away what is on show when the menus are left.
-pub fn put_away(mut commands: Commands, exhibits: Query<Entity, With<Exhibit>>) {
+pub fn put_away(
+    mut commands: Commands,
+    mut bench: ResMut<Bench>,
+    exhibits: Query<Entity, With<Exhibit>>,
+) {
+    // Whatever page the menus are come back to has its racer to make again.
+    bench.stale = true;
     for exhibit in &exhibits {
         commands.entity(exhibit).despawn();
     }
