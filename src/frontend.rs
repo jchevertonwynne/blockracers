@@ -1,8 +1,7 @@
 //! The original game's front end, drawn from its own menu data: the screen layouts
 //! (`.MIB`), pictures, bitmap fonts and string tables in `MENUDATA`. Main menu, single
-//! race and options are here, and the build menu in `workshop`; the screens for
-//! things the port doesn't have (controls) are shown but can't be chosen. The video options are the port's
-//! own, and so is the extras page: the ways of racing the original doesn't have.
+//! race and options (the controls page among them) are here, and the build menu in
+//! `workshop`. The video options are the port's own, and so is the extras page: the ways of racing the original doesn't have.
 //!
 //! Racing online is the port's own too, and is reached where the original has its
 //! two-player race: a page to host or join from, the list of sessions the lobby
@@ -11,7 +10,9 @@
 //! no screens to take the places from.
 //!
 //! Colours and the make-up of each widget follow the styles in `GSTYLES.MSB`. The
-//! spinning models the original shows on these screens are not drawn.
+//! models of the screens are drawn onto pictures by cameras of their own: the main
+//! menu's figure (`mascot`), the room's portraits, the circuit on the race pages
+//! (`circuit`) and the parts on the driver page (`parts`).
 
 use crate::assets::{
     Jam,
@@ -25,6 +26,7 @@ use crate::championship::Championship;
 use crate::film::{Request, Showing};
 use crate::garage::Garage;
 use crate::input::{Bindings, Bound, Devices, EVENTS, PAD};
+use bevy::input::gamepad::{GamepadButton, GamepadInput};
 use crate::progress::Progress;
 use crate::menu::{
     Circuits, DIFFICULTIES, Extra, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, NAME_LENGTH, Screen,
@@ -46,12 +48,17 @@ use bevy::{
 };
 use std::collections::HashMap;
 
+mod circuit;
+mod licence;
 mod mascot;
+mod parts;
 mod portraits;
 mod workshop;
+use circuit::Preview;
 use mascot::Mascot;
+use parts::Parts;
 use portraits::Portraits;
-use workshop::Bench;
+pub(crate) use workshop::Bench;
 
 /// The original lays its menus out on a screen this size.
 const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
@@ -174,11 +181,12 @@ enum Typed {
 /// that are everyone's affair. How a player steers is their own.
 /// How many races a session's series may be of; none is no series.
 const SERIES: [u8; 4] = [0, 3, 5, 7];
-const VOTED: [Extra; 4] = [
+const VOTED: [Extra; 5] = [
     Extra::Mirror,
     Extra::Reverse,
     Extra::Bricks,
     Extra::Elimination,
+    Extra::Speed,
 ];
 /// The most sessions the join page lists.
 const LISTED: usize = 7;
@@ -417,6 +425,9 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Bench>()
         .init_resource::<Portraits>()
         .init_resource::<Mascot>()
+        .init_resource::<Preview>()
+        .init_resource::<Parts>()
+        .init_resource::<licence::Photo>()
         .add_systems(OnEnter(Screen::Menu), enter)
         .add_systems(
             OnExit(Screen::Menu),
@@ -425,6 +436,9 @@ pub fn plugin(app: &mut App) {
                 workshop::put_away,
                 portraits::put_away,
                 mascot::put_away,
+                circuit::put_away,
+                parts::put_away,
+                licence::put_away,
             ),
         )
         .add_systems(
@@ -436,6 +450,11 @@ pub fn plugin(app: &mut App) {
                 portraits::keep,
                 mascot::keep,
                 mascot::dress,
+                circuit::keep,
+                parts::keep,
+                circuit::dress,
+                licence::keep,
+                licence::dress,
                 draw,
                 workshop::show,
             )
@@ -1505,6 +1524,12 @@ fn notes(
                         .map(|bricks| format!("BRICKS {bricks}")),
                 );
                 said.extend(rules.elimination.then(|| "ELIMINATION".to_string()));
+                let speed = crate::menu::SPEEDS.get(rules.speed as usize);
+                said.extend(
+                    speed
+                        .filter(|_| rules.speed > 0)
+                        .map(|speed| format!("SPEED {}", speed.0)),
+                );
                 notes.push((
                     Rect::new(320.0, MAPS_END + 8.0, 320.0, MAPS_END + 8.0 + ICON),
                     said.join(", "),
@@ -1806,21 +1831,22 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
 }
 
 fn enter(
+    mut circuits: ResMut<Circuits>,
     mut menu: ResMut<Menu>,
     mut session: ResMut<Session>,
     mut progress: ResMut<Progress>,
     mut showing: ResMut<Showing>,
     garage: Res<Garage>,
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
     championship: Res<Championship>,
     art: Option<Res<Art>>,
-    mut opened: Local<bool>,
 ) {
     *menu = Menu::default();
     menu.focus = 2;
-    // `LegoRacers::Init`: the game opens on its notice. A demo has no time for it.
-    if !std::mem::replace(&mut *opened, true) && std::env::var("BRICK_DEMO").is_err() {
-        showing.request = Some(Request::legal());
+    // `MenuManager`: a test drive ends back in the garage (`c_flagReturnToGarage`).
+    if circuits.end_test_drive(&mut settings) {
+        (menu.page, menu.focus) = (Page::Garage, Page::Garage.first());
+        return;
     }
     // `BRICK_MENU=award` shows what winning the first circuit for the first time
     // looks like, for screenshots.
@@ -1999,7 +2025,7 @@ fn input(
     mouse: Res<ButtonInput<MouseButton>>,
     window: Single<&Window, With<PrimaryWindow>>,
     art: Res<Art>,
-    circuits: Res<Circuits>,
+    mut circuits: ResMut<Circuits>,
     mut settings: ResMut<Settings>,
     mut menu: ResMut<Menu>,
     mut next: ResMut<NextState<Screen>>,
@@ -2042,7 +2068,7 @@ fn input(
         return;
     }
     if std::mem::take(&mut menu.starting) {
-        next.set(Screen::Race);
+        next.set(Screen::Loading);
         return;
     }
     // `ControlConfigScreen::HandleKeyDown`: the page is waiting to be told what to
@@ -2051,9 +2077,27 @@ fn input(
         typed.clear();
         let entry = devices.entry();
         let key = keys.get_just_pressed().next().map(|key| Bound::Key(*key));
-        let button = devices.pressed.first().map(|button| Bound::Button(*button));
-        match key.or(button) {
-            Some(to) if Bindings::allowed(entry, to) => {
+        // A pad's trigger, or an axis pushed over, is bound as an axis where the
+        // thing can have one; any other button is a button.
+        let analog = |to: Bound| Bindings::allowed(entry, event, to);
+        let button = devices.pressed.first().map(|button| {
+            let trigger = Bound::Axis(GamepadInput::Button(*button), false);
+            let is_trigger = matches!(
+                button,
+                GamepadButton::LeftTrigger2 | GamepadButton::RightTrigger2
+            );
+            if is_trigger && analog(trigger) {
+                trigger
+            } else {
+                Bound::Button(*button)
+            }
+        });
+        let axis = devices
+            .pushed
+            .map(|(input, reversed)| Bound::Axis(input, reversed))
+            .filter(|to| analog(*to));
+        match key.or(button).or(axis) {
+            Some(to) if Bindings::allowed(entry, event, to) => {
                 settings.controls.set(entry, event, to);
                 devices.awaiting = None;
                 sfx.play(id::MENU_CONFIRM);
@@ -2459,6 +2503,11 @@ fn input(
             &mut sfx,
         );
         menu.drawn = false;
+        // `GarageScreen::StartTestDrive`: the race begins at once.
+        if std::mem::take(&mut bench.drive) {
+            circuits.begin_test_drive(&mut settings);
+            menu.starting = true;
+        }
         if let Some(page) = to {
             go(&mut menu, page, page.first());
         }
@@ -2636,7 +2685,7 @@ fn input(
             Action::Race | Action::TimeRace => {
                 sfx.play(id::MENU_CONFIRM);
                 (settings.time_race, settings.championship) = (action == Action::TimeRace, None);
-                next.set(Screen::Race);
+                next.set(Screen::Loading);
             }
             Action::StartSeries => match championship.begin() {
                 // A circuit is three laps a race against a full field.
@@ -2694,6 +2743,9 @@ fn draw(
         progress,
         showing,
         mascot,
+        preview,
+        parts,
+        photo,
     ): (
         Res<Role>,
         Res<Session>,
@@ -2707,6 +2759,9 @@ fn draw(
         Res<Progress>,
         Res<Showing>,
         Res<Mascot>,
+        Res<Preview>,
+        Res<Parts>,
+        Res<licence::Photo>,
     ),
 ) {
     // A film has the screen to itself, and the menu is drawn afresh after it.
@@ -2798,9 +2853,25 @@ fn draw(
             pieces.push((picture.clone(), scene, Color::WHITE, false));
         }
     }
+    if menu.page == Page::Driver {
+        // `EditDriverScreen::CreateWidgets`: each part by itself in its selector.
+        for (picture, area) in parts.pictures(&art) {
+            pieces.push((picture, area, Color::WHITE, false));
+        }
+    }
     if menu.page == Page::Licence {
         // `DriverLicenseScreen::CreateWidgets`: the trophy the racer has for each
         // circuit, where the licence has a place for it.
+        // The licence itself, and the driver's photograph in the scene's place over it.
+        picture!("license", art.place("drvrlice", "license").min, Color::WHITE);
+        if let Some(picture) = &photo.picture {
+            pieces.push((
+                picture.clone(),
+                workshop::on_licence(&art, "platform"),
+                Color::WHITE,
+                false,
+            ));
+        }
         let card = art.place("drvrlice", "license").min;
         for circuit in 0..8 {
             let trophy = workshop::trophy(&bench, circuit);
@@ -2841,6 +2912,12 @@ fn draw(
         // The frame the original shows the circuit in; here it holds the race's settings.
         let frame = art.place("race", "brickbox");
         fills.push((frame, BOX_FILL));
+        // `SingleRaceSelectBase::CreateWidgets`: the race's scene, darkened to be read over.
+        if let Some(picture) = &preview.picture {
+            let area = art.place("race", "singrace");
+            let dim = circuit::DIM;
+            pieces.push((picture.clone(), area, Color::srgb(dim, dim, dim), false));
+        }
         let (corner, edge) = (16.0, frame.size() - Vec2::splat(32.0));
         let inner = frame.min + Vec2::splat(corner);
         for (name, at, size) in [
@@ -2926,6 +3003,9 @@ fn draw(
             }
             if settings.bricks > 0 {
                 extras.push(format!("BRICKS {}", settings.shown(Extra::Bricks)));
+            }
+            if settings.speed > 0 {
+                extras.push(format!("SPEED {}", settings.shown(Extra::Speed)));
             }
             let mut lines = vec![
                 circuits.0[settings.circuit].name.clone(),

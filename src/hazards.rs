@@ -2,8 +2,9 @@
 //! doors that open when shot, and the rest. Each follows its class in the original's
 //! `race/hazards`; what they look like comes from the circuit's own animated models.
 //!
-//! Not here: the crane's shadow on the road, the ghost's three after-images, and the
-//! solid box a rolling rock is in the original (here it is a ball).
+//!
+//! The crane's shadow on the road is `MovingObstacleHazard`'s decal, and the ghost's
+//! after-images are `GhostHazard`'s three copies of its trail model (`hazard_looks`).
 
 use crate::assets::{
     Jam,
@@ -16,7 +17,7 @@ use crate::items::{Action, Beam, ItemAssets};
 use crate::kart::{Kart, PLAYER_SLOT};
 use crate::particles::{Emitter as Particles, Emitters};
 use crate::physics::{self, UNIT};
-use crate::scenery::{Animated, Fade, Prop, Retrack, Scenery, Scrolling, Swatches, to_world};
+use crate::scenery::{Animated, Fade, Models, Prop, Retrack, Scenery, Scrolling, Swatches, to_world};
 use crate::track::Track;
 use crate::{Phase, Race};
 use bevy::prelude::*;
@@ -35,6 +36,22 @@ const LAVA_SOUND: usize = id::AMBIENT + 2;
 const GHOST_LOOP: usize = id::AMBIENT + 12;
 const GHOST_NEAR: usize = id::AMBIENT + 13;
 const GHOST_HIT: usize = id::AMBIENT + 15;
+
+/// The model the ghost's after-images are copies of, and the copies the scenery makes
+/// of it: how solid each is drawn (`GhostHazard::Draw`: 0x2a a step, the nearest the most).
+pub const GHOST_IMAGE: &str = "gtrail";
+pub const GHOST_IMAGES: [(&str, f32); 3] = [
+    ("gtrail-1", 0x7e as f32 / 255.0),
+    ("gtrail-2", 0x54 as f32 / 255.0),
+    ("gtrail-3", 0x2a as f32 / 255.0),
+];
+/// How many frames of its animation each after-image is behind the ghost
+/// (`c_trailFrameOffsetStep`).
+const GHOST_IMAGE_STEP: f32 = 100.0;
+/// The crane's shadow, a square this wide and this deep to the road (`MovingObstacleHazard`).
+pub const CRANE_SHADOW: &str = "crneshd";
+const CRANE_SHADOW_SIZE: f32 = 13.0;
+const CRANE_SHADOW_DEPTH: f32 = 15.0;
 
 /// Materials swapped onto models: the code puzzle's lights show red where the first
 /// pad of a pair is the right one and blue where the second is.
@@ -79,9 +96,13 @@ pub enum Kind {
     },
     /// A solid lump riding on a bone of an animated model.
     /// `start` is how far into its animation it begins, in frames.
+    /// A solid box (`size`, in game units) that turns with its bone when it is a rock
+    /// (a model named `rk...`) and stands square to the world otherwise
+    /// (`RollingRockHazard`).
     RollingRock {
         prop: String,
-        radius: f32,
+        size: Vec3,
+        turns: bool,
         start: f32,
         last: Option<Vec3>,
     },
@@ -426,12 +447,12 @@ fn parse(tokens: &[Token]) -> Vec<Hazard> {
                     _ => String::new(),
                 };
                 let size = vec3(&fields[4.min(fields.len())..]);
-                let radius = (size.x + size.y + size.z) / 6.0 * UNIT;
                 (
                     number(fields.get(2)) as i32,
                     Kind::RollingRock {
+                        turns: prop.starts_with("rk"),
                         prop,
-                        radius,
+                        size,
                         start: number(fields.get(3)),
                         last: None,
                     },
@@ -517,6 +538,46 @@ fn spin(k: &mut Kart) -> bool {
 fn touching(k: &Kart, at: Vec3, radius: f32) -> bool {
     (k.pos + Vec3::Y * physics::BODY_POINT_HEIGHT).distance_squared(at)
         < (radius + KART_RADIUS * UNIT).powi(2)
+}
+
+/// How far to move a ball of `reach` at `point` to clear the box at `centre`, whose
+/// sides lie along `axes` and reach `half` each way, and which way that is; none if
+/// they are apart. The shove is level, as cars are shoved along the ground.
+fn push_out_of_box(
+    point: Vec3,
+    centre: Vec3,
+    axes: [Vec3; 3],
+    half: Vec3,
+    reach: f32,
+) -> Option<(Vec3, Vec3)> {
+    let offset = point - centre;
+    let local = Vec3::new(
+        offset.dot(axes[0]),
+        offset.dot(axes[1]),
+        offset.dot(axes[2]),
+    );
+    let (normal, depth) = if local.abs().cmple(half).all() {
+        // Inside: out by the nearest face.
+        let gaps = half - local.abs();
+        let i = if gaps.x <= gaps.y && gaps.x <= gaps.z {
+            0
+        } else if gaps.y <= gaps.z {
+            1
+        } else {
+            2
+        };
+        (axes[i] * local[i].signum(), gaps[i] + reach)
+    } else {
+        let gap = local - local.clamp(-half, half);
+        if gap.length_squared() >= reach * reach {
+            return None;
+        }
+        let normal = (axes[0] * gap.x + axes[1] * gap.y + axes[2] * gap.z).normalize();
+        (normal, reach - gap.length())
+    };
+    let level = normal.with_y(0.0);
+    let way = level.try_normalize().unwrap_or(Vec3::X);
+    Some((way * depth / level.length().max(0.2), way))
 }
 
 pub fn hazards(
@@ -921,7 +982,8 @@ pub fn hazards(
             }
             Kind::RollingRock {
                 prop: name,
-                radius,
+                size,
+                turns,
                 last,
                 ..
             } => {
@@ -930,22 +992,34 @@ pub fn hazards(
                 };
                 let moving = last.map_or(Vec3::ZERO, |last| (centre - last) / dt.max(1e-3));
                 *last = Some(centre);
+                let square = [Vec3::X, Vec3::Y, Vec3::Z].map(|v| to_world(v).normalize());
+                let axes = if *turns {
+                    prop(name)
+                        .and_then(|e| props.get(e).ok())
+                        .and_then(|(p, a, _)| {
+                            let a = a?;
+                            Some([Vec3::X, Vec3::Y, Vec3::Z].map(|v| a.bone_axis(p, 1, v)))
+                        })
+                        .unwrap_or(square)
+                } else {
+                    square
+                };
+                let half = *size * 0.5 * UNIT;
+                let reach = KART_RADIUS * UNIT;
                 for (_, mut k) in &mut karts {
-                    if k.warp > 0.0 || !touching(&k, centre, *radius) {
+                    if k.warp > 0.0 {
                         continue;
                     }
-                    // Shoved out of the way, taking on the lump's own motion.
-                    let away = (k.pos - centre)
-                        .with_y(0.0)
-                        .try_normalize()
-                        .unwrap_or(Vec3::X);
-                    let overlap =
-                        *radius + KART_RADIUS * UNIT - (k.pos - centre).with_y(0.0).length();
-                    k.pos += away * overlap.max(0.0);
+                    let at = k.pos + Vec3::Y * physics::BODY_POINT_HEIGHT;
+                    let Some((shove, away)) = push_out_of_box(at, centre, axes, half, reach)
+                    else {
+                        continue;
+                    };
+                    // Shoved out of the way, taking on the box's own motion.
+                    k.pos += shove;
                     let closing = (k.vel - moving).dot(away);
                     if closing < 0.0 {
-                        let bounce = away * closing * 1.5;
-                        k.vel -= bounce;
+                        k.vel -= away * closing * 1.5;
                     }
                 }
             }
@@ -1118,7 +1192,7 @@ pub fn hazards(
                 for (_, mut k) in &mut karts {
                     if !k.shielded() && touching(&k, centre, 16.0 * UNIT) && spin(&mut k) {
                         // Stopped dead and tossed in the air.
-                        k.vel = Vec3::Y * 150.0 * FORCE;
+                        k.vel = Vec3::Y * 150.0 * FORCE * k.pace;
                         k.spin_out = physics::SPIN_OUT_TIME;
                         k.contacts = 0;
                         k.cues.reaction = Some(false);
@@ -1266,6 +1340,133 @@ pub fn hazards(
 }
 
 /// Shows the code puzzle's answer on its three lights.
+/// What hazards show beyond their own models: the crane's shadow on the road, and the
+/// ghost's after-images.
+pub fn hazard_looks(
+    mut commands: Commands,
+    hazards: Option<Res<Hazards>>,
+    scenery: Option<Res<Scenery>>,
+    models: Option<Res<Models>>,
+    swatches: Option<Res<Swatches>>,
+    track: Option<Res<Track>>,
+    props: Query<(&Prop, Option<&Animated>)>,
+    mut things: Query<(&mut Transform, &mut Visibility)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut shadow_look: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
+    mut made: Local<std::collections::HashMap<usize, Vec<Entity>>>,
+) {
+    let (Some(hazards), Some(scenery), Some(track)) = (hazards, scenery, track) else {
+        return;
+    };
+    for (index, hazard) in hazards.all.iter().enumerate() {
+        let shown = if hazard.active {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        let alive = made
+            .get(&index)
+            .is_some_and(|all| all.iter().all(|e| things.contains(*e)));
+        match &hazard.kind {
+            Kind::Crane { .. } => {
+                let Some(&crane) = scenery.0.get("crane") else {
+                    continue;
+                };
+                let Ok((prop, Some(animated))) = props.get(crane) else {
+                    continue;
+                };
+                if !alive {
+                    let Some(picture) = swatches.as_ref().and_then(|s| s.0.get(CRANE_SHADOW))
+                    else {
+                        continue;
+                    };
+                    let (mesh, material) = shadow_look.get_or_insert_with(|| {
+                        let size = CRANE_SHADOW_SIZE * UNIT;
+                        let material = StandardMaterial {
+                            base_color_texture: Some(picture.clone()),
+                            unlit: true,
+                            alpha_mode: AlphaMode::Blend,
+                            cull_mode: None,
+                            ..default()
+                        };
+                        (
+                            meshes.add(Plane3d::default().mesh().size(size, size)),
+                            materials.add(material),
+                        )
+                    });
+                    let entity = commands
+                        .spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(material.clone()),
+                            Transform::default(),
+                            Visibility::Hidden,
+                            DespawnOnExit(crate::menu::Screen::Race),
+                        ))
+                        .id();
+                    made.insert(index, vec![entity]);
+                    continue;
+                }
+                let entity = made[&index][0];
+                let Ok((mut transform, mut visibility)) = things.get_mut(entity) else {
+                    continue;
+                };
+                // Under the crane's hook, laid on the road below it, with the crane's
+                // own X for its up.
+                let centre = animated.bone_position(prop, 3, 0.0);
+                let ground = track.collision.ground(
+                    centre + Vec3::Y * CRANE_SHADOW_DEPTH * 0.5 * UNIT,
+                    CRANE_SHADOW_DEPTH * UNIT,
+                );
+                let Some(ground) = ground.filter(|_| hazard.active) else {
+                    visibility.set_if_neq(Visibility::Hidden);
+                    continue;
+                };
+                let up = to_world(prop.rotation * Vec3::X).with_y(0.0);
+                let yaw = Quat::from_rotation_arc(
+                    Vec3::NEG_Z,
+                    up.try_normalize().unwrap_or(Vec3::NEG_Z),
+                );
+                transform.rotation = Quat::from_rotation_arc(Vec3::Y, ground.normal) * yaw;
+                transform.translation = ground.point + ground.normal * 0.03;
+                visibility.set_if_neq(Visibility::Inherited);
+            }
+            Kind::Ghost { .. } => {
+                let (Some(&ghost), Some(models)) = (scenery.0.get("ghostly"), &models) else {
+                    continue;
+                };
+                let Ok((prop, Some(animated))) = props.get(ghost) else {
+                    continue;
+                };
+                if !alive {
+                    let all = GHOST_IMAGES
+                        .iter()
+                        .filter_map(|(name, _)| {
+                            models.attach(&mut commands, name, ghost, prop.scale, default())
+                        })
+                        .collect();
+                    made.insert(index, all);
+                    continue;
+                }
+                // Each is where the ghost was a few frames back.
+                let frame = animated.frame().floor();
+                let total = animated.frame_count().max(1.0);
+                for (n, &entity) in made[&index].iter().enumerate() {
+                    let behind = GHOST_IMAGE_STEP * (n + 1) as f32;
+                    let at = (frame - behind).rem_euclid(total);
+                    let (rotation, position) = animated.pose(1, at);
+                    if let Ok((mut transform, mut visibility)) = things.get_mut(entity) {
+                        transform.translation = position;
+                        transform.rotation = rotation;
+                        visibility.set_if_neq(shown);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn code_lights(
     time: Res<Time>,
     hazards: Option<Res<Hazards>>,
@@ -1317,6 +1518,25 @@ pub fn code_lights(
 mod tests {
     use super::*;
 
+    /// A rock is a box and not a ball: its corners are felt where a ball of its mean
+    /// size would be missed, and its flat faces push straight out.
+    #[test]
+    fn a_rock_is_a_box() {
+        let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+        let half = Vec3::new(10.0, 2.0, 1.0);
+        // Out along its length, past where a ball of its mean size ends.
+        assert!(push_out_of_box(Vec3::new(12.0, 0.0, 0.0), Vec3::ZERO, axes, half, 3.0).is_some());
+        assert!(push_out_of_box(Vec3::new(14.0, 0.0, 0.0), Vec3::ZERO, axes, half, 3.0).is_none());
+        // Beside it, short of its length, it is nearer than a ball's edge would be.
+        let (shove, away) =
+            push_out_of_box(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, axes, half, 3.0).unwrap();
+        assert_eq!(away, Vec3::Z);
+        assert!(shove.z > 0.0 && shove.x == 0.0);
+        // Turned a quarter, its length lies along Z.
+        let turned = [Vec3::Z, Vec3::Y, Vec3::X];
+        assert!(push_out_of_box(Vec3::new(0.0, 0.0, 12.0), Vec3::ZERO, turned, half, 3.0).is_some());
+    }
+
     /// Needs the original game data; silently passes without it.
     #[test]
     fn every_circuit_s_hazards_load() {
@@ -1331,8 +1551,8 @@ mod tests {
             kinds += hazards.len();
             for hazard in &hazards {
                 match &hazard.kind {
-                    Kind::RollingRock { prop, radius, .. } => {
-                        assert!(!prop.is_empty() && *radius > 0.0, "{name}")
+                    Kind::RollingRock { prop, size, .. } => {
+                        assert!(!prop.is_empty() && size.min_element() > 0.0, "{name}")
                     }
                     Kind::Launcher {
                         sources,

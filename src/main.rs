@@ -1,7 +1,9 @@
 mod assets;
 mod audio;
+mod beams;
 mod build;
 mod camera;
+mod cheats;
 mod championship;
 mod collision;
 mod events;
@@ -10,12 +12,15 @@ mod frontend;
 mod garage;
 mod gauntlet;
 mod hazards;
+mod helter;
 mod hud;
 mod input;
 mod item_models;
+mod lighting;
 mod items;
 mod kart;
 mod kart_effects;
+mod loading;
 mod menu;
 mod meshgen;
 mod mixer;
@@ -51,6 +56,16 @@ use world::LoadedWorld;
 
 const SKY: Color = Color::srgb(0.25, 0.55, 0.95);
 const COUNTDOWN: f32 = 3.0;
+
+/// How long the lights count before a race: none on the garage's test drive
+/// (`RaceSession::m_returnToGarage`).
+fn countdown(settings: &Settings) -> f32 {
+    if settings.test_drive.is_some() {
+        0.0
+    } else {
+        COUNTDOWN
+    }
+}
 /// The camera sweeps in over the grid for this long, to the starting jingle.
 const INTRO: f32 = 2.0;
 /// How long the rest of the field is given to come in once the player has
@@ -266,11 +281,15 @@ fn main() {
             mode == Some("menu"),
         ))
     });
-    let circuits = Circuits::find();
+    let mut circuits = Circuits::find();
     let mut settings = Settings::new(&circuits);
     // A demo is set up by its variables alone, and leaves the kept settings as they are.
     if demo.is_none() {
         settings.restore();
+    }
+    // `BRICK_RACE=TEST`: a demo of the garage's test drive.
+    if demo.is_some() && std::env::var("BRICK_RACE").as_deref() == Ok(menu::TEST_TRACK) {
+        circuits.begin_test_drive(&mut settings);
     }
     let keeping = demo.is_none();
     // `BRICK_LAPS=1`: how long a demo's race is.
@@ -293,6 +312,13 @@ fn main() {
         set("BRICK_REVERSE"),
         set("BRICK_ELIMINATION"),
     );
+    // `BRICK_SPEED=2` has the cars that many times as fast, or as near as there is.
+    if let Some(pace) = std::env::var("BRICK_SPEED").ok().and_then(|pace| pace.parse::<f32>().ok()) {
+        settings.speed = menu::SPEEDS
+            .iter()
+            .position(|speed| speed.1 >= pace)
+            .unwrap_or(menu::SPEEDS.len() - 1);
+    }
     if let Ok(colour) = std::env::var("BRICK_BRICKS") {
         settings.bricks = ["normal", "red", "yellow", "blue", "green", "none", "random"]
             .iter()
@@ -363,6 +389,9 @@ fn main() {
             // A demo online waits at the menu for its session's race to begin.
             app.insert_state(if on_menu || auto.is_some() {
                 Screen::Menu
+            } else if std::env::var("BRICK_LOADING").is_ok() {
+                // `BRICK_LOADING=<seconds>`: a demo of the loading screen.
+                Screen::Loading
             } else {
                 Screen::Race
             });
@@ -382,6 +411,8 @@ fn main() {
         .init_resource::<camera::Rig>()
         .init_resource::<Pause>()
         .init_resource::<variant::Variant>()
+        .insert_resource(cheats::Cheats::from_env())
+        .init_resource::<cheats::Raced>()
         .init_resource::<replay::Replay>()
         .init_resource::<replay::Photo>()
         // Online the settings are the session's, and not the player's to be kept.
@@ -395,10 +426,6 @@ fn main() {
         .init_resource::<time_race::TimeRace>()
         .insert_resource(championship)
         .insert_resource(progress)
-        .add_systems(
-            OnEnter(Screen::Loading),
-            |mut next: ResMut<NextState<Screen>>| next.set(Screen::Race),
-        )
         .add_plugins((
             menu::plugin,
             frontend::plugin,
@@ -406,6 +433,8 @@ fn main() {
             net::plugin,
             input::plugin,
             film::plugin,
+            loading::plugin,
+            lighting::plugin,
         ))
         .add_systems(
             Update,
@@ -442,6 +471,7 @@ fn main() {
                 (
                     kart::player_input,
                     kart::ai_drive,
+                    cheats::fly_sky_high,
                     items::use_items,
                     items::actions,
                     kart::kart_physics,
@@ -463,7 +493,7 @@ fn main() {
                 events::track_events,
                 events::part_animations,
                 events::effects,
-                (hazards::hazards, hazards::code_lights, sky::change).chain(),
+                (beams::beams, beams::trails, hazards::hazards, hazards::hazard_looks, hazards::code_lights, sky::change).chain(),
                 (
                     item_models::dress_actions,
                     item_models::dress_karts,
@@ -479,6 +509,9 @@ fn main() {
                     .chain(),
                 kart::sync_karts,
                 kart::sync_wheels,
+                cheats::hide_parts,
+                cheats::fast_forward,
+                cheats::take_codes,
                 (
                     chase_camera.run_if(not(replay::shooting)),
                     replay::photo.run_if(not(net::online)),
@@ -536,9 +569,18 @@ fn load_race(
     role: Res<net::Role>,
     lineup: Option<Res<net::Lineup>>,
     garage: Res<garage::Garage>,
+    mut cheats: ResMut<cheats::Cheats>,
 ) {
     let circuit = &circuits.0[settings.circuit];
-    let variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
+    let mut variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
+    // The licence's cheat codes: which of them this race has.
+    let raced = cheats.begin(
+        settings.championship.is_some(),
+        settings.time_race,
+        *role != net::Role::Offline,
+    );
+    variant.mirror |= raced.mirrors(&championship, circuit.race.as_deref());
+    commands.insert_resource(raced);
     commands.insert_resource(variant);
     // Everything loaded and placed from here on is the mirror's side of the circuit.
     scenery::set_mirror(variant.mirror);
@@ -586,11 +628,10 @@ fn load_race(
                 warn!("could not load {}; using the brick circuit", circuit.name);
             }
             let mut track = Track::built(circuit.layout);
-            // The gauntlet has hazards of the game's to stand round its road, where
-            // the game's data is there to take them from.
-            let gauntlet = circuit.race.is_none() && circuit.layout == track::Layout::Gauntlet;
-            let furnished = if gauntlet {
-                gauntlet::load(&mut track, settings.championship.as_deref())
+            // Our own circuits have hazards of the game's to stand round their roads,
+            // where the game's data is there to take them from.
+            let furnished = if circuit.race.is_none() {
+                gauntlet::load(circuit.layout, &mut track, settings.championship.as_deref())
             } else {
                 None
             };
@@ -623,7 +664,7 @@ fn load_race(
     commands.insert_resource(Race {
         phase: Phase::Intro,
         intro: INTRO,
-        countdown: COUNTDOWN,
+        countdown: countdown(&settings),
         time: 0.0,
         // Online the cars are driven by whoever is at them, a demo's too.
         demo: demo.is_some() && *role == net::Role::Offline,
@@ -958,7 +999,7 @@ fn race_flow(
         }
         race.phase = Phase::Intro;
         race.intro = INTRO;
-        race.countdown = COUNTDOWN;
+        race.countdown = countdown(&settings);
         return;
     }
     match race.phase {

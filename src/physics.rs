@@ -12,9 +12,15 @@
 //! leaning by `kart`; here it only stops feeling the surface under it and bounces
 //! off any landing.
 //!
-//! Where the original integrates a full rigid body with inertia tensors and then
-//! cancels most of the angular motion again, this keeps the body's attitude kinematic:
-//! four wheel probes find the ground and the body is levelled onto it.
+//! The body is the original's rigid body (`RacerRigidBody`, `RacerCarBody`): it has a
+//! mass, a centre of mass and the inertia of the box every car is given, and carries
+//! angular momentum that yaw, roll and pitch impulses and the support of the wheels
+//! add to and take from. Each step integrates it as the original does (forces, then
+//! the body's position and attitude, then the tilt limit), and then four wheel probes
+//! find the ground and, with two wheels or more in contact, set the body on it
+//! (`UpdateWheelContacts`, `SnapToContacts`). A car floating on its turbo or a magnet
+//! (the original's slide body) is still levelled by `level` and has no angular
+//! momentum but its yaw.
 
 use crate::collision::Collision;
 use crate::kart::{Controls, Kart};
@@ -84,7 +90,156 @@ const AIRBORNE_DROP: f32 = 8.0 * UNIT;
 const STOP_THRUST: f32 = THRUST * 2.0;
 /// Every champion's car weighs this (`CHAMPS.CCB`); it turns a surface's rolling
 /// resistance into drag.
-const MASS: f32 = 4500.0;
+pub const MASS: f32 = 4500.0;
+/// Where a champion's car has its centre of mass, in the game's units and axes
+/// (`CHAMPS.CCB`).
+pub const CENTRE_OF_MASS: Vec3 = Vec3::new(-1.0, 0.0, -1.0);
+
+/// A centre of mass given in the game's units and axes (X forward, Y left, Z up) from
+/// the car's origin, in ours.
+pub fn centre_of_mass(game: Vec3) -> Vec3 {
+    Vec3::new(-game.y, game.z, -game.x) * UNIT
+}
+
+/// `Racer::InitializePhysics` gives every car the same box to take its inertia from:
+/// length, width and height.
+const BOX: [f32; 3] = [8.0, 5.0, 6.2];
+const BOX_INERTIA: f32 = 0.083333336;
+/// The body's angular half is kept in the original's units and on its clock: game
+/// units, milliseconds, and mass in whatever the car's mass is given in.
+pub const MS: f32 = 1000.0;
+/// Below this much turning in a step, with nothing twisting the body, it stops turning
+/// (`RacerRigidBody::Update`, a squared angle).
+const ANGULAR_REST: f32 = 0.00060000003;
+/// `LimitUprightTilt`: the body may lean 45 degrees from upright, and is put back to
+/// that when it leans further.
+const UPRIGHT_ANGLE: f32 = 0.78539819;
+const UPRIGHT_MIN_COS: f32 = 0.70710677;
+/// Each wheel in contact is held up with this share of a gravity (`1 / (wheels + 8)`)
+/// that the body's torque is worked out from.
+const CONTACT_SHARE: f32 = 8.0;
+/// `g_defaultRideHeight` (0.2 units) is left out: the port's wheel points are already
+/// where the tyres meet the road, and lifting the body by it catches on the byways of
+/// the circuits built here. How far, a millisecond, a wheel looks below itself for the
+/// ground while the car is on it.
+const RIDE_HEIGHT: f32 = 0.0;
+const SUPPORT_SWEEP: f32 = 0.04 * UNIT;
+/// `g_wheelLengthwiseIndices`, `g_wheelSidewaysIndices` and `g_wheelDiagonalIndices`:
+/// the wheel in line with each lengthwise, across and corner to corner.
+const LENGTHWISE: [usize; 4] = [2, 3, 0, 1];
+const SIDEWAYS: [usize; 4] = [1, 0, 3, 2];
+const DIAGONAL: [usize; 4] = [3, 2, 1, 0];
+
+/// The angular half of `RacerRigidBody`. Its inertia is that of the car's box, in the
+/// body's own axes: about the sideways axis, the up axis and the forward one.
+pub fn inertia(mass: f32) -> Vec3 {
+    let [x, y, z] = BOX;
+    let (xx, yy, zz) = (x * x, y * y, z * z);
+    Vec3::new(
+        mass / y * (zz + xx) * BOX_INERTIA,
+        mass / z * (yy + xx) * BOX_INERTIA,
+        mass / x * (zz + yy) * BOX_INERTIA,
+    )
+}
+
+/// What a car's body keeps from step to step beyond where it is and how it is turned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Rigid {
+    /// Angular momentum, on the world's axes.
+    pub momentum: Vec3,
+    /// Time left, in seconds, of a yaw, a roll and a pitch impulse. When one runs out
+    /// the momentum about that axis is taken away again.
+    pub yaw: f32,
+    pub roll: f32,
+    pub pitch: f32,
+}
+
+impl Rigid {
+    /// `UpdateAngularVelocity`: radians a millisecond, on the world's axes.
+    fn velocity(&self, rot: Quat, mass: f32) -> Vec3 {
+        rot * ((rot.inverse() * self.momentum) / inertia(mass))
+    }
+
+    /// `AddAngularImpulse`: the momentum that turns the body at `rate` radians a
+    /// millisecond about `axis`.
+    fn impulse(&mut self, rot: Quat, mass: f32, axis: Vec3, rate: f32) {
+        self.momentum += rot * ((rot.inverse() * (axis * rate)) * inertia(mass));
+    }
+
+    /// `ApplyYawImpulse`: turns at `rate` for `time` more, whatever the body did before.
+    fn turn(&mut self, rot: Quat, mass: f32, rate: f32, time: f32) {
+        self.yaw = time;
+        let up = rot * Vec3::Y;
+        self.cancel_along(up);
+        self.impulse(rot, mass, up, rate);
+    }
+
+    /// `ApplyPitchImpulse`, unless a roll is going: noses the body over at `rate` a
+    /// millisecond for `time` seconds (the sideways axis is the pitch's).
+    pub fn pitch(&mut self, rot: Quat, mass: f32, rate: f32, time: f32) {
+        if self.roll > 0.0 {
+            return;
+        }
+        self.pitch = time;
+        let side = rot * Vec3::NEG_X;
+        self.cancel_along(side);
+        self.impulse(rot, mass, side, rate);
+    }
+
+    /// `CancelAngularMomentumAlong`.
+    fn cancel_along(&mut self, axis: Vec3) {
+        self.momentum -= axis * self.momentum.dot(axis);
+    }
+
+    /// `CancelAngularMomentum`: takes away the momentum that would tip the body about
+    /// the line the support at `offset` (from the centre of mass) makes with the way
+    /// it pushes, `direction`, so that the body does not turn into the ground.
+    fn cancel(&mut self, direction: Vec3, offset: Vec3) {
+        let axis = offset.cross(direction).normalize_or_zero();
+        let along = self.momentum.dot(axis);
+        if along >= 0.0 {
+            self.momentum -= axis * along;
+        }
+    }
+
+    /// The timers of `RacerCarBody::Update`, which take the momentum an impulse gave
+    /// away when the impulse is over. A car that is spinning is turned by the spin.
+    fn tick(&mut self, rot: Quat, dt: f32, spinning: bool) {
+        if !spinning {
+            if dt >= self.yaw {
+                self.yaw = 0.0;
+                self.cancel_along(rot * Vec3::Y);
+            } else {
+                self.yaw -= dt;
+            }
+        }
+        if self.roll > 0.0 {
+            if dt >= self.roll {
+                self.roll = 0.0;
+                self.cancel_along(rot * Vec3::NEG_Z);
+            } else {
+                self.roll -= dt;
+            }
+        }
+        if self.pitch > 0.0 {
+            if dt >= self.pitch {
+                self.pitch = 0.0;
+                self.cancel_along(rot * Vec3::NEG_X);
+            } else {
+                self.pitch -= dt;
+            }
+        }
+    }
+}
+
+/// A body's attitude from its forward and up directions, which are made square
+/// (`SetDirectionUp`: the forward one is kept).
+fn attitude(forward: Vec3, up: Vec3) -> Option<Quat> {
+    let forward = forward.try_normalize()?;
+    let up = up.reject_from(forward).try_normalize()?;
+    let left = up.cross(forward);
+    Some(Quat::from_mat3(&Mat3::from_cols(-left, up, -forward)).normalize())
+}
 
 /// (yaw gain, slip ratio, maximum angle between body and direction of travel)
 type Slip = (f32, f32, f32);
@@ -125,8 +280,10 @@ fn tangent(v: Vec3, normal: Vec3, fallback: Vec3) -> Vec3 {
 
 /// Advances one kart by `dt` (which should be small: a hundredth of a second or so).
 pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
-    let grounded = k.contacts > 0;
+    // `RacerCarBody::Update`: an impulse that has run its course leaves no momentum.
     let spinning = k.spin > 0.0;
+    k.rigid.tick(k.rot, dt, spinning);
+    let grounded = k.contacts > 0;
     let boosting = k.boost > 0.0;
     let up = if grounded { k.ground_normal } else { Vec3::Y };
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, Vec3::NEG_Z);
@@ -196,8 +353,9 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     let mut input = k.steer * if cursed { -1.0 } else { 1.0 } * k.stats.handling;
     let mut radius = 0.0;
     if input != 0.0 {
-        radius =
-            1.0 / (INV_MAX_TURN_RADIUS + (INV_MIN_TURN_RADIUS - INV_MAX_TURN_RADIUS) * input.abs());
+        // `Controls::hand`.
+        let turned = input.abs() / if c.hand { k.pace } else { 1.0 };
+        radius = 1.0 / (INV_MAX_TURN_RADIUS + (INV_MIN_TURN_RADIUS - INV_MAX_TURN_RADIUS) * turned);
     }
     // `UpdateReturnToPath` sets the turn and the thrust without the driver's controls.
     let mut thrust = thrust;
@@ -266,7 +424,8 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     // --- RacerCarBody::AccumulateForces, as accelerations.
     let turned = k.yaw_impulse > 0.0;
     let mut acc = Vec3::ZERO;
-    let mut yaw_rate = 0.0;
+    // `ApplyYawImpulse`: the rate, and how long it is asked for.
+    let mut yaw: Option<(f32, f32)> = None;
     let mut facing_rate = 0.0;
     if !grounded {
         acc.y -= GRAVITY * AIRBORNE_GRAVITY_SCALE;
@@ -274,7 +433,7 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
         push.y = push.y.min(GRAVITY);
         acc += push;
         if radius != 0.0 && !turned {
-            yaw_rate = vf / radius;
+            yaw = Some((vf / radius, YAW_IMPULSE_TIME));
         }
     } else {
         // Gravity pulls along the slope, if it is steep enough for this surface; the
@@ -311,12 +470,13 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
                 // The pull to the middle of the turn is level, whatever the road is.
                 acc += Vec3::Y.cross(facing).normalize_or_zero() * vf * vf / radius;
                 facing_rate = vf / radius;
-                yaw_rate = match slip {
+                let rate = match slip {
                     Some((gain, _, max_lag)) if aligned >= max_lag.cos() => gain * facing_rate,
                     Some(_) => 0.0,
                     None if vf > 0.5 * UNIT && vf < CREEP_SPEED => CREEP_SPEED / radius,
                     None => facing_rate,
                 };
+                yaw = Some((rate, YAW_IMPULSE_TIME));
             }
         }
     }
@@ -325,20 +485,59 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     }
     acc += k.external_force;
     if spinning {
-        yaw_rate = k.spin_rate;
+        yaw = Some((k.spin_rate, k.spin));
     } else if turned {
-        yaw_rate = k.yaw_kick;
+        yaw = Some((k.yaw_kick, k.yaw_impulse));
     }
     let rolling = if k.hover {
         0.0
     } else {
         k.surface.rolling_resistance
     };
-    let drag = thrust.abs() / (max_speed * max_speed) + rolling / MASS / UNIT;
+    let drag = thrust.abs() / (max_speed * max_speed) + rolling / k.mass / UNIT;
     acc -= k.vel * speed * drag;
 
+    // --- The body's angular side of `AccumulateForces`. With fewer than three wheels
+    // down each is held up by a share of gravity that twists the body about its centre
+    // of mass; and each wheel's support takes away the momentum that would turn the
+    // body into the ground at the wheel across from it.
+    let ms = dt * MS;
+    let mut torque = Vec3::ZERO;
+    if grounded && !k.hover && k.rigid.roll <= 0.0 && k.rigid.pitch <= 0.0 {
+        let down = if k.contacts >= 3 { 0b1111 } else { k.wheel_mask };
+        let held = k.mass * GRAVITY / UNIT / (MS * MS) / (k.contacts as f32 + CONTACT_SHARE);
+        let (rot, centre, wheels) = (k.rot, k.centre, k.wheels);
+        let from_centre = |wheel: usize| rot * (wheels[wheel] - centre) / UNIT;
+        for wheel in (0..4).filter(|wheel| down >> wheel & 1 == 1) {
+            if k.contacts < 3 {
+                torque += from_centre(wheel).cross(Vec3::Y * held);
+            }
+            k.rigid
+                .cancel(k.ground_normal, from_centre(DIAGONAL[wheel]));
+        }
+    }
+    if let Some((rate, time)) = yaw {
+        k.rigid.turn(k.rot, k.mass, rate / MS, time);
+    }
+
+    // --- RacerRigidBody::Update: the position moves by the old velocity and half of
+    // what the forces add, the body turns by its angular velocity, and then the
+    // torque is added to its momentum.
+    let carried = (k.vel + acc * dt * 0.5) * dt;
     k.vel += acc * dt;
-    k.rot = (Quat::from_axis_angle(up, yaw_rate * dt) * k.rot).normalize();
+    let turned_by = k.rigid.velocity(k.rot, k.mass) * ms;
+    let (forward, upward) = (k.rot * Vec3::NEG_Z, k.rot * Vec3::Y);
+    if let Some(rot) = attitude(
+        forward + turned_by.cross(forward),
+        upward + turned_by.cross(upward),
+    ) {
+        k.rot = rot;
+    }
+    k.rigid.momentum += torque * ms;
+    if torque == Vec3::ZERO && turned_by.length_squared() < ANGULAR_REST {
+        k.rigid.momentum = Vec3::ZERO;
+    }
+    limit_tilt(k);
 
     // --- RacerCarBody::UpdateFacingDirection.
     let body_fwd = tangent(k.rot * Vec3::NEG_Z, up, body_fwd);
@@ -368,9 +567,26 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     k.facing = facing.normalize_or(body_fwd);
 
     let previous_centre = k.pos + Vec3::Y * BODY_POINT_HEIGHT;
-    k.pos += k.vel * dt;
+    k.pos += carried;
     collide_walls(k, world, previous_centre);
     probe_ground(k, world, dt);
+}
+
+/// `LimitUprightTilt`: a body that leans more than 45 degrees is put at 45, still
+/// leaning the way it was and still facing the way it was.
+fn limit_tilt(k: &mut Kart) {
+    let up = k.rot * Vec3::Y;
+    if up.y >= UPRIGHT_MIN_COS {
+        return;
+    }
+    let Some(lean) = up.with_y(0.0).try_normalize() else {
+        return;
+    };
+    let up = lean * UPRIGHT_ANGLE.sin() + Vec3::Y * UPRIGHT_ANGLE.cos();
+    // `SetUpDirection`: the up direction is kept, the forward one made square to it.
+    if let Some(forward) = (k.rot * Vec3::NEG_Z).reject_from(up).try_normalize() {
+        k.rot = Quat::from_mat3(&Mat3::from_cols(-up.cross(forward), up, -forward)).normalize();
+    }
 }
 
 /// Keeps the body out of walls: the kart's centre may not pass through one, and nor
@@ -432,8 +648,8 @@ fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
     k.vel.y = k.vel.y.min(WALL_MAX_RISE);
 }
 
-/// Finds the ground under each wheel, rests the kart on it and levels the body.
-fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
+/// A floating car's ground: each wheel's, averaged, and the body levelled onto it.
+fn probe_hover(k: &mut Kart, world: &Collision, dt: f32) {
     let was_grounded = k.contacts > 0 && k.spin_out <= 0.0;
     let reach = if was_grounded { CONTACT_PADDING } else { 0.0 };
     let mut hits = [None; 4];
@@ -441,8 +657,9 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     let mut normal_sum = Vec3::ZERO;
     let had_contact = k.contacts > 0;
     k.contacts = 0;
+    k.wheel_mask = 0;
     let mut force = Vec3::ZERO;
-    for (wheel, hit_point) in k.wheels.iter().zip(&mut hits) {
+    for (index, (wheel, hit_point)) in k.wheels.iter().zip(&mut hits).enumerate() {
         let foot = k.pos + k.rot * *wheel;
         let Some(hit) = world.ground(foot + Vec3::Y * STEP_UP, STEP_UP + reach) else {
             continue;
@@ -463,6 +680,7 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
             k.surface.friction += hit.surface.friction;
             k.surface.support += hit.surface.support;
         }
+        k.wheel_mask |= 1 << index;
         k.contacts += 1;
     }
     if k.contacts == 0 {
@@ -480,6 +698,15 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     k.surface.friction /= count;
     k.surface.support /= count;
     k.surface.force = (force / count).to_array();
+    // `RacerPhysics::ApplyWheelSurface` under `NSLWJ`: only the sound and what the
+    // wheels throw up are taken from the surface; the rest is as on bare ground.
+    if k.ignore_surfaces {
+        k.surface = crate::assets::materials::Surface {
+            sound: k.surface.sound,
+            particle: k.surface.particle,
+            ..default()
+        };
+    }
     k.pos.y += lift / count;
 
     // With all four wheels down, the diagonals give the plane the kart sits on.
@@ -514,4 +741,190 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
     let forward = tangent(k.rot * Vec3::NEG_Z, normal, Vec3::NEG_Z);
     let level = Transform::IDENTITY.looking_to(forward, normal).rotation;
     k.rot = k.rot.slerp(level, (15.0 * dt).min(1.0));
+}
+
+/// `UpdateWheelContacts` and `SnapToContacts`: finds the ground under each wheel.
+/// The wheels within a little of the highest ground are the ones in contact; with
+/// two or more the body is turned to lie on their ground, with three or more it counts
+/// as on all four, and the wheel whose ground is highest is set on it, a ride height
+/// above.
+fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
+    if k.hover {
+        return probe_hover(k, world, dt);
+    }
+    let was_grounded = k.contacts > 0 && k.spin_out <= 0.0;
+    // How far below itself a wheel looks: as far as the car moves in the time at
+    // least, and never less than it rides above the ground.
+    let reach = if was_grounded {
+        (SUPPORT_SWEEP * dt * MS).max(RIDE_HEIGHT * 1.5)
+    } else {
+        0.0
+    };
+    let had_contact = k.contacts > 0;
+    let feet = k.wheels.map(|wheel| k.pos + k.rot * wheel);
+    let mut hits: [Option<_>; 4] = Default::default();
+    // How far above the bottom of its sweep each wheel's ground is.
+    let mut rise = [f32::NEG_INFINITY; 4];
+    let mut best: Option<usize> = None;
+    for (index, foot) in feet.iter().enumerate() {
+        let Some(hit) = world.ground(*foot + Vec3::Y * STEP_UP, STEP_UP + reach) else {
+            continue;
+        };
+        rise[index] = hit.point.y - (foot.y - reach);
+        if best.is_none_or(|b| rise[index] > rise[b]) {
+            best = Some(index);
+        }
+        hits[index] = Some(hit);
+    }
+    let Some(selected) = best else {
+        k.contacts = 0;
+        k.wheel_mask = 0;
+        if had_contact {
+            k.vel.y -= AIRBORNE_DROP;
+        }
+        k.ground_normal = Vec3::Y;
+        k.surface = default();
+        k.air_time += dt;
+        return;
+    };
+    let limit = (rise[selected] - CONTACT_PADDING).max(0.0);
+    let mut mask = 0u8;
+    let mut normal_sum = Vec3::ZERO;
+    let mut force = Vec3::ZERO;
+    let mut touching = 0;
+    for (index, hit) in hits.iter().enumerate() {
+        let Some(hit) = hit else { continue };
+        force += Vec3::from(hit.surface.force);
+        if touching == 0 {
+            k.surface = hit.surface;
+        } else {
+            k.surface.rolling_resistance += hit.surface.rolling_resistance;
+            k.surface.lateral_grip += hit.surface.lateral_grip;
+            k.surface.friction += hit.surface.friction;
+            k.surface.support += hit.surface.support;
+        }
+        touching += 1;
+        if rise[index] >= limit {
+            mask |= 1 << index;
+            normal_sum += if hit.normal.y < 0.0 {
+                -hit.normal
+            } else {
+                hit.normal
+            };
+        }
+    }
+    let count = touching as f32;
+    k.surface.rolling_resistance /= count;
+    k.surface.lateral_grip /= count;
+    k.surface.friction /= count;
+    k.surface.support /= count;
+    k.surface.force = (force / count).to_array();
+    let in_contact = mask.count_ones();
+
+    // `SnapToContacts`: the body takes the lie of the ground between the wheels in
+    // contact: its forward direction along the two on one side (or the car's own if
+    // the other is off the ground), and its sideways one across the two at one end.
+    let down = |wheel: usize| mask >> wheel & 1 == 1;
+    let point = |wheel: usize| hits[wheel].as_ref().map_or(feet[wheel], |hit| hit.point);
+    if in_contact > 1 && k.rigid.roll <= 0.0 && k.rigid.pitch <= 0.0 {
+        // The right front wheel leads when all four are down.
+        let lead = if in_contact < 4 { selected } else { 1 };
+        let (along, across) = (LENGTHWISE[lead], SIDEWAYS[lead]);
+        let forward = if down(along) {
+            point(lead.min(along)) - point(lead.max(along))
+        } else {
+            k.rot * Vec3::NEG_Z
+        };
+        let left = if down(across) {
+            point(across.min(lead)) - point(across.max(lead))
+        } else {
+            k.rot * Vec3::NEG_X
+        };
+        // `SetDirectionSide`.
+        if let Some(forward) = forward.try_normalize()
+            && let Some(left) = left.reject_from(forward).try_normalize()
+        {
+            let up = forward.cross(left);
+            k.rot = Quat::from_mat3(&Mat3::from_cols(-left, up, -forward)).normalize();
+        }
+    }
+    k.pos.y += point(selected).y - feet[selected].y + RIDE_HEIGHT;
+
+    let normal = if in_contact >= 3 {
+        mask = 0b1111;
+        k.rot * Vec3::Y
+    } else {
+        normal_sum.normalize_or(Vec3::Y)
+    };
+    k.wheel_mask = mask;
+    k.contacts = if in_contact >= 3 { 4 } else { in_contact as u8 };
+    let into = k.vel.dot(normal);
+    // `UpdateWheelContacts`: after a long enough fall a hard landing bounces the car
+    // back into the air.
+    if !was_grounded && k.air_time > LANDING_AIR_TIME && into < -LANDING_BOUNCE_SPEED {
+        k.vel.y -= into * LANDING_BOUNCE;
+        k.contacts = 0;
+        k.wheel_mask = 0;
+        k.ground_normal = Vec3::Y;
+        k.air_time += dt;
+        return;
+    }
+    k.air_time = 0.0;
+    k.ground_normal = normal;
+    if into < 0.0 {
+        k.vel -= normal * into;
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_car_s_inertia_is_that_of_the_original_s_box() {
+        // `RacerBoxBody::ComputeInertiaTensor` with the box (8, 5, 6.2) and a mass of 4500.
+        let i = inertia(4500.0);
+        let f = 0.083333336;
+        assert!((i.x - 4500.0 / 5.0 * (6.2f32 * 6.2 + 64.0) * f).abs() < 1.0);
+        assert!((i.y - 4500.0 / 6.2 * (25.0 + 64.0) * f).abs() < 1.0);
+        assert!((i.z - 4500.0 / 8.0 * (6.2f32 * 6.2 + 25.0) * f).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_yaw_impulse_turns_the_body_at_its_rate_and_ends_with_it() {
+        let (rot, mass) = (Quat::from_rotation_y(0.7), 4500.0);
+        let mut r = Rigid::default();
+        r.turn(rot, mass, 0.004, 0.2);
+        assert!((r.velocity(rot, mass) - rot * Vec3::Y * 0.004).length() < 1e-6);
+        r.tick(rot, 0.25, false);
+        assert!(r.momentum.length() < 1e-3);
+    }
+
+    #[test]
+    fn a_heavier_car_turns_no_slower_for_a_yaw_impulse_but_pitches_alike() {
+        let rot = Quat::IDENTITY;
+        let (mut light, mut heavy) = (Rigid::default(), Rigid::default());
+        light.turn(rot, 2000.0, 0.003, 0.2);
+        heavy.turn(rot, 6000.0, 0.003, 0.2);
+        assert!((light.velocity(rot, 2000.0) - heavy.velocity(rot, 6000.0)).length() < 1e-6);
+        assert!(heavy.momentum.length() > light.momentum.length() * 2.9);
+    }
+
+    #[test]
+    fn support_takes_the_momentum_that_tips_the_body_into_the_ground() {
+        let mut r = Rigid {
+            momentum: Vec3::X * 5.0,
+            ..default()
+        };
+        // A wheel ahead of the centre, the ground pushing up: the axis is sideways.
+        r.cancel(Vec3::Y, Vec3::NEG_Z);
+        assert!(r.momentum.length() < 1e-5 || r.momentum.x.abs() < 5.0);
+    }
+
+    #[test]
+    fn the_centre_of_mass_is_in_our_axes() {
+        let c = centre_of_mass(CENTRE_OF_MASS);
+        assert!((c - Vec3::new(0.0, -UNIT, 1.0 * UNIT)).length() < 1e-6);
+    }
 }

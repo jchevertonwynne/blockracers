@@ -138,12 +138,16 @@ fn ghost_folder() -> Option<std::path::PathBuf> {
     }
 }
 
-/// What a circuit's best run goes by: its folder (or a built-in circuit's key), and
-/// which way round it was run.
+/// What a circuit's best run goes by: its folder (or a built-in circuit's key),
+/// which way round it was run, and how fast the cars were if not the original's.
 fn run_key(circuits: &Circuits, settings: &Settings, variant: Variant) -> String {
     let circuit = &circuits.0[settings.circuit];
+    let pace = match settings.speed {
+        0 => String::new(),
+        speed => format!("-x{}", crate::menu::SPEEDS[speed].1),
+    };
     format!(
-        "{}{}",
+        "{}{}{pace}",
         circuit.race.as_deref().unwrap_or(circuit.layout.key()),
         variant.suffix()
     )
@@ -185,8 +189,11 @@ pub fn spawn_ghosts(
     let Some(loaded) = loaded.as_mut() else {
         return;
     };
-    // The record was not set going round backwards.
-    time_race.record = loaded.ghost.take().filter(|_| !variant.reverse);
+    // The record was not set going round backwards, nor in a faster car.
+    time_race.record = loaded
+        .ghost
+        .take()
+        .filter(|_| !variant.reverse && settings.speed == 0);
     let runs = [
         (true, time_race.record.is_some()),
         (false, time_race.best.contains_key(&folder)),
@@ -208,6 +215,14 @@ pub fn spawn_ghosts(
             Some(GHOST_ALPHA),
         );
     }
+}
+
+/// The parts of a car's model that a licence cheat can take away.
+#[derive(Component, Clone, Copy)]
+pub enum Part {
+    Chassis,
+    Driver,
+    Wheels,
 }
 
 /// Hangs a car's model on an entity that faces -Z: body, driver and wheels. A `ghost`
@@ -243,21 +258,21 @@ pub fn dress(
     };
     commands.entity(car).with_children(|parent| {
         parent
-            .spawn(part(Vec3::ZERO, model.body_scale))
+            .spawn((part(Vec3::ZERO, model.body_scale), Part::Chassis))
             .with_children(|body| {
                 for surface in model.body {
                     body.spawn(bundle(surface));
                 }
             });
         parent
-            .spawn(part(model.chassis.mount, model.driver_scale))
+            .spawn((part(model.chassis.mount, model.driver_scale), Part::Driver))
             .with_children(|figure| {
                 for surface in model.driver {
                     figure.spawn(bundle(surface));
                 }
             });
         parent
-            .spawn(part(Vec3::ZERO, model.wheel_scale))
+            .spawn((part(Vec3::ZERO, model.wheel_scale), Part::Wheels))
             .with_children(|wheels| {
                 for axle in model.axles {
                     let wheel = Wheel {

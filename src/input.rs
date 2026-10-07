@@ -9,16 +9,29 @@
 //! also works the menus, which is the port's own: its buttons are passed on as the
 //! keys the menus know.
 //!
-//! Not here: the sine a force-feedback wheel hums with as the engine turns
-//! (`RaceForceFeedback::CreateEngineEffect`), which a pad's motors have nothing for,
-//! and the accelerator on an axis, which the original gives one make of wheel only.
+//! The accelerator and the brake can be on an axis (`PlayerControls::UpdateThrottle`
+//! reads `-GetAxisValue(2)` where `m_analogThrottle` is set, which the original does
+//! for one make of wheel only): a binding is `Bound::Axis`, a pad's triggers by
+//! default, and the controls page binds one as it binds a button. An axis is read
+//! as the stick is, with the same dead zone, and only the travel one way counts
+//! for the thing it is bound to; the original's one axis for both pedals is the
+//! two triggers here, each its own. A key or button held is full travel, and
+//! the accelerator and the brake together are half throttle as before.
+//!
+//! The engine hums (`RaceForceFeedback::CreateEngineEffect`, `UpdateEngineEffect`):
+//! the original plays a sine on a wheel of magnitude 2000 in 10000 whose period is
+//! 0.2 s less the speed; a pad's motors cannot play a sine of a chosen period, so
+//! the nearest thing is done instead: a steady rumble of the sine's magnitude, on
+//! the strong motor while the sine is slow and on the weak one as it quickens
+//! (`hum`).
 
 use std::time::Duration;
 
-use bevy::input::gamepad::{GamepadRumbleIntensity, GamepadRumbleRequest};
+use bevy::input::gamepad::{GamepadInput, GamepadRumbleIntensity, GamepadRumbleRequest};
 use bevy::prelude::*;
 use serde::Deserialize;
 use serde::de::value::{Error, StrDeserializer};
+use serde::de::Error as _;
 
 use crate::kart::{Kart, Player};
 use crate::menu::Settings;
@@ -51,6 +64,10 @@ pub enum Bound {
     None,
     Key(KeyCode),
     Button(GamepadButton),
+    /// An axis, or a button that has a travel (a trigger); the second is whether
+    /// the travel counts the other way, towards less. Only for the accelerator
+    /// and the brake.
+    Axis(GamepadInput, bool),
 }
 
 /// `JoystickDevice::c_defaultDeadZonePercent`: this much of a stick's travel, either
@@ -115,10 +132,37 @@ fn default(entry: usize, event: usize) -> Bound {
             K::KeyZ,
         ],
     ];
+    // The original reads a wheel's pedals as an axis; the pad's triggers are that.
+    const ANALOG: [(usize, GamepadButton); 2] = [
+        (Event::Accelerate as usize, B::RightTrigger2),
+        (Event::Brake as usize, B::LeftTrigger2),
+    ];
+    if entry == PAD {
+        if let Some((_, trigger)) = ANALOG.iter().find(|(analog, _)| *analog == event) {
+            return Bound::Axis(GamepadInput::Button(*trigger), false);
+        }
+    }
     match entry {
         PAD => Bound::Button(PAD_BUTTONS[event]),
         entry => Bound::Key(KEYS[entry - 1][event]),
     }
+}
+
+/// The rest of an axis binding as `Bindings::write` has it: a sign, then an axis or
+/// `button:` and a button.
+fn read_axis(text: &str) -> Option<Bound> {
+    let word = |name| StrDeserializer::<Error>::new(name);
+    let reversed = match text.chars().next()? {
+        '+' => false,
+        '-' => true,
+        _ => return None,
+    };
+    let rest = &text[1..];
+    let input = match rest.strip_prefix("button:") {
+        Some(button) => GamepadInput::Button(GamepadButton::deserialize(word(button)).ok()?),
+        None => GamepadInput::Axis(GamepadAxis::deserialize(word(rest)).ok()?),
+    };
+    Some(Bound::Axis(input, reversed))
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -139,7 +183,7 @@ impl Bindings {
         match to {
             Bound::None => false,
             Bound::Key(_) => self.0.iter().flatten().any(|bound| *bound == to),
-            Bound::Button(_) => self.0[entry].contains(&to),
+            Bound::Button(_) | Bound::Axis(..) => self.0[entry].contains(&to),
         }
     }
 
@@ -158,11 +202,14 @@ impl Bindings {
 
     /// Whether the original would take this for a binding in this set: not one of
     /// the keys it keeps back, and a button only in the pad's own.
-    pub fn allowed(entry: usize, to: Bound) -> bool {
+    pub fn allowed(entry: usize, event: usize, to: Bound) -> bool {
         match to {
             Bound::None => false,
             Bound::Key(key) => !BLOCKED.contains(&key),
             Bound::Button(_) => entry == PAD,
+            Bound::Axis(..) => {
+                entry == PAD && (event == Event::Accelerate as usize || event == Event::Brake as usize)
+            }
         }
     }
 
@@ -188,6 +235,13 @@ impl Bindings {
             Bound::None => "-".to_string(),
             Bound::Key(key) => format!("{key:?}"),
             Bound::Button(button) => format!("pad:{button:?}"),
+            Bound::Axis(input, reversed) => {
+                let sign = if *reversed { '-' } else { '+' };
+                match input {
+                    GamepadInput::Axis(axis) => format!("axis:{sign}{axis:?}"),
+                    GamepadInput::Button(button) => format!("axis:{sign}button:{button:?}"),
+                }
+            }
         };
         let line = |(entry, events): (usize, &[Bound; EVENTS])| {
             let names: Vec<String> = events.iter().map(name).collect();
@@ -207,17 +261,21 @@ impl Bindings {
         else {
             return false;
         };
-        let named = |name: &str| {
+        let named = |name: &str, event: usize| {
             let word = |name| StrDeserializer::<Error>::new(name);
-            let bound = match name.strip_prefix("pad:") {
-                Some(button) => GamepadButton::deserialize(word(button)).map(Bound::Button),
-                None => KeyCode::deserialize(word(name)).map(Bound::Key),
+            let bound = match (name.strip_prefix("pad:"), name.strip_prefix("axis:")) {
+                (Some(button), _) => GamepadButton::deserialize(word(button)).map(Bound::Button),
+                (_, Some(axis)) => read_axis(axis).ok_or(Error::custom("axis")),
+                _ => KeyCode::deserialize(word(name)).map(Bound::Key),
             };
-            bound.ok().filter(|bound| Self::allowed(entry, *bound))
+            bound.ok().filter(|bound| Self::allowed(entry, event, *bound))
         };
         let mut names = names.trim().split(',');
         for event in 0..EVENTS {
-            self.0[entry][event] = names.next().and_then(named).unwrap_or(Bound::None);
+            self.0[entry][event] = names
+                .next()
+                .and_then(|name| named(name, event))
+                .unwrap_or(Bound::None);
         }
         true
     }
@@ -242,6 +300,19 @@ pub fn name(bound: Bound) -> String {
     use GamepadButton as B;
     let key = match bound {
         Bound::None => return String::new(),
+        Bound::Axis(GamepadInput::Button(button), _) => return name(Bound::Button(button)),
+        Bound::Axis(GamepadInput::Axis(axis), reversed) => {
+            let way = if reversed { "-" } else { "+" };
+            return match axis {
+                GamepadAxis::LeftStickX => format!("LEFT STICK X {way}"),
+                GamepadAxis::LeftStickY => format!("LEFT STICK Y {way}"),
+                GamepadAxis::RightStickX => format!("RIGHT STICK X {way}"),
+                GamepadAxis::RightStickY => format!("RIGHT STICK Y {way}"),
+                GamepadAxis::LeftZ => format!("LEFT Z {way}"),
+                GamepadAxis::RightZ => format!("RIGHT Z {way}"),
+                GamepadAxis::Other(number) => format!("AXIS {number} {way}"),
+            };
+        }
         Bound::Button(button) => {
             return match button {
                 B::South => "A".into(),
@@ -288,6 +359,9 @@ pub fn name(bound: Bound) -> String {
 #[derive(Resource, Default)]
 pub struct Actions {
     held: [bool; EVENTS],
+    /// How far each is asked for, nought to one: a key or button is one, an axis
+    /// as far as it is pushed.
+    amount: [f32; EVENTS],
     pressed: [bool; EVENTS],
     /// A stick's steering, left of the middle being more than nought.
     pub stick: f32,
@@ -296,6 +370,10 @@ pub struct Actions {
 impl Actions {
     pub fn held(&self, event: Event) -> bool {
         self.held[event as usize]
+    }
+
+    pub fn amount(&self, event: Event) -> f32 {
+        self.amount[event as usize]
     }
 
     pub fn pressed(&self, event: Event) -> bool {
@@ -310,6 +388,8 @@ pub struct Devices {
     pub pad: bool,
     /// The pad's buttons that went down this frame.
     pub pressed: Vec<GamepadButton>,
+    /// An axis pushed well over, and whether to the negative side.
+    pub pushed: Option<(GamepadInput, bool)>,
     /// The set of bindings the controls page is showing.
     pub shown: usize,
     /// The thing the controls page is waiting to be given a key or a button for;
@@ -341,6 +421,16 @@ fn past_dead_zone(axis: f32) -> f32 {
     travel.min(1.0).copysign(axis)
 }
 
+/// `PlayerControls::UpdateThrottle`'s `-GetAxisValue(2)` for an axis bound to
+/// something: the dead zone taken out, and only the travel the binding counts.
+fn axis_amount(raw: f32, reversed: bool) -> f32 {
+    past_dead_zone(if reversed { -raw } else { raw }).max(0.0)
+}
+
+/// The axis, or the trigger, pushed furthest past this is what the controls page
+/// binds when it is waiting for one.
+const AXIS_BIND: f32 = 0.75;
+
 /// Reads the keys and the pads into what they are bound to.
 pub fn read(
     keys: Res<ButtonInput<KeyCode>>,
@@ -354,13 +444,36 @@ pub fn read(
         .iter()
         .flat_map(|pad| pad.get_just_pressed().copied())
         .collect();
-    let down = |bound: &Bound| match *bound {
-        Bound::None => false,
-        Bound::Key(key) => keys.pressed(key),
-        Bound::Button(button) => pads.iter().any(|pad| pad.pressed(button)),
+    // Any axis pushed over, for the controls page to bind: not the left stick's
+    // steering, and not the triggers, which come as buttons.
+    devices.pushed = pads
+        .iter()
+        .flat_map(|pad| pad.get_analog_axes())
+        .find_map(|input| match input {
+            GamepadInput::Axis(axis) if *axis != GamepadAxis::LeftStickX => {
+                let value = pads.iter().find_map(|pad| pad.get(*input))?;
+                (value.abs() > AXIS_BIND).then_some((*input, value < 0.0))
+            }
+            _ => None,
+        });
+    let amount = |bound: &Bound| match *bound {
+        Bound::None => 0.0,
+        Bound::Key(key) => keys.pressed(key) as i32 as f32,
+        Bound::Button(button) => pads.iter().any(|pad| pad.pressed(button)) as i32 as f32,
+        Bound::Axis(input, reversed) => pads
+            .iter()
+            .map(|pad| axis_amount(pad.get(input).unwrap_or(0.0), reversed))
+            .fold(0.0, f32::max),
     };
     for event in 0..EVENTS {
-        let held = settings.controls.0.iter().any(|entry| down(&entry[event]));
+        let most = settings
+            .controls
+            .0
+            .iter()
+            .map(|entry| amount(&entry[event]))
+            .fold(0.0, f32::max);
+        actions.amount[event] = most;
+        let held = most > 0.0;
         actions.pressed[event] = held && !actions.held[event];
         actions.held[event] = held;
     }
@@ -684,6 +797,88 @@ fn rumble(
     }
 }
 
+/// `g_engineEffectPeriodSeconds`: the engine's sine is this long a period standing
+/// still, and its speed (in game units a millisecond, as `UpdateEngineEffect` takes
+/// it) is taken off that, to no more than this.
+const HUM_PERIOD: f32 = 0.2;
+/// `CreateEngineEffect`'s magnitude of 2000 and gain of 10000, as a part of full.
+const HUM_MAGNITUDE: f32 = 2000.0 / 10000.0;
+/// The sine slower than the first is the strong motor's alone, and quicker than the
+/// second the weak motor's; in between they share it. Hertz.
+const HUM_SLOW: f32 = 10.0;
+const HUM_QUICK: f32 = 40.0;
+/// How long one request of the hum lasts, in seconds: it is asked for afresh as
+/// each ends, so that it follows the engine.
+const HUM_STEP: f32 = 0.1;
+
+/// The sine's period (`UpdateEngineEffect`: `(0.2 - speed)` seconds, the speed no
+/// more than 0.2), in seconds.
+fn hum_period(speed: f32) -> f32 {
+    HUM_PERIOD - speed.abs().min(HUM_PERIOD)
+}
+
+/// What the engine's hum is on a pad at this speed, as strengths of the strong and
+/// the weak motor. A pad's motors cannot play a sine of a chosen period, so the hum
+/// is a steady rumble of the sine's magnitude on the motor that suits its frequency.
+fn hum(speed: f32) -> GamepadRumbleIntensity {
+    let period = hum_period(speed);
+    let hertz = if period > 0.0 { 1.0 / period } else { f32::INFINITY };
+    let quick = ((hertz - HUM_SLOW) / (HUM_QUICK - HUM_SLOW)).clamp(0.0, 1.0);
+    GamepadRumbleIntensity {
+        strong_motor: HUM_MAGNITUDE * (1.0 - quick),
+        weak_motor: HUM_MAGNITUDE * quick,
+    }
+}
+
+/// Hums the pad with the engine from the countdown to the finish, and not while the
+/// race is paused or in a demo. The engine starts as the countdown does
+/// (`RacingSession`'s `StartEngineEffect`) and is stopped by `Pause`.
+fn engine_hum(
+    time: Res<Time<Real>>,
+    race: Res<Race>,
+    pause: Res<crate::Pause>,
+    karts: Query<&Kart, With<Player>>,
+    pads: Query<Entity, With<Gamepad>>,
+    mut requests: MessageWriter<GamepadRumbleRequest>,
+    mut left: Local<f32>,
+    mut humming: Local<bool>,
+) {
+    let kart = karts.single().ok().filter(|kart| kart.finished.is_none());
+    let on = pause.0.is_none()
+        && !race.demo
+        && matches!(race.phase, Phase::Countdown | Phase::Racing);
+    let Some(kart) = kart.filter(|_| on) else {
+        if std::mem::take(&mut *humming) {
+            for gamepad in &pads {
+                requests.write(GamepadRumbleRequest::Stop { gamepad });
+            }
+        }
+        *left = 0.0;
+        return;
+    };
+    *left -= time.delta_secs();
+    if *left > 0.0 {
+        return;
+    }
+    *left = HUM_STEP;
+    *humming = true;
+    let intensity = hum(kart.vel.length() / UNIT / 1000.0);
+    for gamepad in &pads {
+        requests.write(GamepadRumbleRequest::Add {
+            gamepad,
+            duration: Duration::from_secs_f32(HUM_STEP),
+            intensity,
+        });
+    }
+}
+
+/// Leaving the race leaves nothing shaking.
+fn silence(pads: Query<Entity, With<Gamepad>>, mut requests: MessageWriter<GamepadRumbleRequest>) {
+    for gamepad in &pads {
+        requests.write(GamepadRumbleRequest::Stop { gamepad });
+    }
+}
+
 pub fn plugin(app: &mut App) {
     app.init_resource::<Actions>()
         .init_resource::<Devices>()
@@ -691,7 +886,11 @@ pub fn plugin(app: &mut App) {
             PreUpdate,
             (read, pad_keys).chain().after(bevy::input::InputSystems),
         )
-        .add_systems(Update, rumble.run_if(in_state(Screen::Race)));
+        .add_systems(
+            Update,
+            (rumble, engine_hum).run_if(in_state(Screen::Race)),
+        )
+        .add_systems(OnExit(Screen::Race), silence);
 }
 
 #[cfg(test)]
@@ -715,10 +914,10 @@ mod tests {
 
     #[test]
     fn a_button_is_only_the_pads_and_some_keys_are_nobodys() {
-        assert!(Bindings::allowed(PAD, Bound::Button(GamepadButton::South)));
-        assert!(!Bindings::allowed(1, Bound::Button(GamepadButton::South)));
-        assert!(Bindings::allowed(PAD, Bound::Key(KeyCode::KeyJ)));
-        assert!(!Bindings::allowed(1, Bound::Key(KeyCode::Escape)));
+        assert!(Bindings::allowed(PAD, 0, Bound::Button(GamepadButton::South)));
+        assert!(!Bindings::allowed(1, 0, Bound::Button(GamepadButton::South)));
+        assert!(Bindings::allowed(PAD, 0, Bound::Key(KeyCode::KeyJ)));
+        assert!(!Bindings::allowed(1, 0, Bound::Key(KeyCode::Escape)));
         let mut bindings = Bindings::default();
         // A button swapped within the pad's set leaves the other with its own back.
         bindings.set(PAD, Event::Slide as usize, Bound::Button(GamepadButton::South));
@@ -768,6 +967,90 @@ mod tests {
         assert_eq!(past_dead_zone(0.3), 0.0);
         assert_eq!(past_dead_zone(-1.0), -1.0);
         assert!((past_dead_zone(0.675) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_axis_is_read_as_the_original_reads_one() {
+        // The 35 percent dead zone, the rest being all the travel there is.
+        assert_eq!(axis_amount(0.35, false), 0.0);
+        assert_eq!(axis_amount(1.0, false), 1.0);
+        assert!((axis_amount(0.675, false) - 0.5).abs() < 1e-6);
+        // Only the travel the binding counts is anything; `-GetAxisValue(2)` is the
+        // reversed one.
+        assert_eq!(axis_amount(-0.9, false), 0.0);
+        assert!((axis_amount(-0.675, true) - 0.5).abs() < 1e-6);
+        assert_eq!(axis_amount(0.9, true), 0.0);
+    }
+
+    #[test]
+    fn the_pads_triggers_are_axes_and_an_axis_is_the_pads_and_the_pedals_only() {
+        let bindings = Bindings::default();
+        let trigger = |button| Bound::Axis(GamepadInput::Button(button), false);
+        assert_eq!(
+            bindings.0[PAD][Event::Accelerate as usize],
+            trigger(GamepadButton::RightTrigger2)
+        );
+        assert_eq!(
+            bindings.0[PAD][Event::Brake as usize],
+            trigger(GamepadButton::LeftTrigger2)
+        );
+        let z = Bound::Axis(GamepadInput::Axis(GamepadAxis::LeftStickY), true);
+        assert!(Bindings::allowed(PAD, Event::Brake as usize, z));
+        assert!(!Bindings::allowed(PAD, Event::Camera as usize, z));
+        assert!(!Bindings::allowed(1, Event::Brake as usize, z));
+    }
+
+    #[test]
+    fn an_axis_bound_is_kept_and_read_back() {
+        let mut bindings = Bindings::default();
+        let stick = Bound::Axis(GamepadInput::Axis(GamepadAxis::RightStickY), true);
+        bindings.set(PAD, Event::Accelerate as usize, stick);
+        // The trigger it let go has what it began with back, if nothing has it.
+        assert_eq!(
+            bindings.0[PAD][Event::Brake as usize],
+            Bound::Axis(GamepadInput::Button(GamepadButton::LeftTrigger2), false)
+        );
+        // Taking the brake's trigger for the accelerator takes it from the brake.
+        let brake = Bound::Axis(GamepadInput::Button(GamepadButton::LeftTrigger2), false);
+        bindings.set(PAD, Event::Accelerate as usize, brake);
+        assert_eq!(bindings.0[PAD][Event::Brake as usize], Bound::None);
+        bindings.set(PAD, Event::Accelerate as usize, stick);
+        let mut read = Bindings::default();
+        for line in bindings.write().lines() {
+            assert!(read.read(line));
+        }
+        read.mend();
+        assert_eq!(read, bindings);
+        assert!(bindings.write().contains("axis:-RightStickY"));
+        assert!(bindings.write().contains("axis:+"));
+        // Not an accelerator's or a brake's, or not the pad's: left unbound.
+        assert!(read.read("controls0=-,-,-,-,axis:+LeftZ,-,-,-,-"));
+        assert_eq!(read.0[PAD][Event::Powerup as usize], Bound::None);
+        assert!(read.read("controls1=-,-,axis:+LeftZ,-,-,-,-,-,-"));
+        assert_eq!(read.0[1][Event::Accelerate as usize], Bound::None);
+        assert_eq!(name(stick), "RIGHT STICK Y -");
+        assert_eq!(name(brake), "LT");
+    }
+
+    #[test]
+    fn the_engine_hums_slow_and_strong_and_quickens_to_weak() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        // Standing still: a 0.2 s sine, 5 Hz, on the strong motor, of magnitude 2000 in 10000.
+        assert!(near(hum_period(0.0), 0.2));
+        let still = hum(0.0);
+        assert!(near(still.strong_motor, 0.2) && still.weak_motor == 0.0);
+        // At 0.1 the period is 0.1 s, 10 Hz, still the strong motor's.
+        let slow = hum(0.1);
+        assert!(near(slow.strong_motor, 0.2) && slow.weak_motor == 0.0);
+        // At 0.15 it is 20 Hz, a third of the way over.
+        let part = hum(0.15);
+        assert!(near(part.strong_motor + part.weak_motor, 0.2));
+        assert!(near(part.weak_motor, 0.2 / 3.0));
+        // At 0.175 it is 40 Hz and over, and at the 0.2 the speed stops at, there is
+        // no period and the weak motor has all of it; reversing is as fast.
+        let quick = hum(0.2);
+        assert!(near(quick.weak_motor, 0.2) && quick.strong_motor == 0.0);
+        assert!(near(hum(-0.5).weak_motor, 0.2));
     }
 
     #[test]

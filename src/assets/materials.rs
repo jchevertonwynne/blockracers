@@ -6,6 +6,8 @@ use std::collections::HashMap;
 #[derive(Default, Clone)]
 pub struct Material {
     pub diffuse: [u8; 4],
+    /// What a light of ambient colour is multiplied by (`ambient` of a material).
+    pub ambient: [u8; 4],
     pub texture: Option<String>,
     pub alpha_test: bool,
     pub blend: bool,
@@ -50,9 +52,15 @@ pub fn parse_mdb(data: &[u8]) -> HashMap<String, Material> {
     entries(data, |name, key, r| {
         let m = out.entry(name.to_string()).or_insert(Material {
             diffuse: [255; 4],
+            ambient: [255; 4],
             ..Default::default()
         });
         match key {
+            0x28 => {
+                for c in &mut m.ambient {
+                    *c = r.int()? as u8;
+                }
+            }
             0x29 => {
                 for c in &mut m.diffuse {
                     *c = r.int()? as u8;

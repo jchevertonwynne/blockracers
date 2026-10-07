@@ -10,6 +10,7 @@ use crate::assets::{
     mab::{MaterialAnimation, Track},
     tokens::{Token, tokenize},
 };
+use crate::lighting::Lit;
 use crate::particles::Emitters;
 use crate::physics::UNIT;
 use crate::world::{Library, LoadedWorld, Surface, surface_bundle};
@@ -24,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Game axes (X forward, Y left, Z up) onto ours (Y up).
-fn basis() -> Quat {
+pub fn basis() -> Quat {
     Quat::from_mat3(&Mat3::from_cols(Vec3::X, Vec3::NEG_Z, Vec3::Y))
 }
 
@@ -330,6 +331,11 @@ impl Animated {
             .map_or(0.0, |p| self.time / p.ms_per_frame)
     }
 
+    /// How many frames its part has.
+    pub fn frame_count(&self) -> f32 {
+        self.rig.animation.parts.get(self.part).map_or(1.0, |p| p.frames)
+    }
+
     pub fn length(&self) -> f32 {
         self.rig
             .animation
@@ -376,7 +382,7 @@ impl Animated {
     }
 
     /// A bone's rotation and position in the model's own space, `frame` frames in.
-    fn pose(&self, bone: usize, frame: f32) -> (Quat, Vec3) {
+    pub fn pose(&self, bone: usize, frame: f32) -> (Quat, Vec3) {
         let (rotation, position) = self.local(bone, frame);
         match self.rig.bones[bone].parent {
             Some(parent) => {
@@ -513,7 +519,7 @@ pub fn load_files(
             }
             let Some(model) = jam
                 .get(&format!("{dir}/{model_name}.GDB"))
-                .and_then(Model::parse)
+                .and_then(|data| if library.is_dynamic() { Model::parse_lit(data) } else { Model::parse(data) })
             else {
                 continue;
             };
@@ -565,13 +571,14 @@ pub fn load_files(
 }
 
 /// A model ready to be put into the world any number of times.
+#[derive(Clone)]
 struct Template {
     /// Meshes and their materials by the bone they hang from, which of the model's
     /// materials each is, and whether its vertices are moved each by a bone of its
     /// own and not all by the one it hangs from.
     parts: Vec<(
         Option<usize>,
-        Vec<(Handle<Mesh>, Handle<StandardMaterial>, usize, bool)>,
+        Vec<(Handle<Mesh>, Handle<StandardMaterial>, usize, bool, Option<Lit>)>,
     )>,
     /// For the meshes moved by their vertices' own bones: each bone's as it is, the
     /// vertices being in their bones' own space already.
@@ -596,9 +603,9 @@ impl Template {
             .into_iter()
             .map(|(bone, surfaces)| {
                 let surfaces = surfaces.into_iter().map(|s| {
-                    let (material, skinned) = (s.material, s.skinned);
+                    let (material, skinned, lit) = (s.material, s.skinned, s.lit());
                     let bundle = surface_bundle(s, meshes, materials, images);
-                    (bundle.0.0, bundle.1.0, material, skinned)
+                    (bundle.0.0, bundle.1.0, material, skinned, lit)
                 });
                 (bone, surfaces.collect())
             })
@@ -655,12 +662,15 @@ impl Template {
         let mut scrolling = Scrolling::default();
         for (bone, surfaces) in &self.parts {
             let parent = bone.and_then(|b| joints.get(b)).copied().unwrap_or(root);
-            for (mesh, material, index, skinned) in surfaces {
+            for (mesh, material, index, skinned, lit) in surfaces {
                 scrolling.materials.push(material.clone());
                 scrolling.indices.push(*index);
                 let mesh = commands
                     .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())))
                     .id();
+                if let Some(lit) = lit {
+                    commands.entity(mesh).insert(lit.clone());
+                }
                 // Stretched between its bones, it is wherever they are, which is not
                 // where its own corners say.
                 if *skinned {
@@ -788,6 +798,56 @@ impl Models {
             .map_or(Vec3::ZERO, |template| axes * template.position * UNIT)
     }
 
+    /// Adds a copy of a template that is drawn see-through, `alpha` of the way to solid.
+    fn faded(
+        &mut self,
+        template: &Template,
+        copy: &str,
+        alpha: f32,
+        materials: &mut Assets<StandardMaterial>,
+    ) {
+        let mut faded = template.clone();
+        for (_, surfaces) in faded.parts.iter_mut() {
+            for surface in surfaces.iter_mut() {
+                let mut material = materials.get(&surface.1).cloned().unwrap_or_default();
+                material.base_color.set_alpha(alpha);
+                material.alpha_mode = AlphaMode::Blend;
+                surface.1 = materials.add(material);
+            }
+        }
+        self.0.insert(copy.to_string(), faded);
+    }
+
+    /// Hangs a model on `parent`, which is a placed model, in that model's own units
+    /// and axes: at `position` and turned by `rotation` as one of its bones would be.
+    pub fn attach(
+        &self,
+        commands: &mut Commands,
+        name: &str,
+        parent: Entity,
+        parent_scale: f32,
+        (rotation, position): (Quat, Vec3),
+    ) -> Option<Entity> {
+        let template = self.0.get(name)?;
+        let prop = Prop {
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: template.scale,
+            scroll: Vec2::ZERO,
+        };
+        let root = commands
+            .spawn((
+                Transform::from_translation(position)
+                    .with_rotation(rotation)
+                    .with_scale(Vec3::splat(template.scale / parent_scale)),
+                Visibility::default(),
+            ))
+            .id();
+        template.build(commands, root, prop);
+        commands.entity(parent).add_child(root);
+        Some(root)
+    }
+
     /// Adds a copy of a model that is drawn with another picture.
     pub fn repaint(
         &mut self,
@@ -809,8 +869,8 @@ impl Models {
                 *bone,
                 surfaces
                     .iter()
-                    .map(|(mesh, material, index, skinned)| {
-                        (mesh.clone(), repaint(material), *index, *skinned)
+                    .map(|(mesh, material, index, skinned, lit)| {
+                        (mesh.clone(), repaint(material), *index, *skinned, lit.clone())
                     })
                     .collect(),
             )
@@ -888,6 +948,7 @@ pub fn spawn_scenery(
     mut binds: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
     let mut scenery = Scenery::default();
+    let mut images_of = Vec::new();
     for mut def in std::mem::take(&mut world.props) {
         // The code puzzle's lights are worked by the puzzle: the materials their
         // tracks are bound to are the ones it changes.
@@ -931,14 +992,20 @@ pub fn spawn_scenery(
         if let Some(light) = code_light {
             commands.entity(root).insert(light);
         }
-        Template::new(
+        let template = Template::new(
             &mut def,
             &mut meshes,
             &mut materials,
             &mut images,
             &mut binds,
-        )
-        .build(&mut commands, root, prop);
+        );
+        // The ghost's after-image is only a model to copy, and is not itself drawn
+        // (`GhostHazard::Load` puts its model distance at nothing).
+        if def.name == crate::hazards::GHOST_IMAGE {
+            commands.entity(root).insert(Visibility::Hidden);
+            images_of.push(template.clone());
+        }
+        template.build(&mut commands, root, prop);
         scenery.0.insert(def.name, root);
     }
     let mut models = Models::default();
@@ -951,6 +1018,13 @@ pub fn spawn_scenery(
             &mut binds,
         );
         models.0.insert(def.name, template);
+    }
+    // Each of the ghost's after-images is drawn this solid (`GhostHazard::Draw`).
+    for template in images_of {
+        for (copy, alpha) in crate::hazards::GHOST_IMAGES {
+            models.faded(&template, copy, alpha, &mut materials);
+        }
+        models.0.insert(crate::hazards::GHOST_IMAGE.to_string(), template);
     }
     commands.insert_resource(scenery);
     let mut swatches = Swatches::default();

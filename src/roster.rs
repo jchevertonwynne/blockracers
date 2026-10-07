@@ -19,6 +19,10 @@ pub struct Driver {
     /// What the files of the car's body go by, less the `cm` they end in.
     pub car: String,
     pub chassis: String,
+    /// What the champion's car weighs, and where its centre of mass is from the
+    /// car's origin, in the game's units and axes (`ChampionDefinitionList`).
+    pub mass: f32,
+    pub centre: [f32; 3],
     /// Which set of voice clips is the driver's.
     pub voice: usize,
     /// How keen the driver is on each colour of brick: red, yellow, green, blue.
@@ -111,6 +115,20 @@ fn text(fields: &[Token], key: u16) -> Option<String> {
         Token::Str(value) => Some(value.clone()),
         _ => None,
     }
+}
+
+/// The `count` numbers a key is followed by.
+fn floats(fields: &[Token], key: u16, count: usize) -> Option<Vec<f32>> {
+    let at = fields.iter().position(|t| *t == Token::Key(key))?;
+    fields
+        .get(at + 1..at + 1 + count)?
+        .iter()
+        .map(|t| match t {
+            Token::Float(v) => Some(*v),
+            Token::Int(v) => Some(*v as f32),
+            _ => None,
+        })
+        .collect()
 }
 
 fn number(fields: &[Token], key: u16) -> Option<i32> {
@@ -211,6 +229,8 @@ pub fn driver(jam: &Jam, code: &str) -> Option<Driver> {
         figure: text(fields, 0x2a)?.to_uppercase(),
         car: text(car, 0x29)?.trim_end_matches("cm").to_uppercase(),
         chassis: text(car, 0x2b)?,
+        mass: floats(car, 0x2c, 1).map_or(0.0, |v| v[0]),
+        centre: floats(car, 0x2d, 3).map_or([0.0; 3], |v| [v[0], v[1], v[2]]),
         voice: number(fields, 0x34).unwrap_or(1) as usize,
         keenness: [0x2c, 0x2d, 0x2e, 0x2f].map(|key| number(fields, key).unwrap_or(0)),
         charge: {

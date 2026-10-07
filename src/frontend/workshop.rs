@@ -5,20 +5,13 @@
 //! `DriverLicenseScreen`, `EditCarScreen` and `CarBuildScreen` with its
 //! `CarPartPlacement`, and laid out by their `.MIB` files.
 //!
-//! The racer the garage shows is the one the player races as. The garage can be come
+//! The racer the garage shows is the one the player races as. Its test drive
+//! (`GarageScreen::StartTestDrive`) is the race of the table's `test` entry, the
+//! racer alone on it with no lights to wait for, and ends back in the garage. The garage can be come
 //! to from a session's room, and goes back there; the racer it shows is then the one
 //! raced as in the session too.
 //!
 //! What is not as the original has it:
-//! - Every part set and every part of a minifigure is on offer from the start. The
-//!   original opens them as circuits are won.
-//! - A minifigure's parts are chosen by number. The original turns the part itself
-//!   round in each selector.
-//! - Leaving a screen by its way back gives up what was changed there without the
-//!   original's asking first, and the quick build doesn't ask either.
-//! - The licence takes a name and no more: the original's also picks the face the
-//!   driver pulls for its photograph.
-//! - The test drive is shown but can't be chosen; the port can't load the test track.
 //! - Bricks are placed with the keyboard, the original being played with a pad:
 //!   the arrows move the brick, `R` turns it, `Enter` puts it on, `Backspace` takes
 //!   the last off, `Tab` and `T` go on to the next brick and the next part set
@@ -53,13 +46,18 @@ mod text {
     pub const DELETE_RACER: usize = 44;
     pub const TEST_DRIVE: usize = 45;
     pub const MIX: usize = 56;
+    pub const EXPRESSION: usize = 59;
     pub const FIRST_NAME: usize = 57;
     pub const REMOVE_BRICKS: usize = 60;
     pub const QUICK_BUILD: usize = 61;
     pub const DONE: usize = 62;
+    pub const CANCEL: usize = 31;
+    pub const CONTINUE: usize = 32;
     pub const YES: usize = 115;
     pub const NO: usize = 116;
     pub const DELETING: usize = 118;
+    pub const ABANDONING: usize = 119;
+    pub const LOSING: usize = 123;
     pub const LIMIT: usize = 186;
 }
 
@@ -70,9 +68,11 @@ pub const SET_PICTURES: [&str; 12] = [
     "bricks", "castle", "race", "space", "pirate", "islander", "magical", "adventur", "jungle",
     "alien", "rr", "vv",
 ];
-const PART_NAMES: [&str; 4] = ["HAT", "FACE", "TORSO", "LEGS"];
 /// What a new racer is called until it is called something.
 const NEW_NAME: &str = "PLAYER";
+/// The faces a driver can pull: the part catalogue's `dflt`, `angry`, `blink`,
+/// `happy`, `sad` and `suprz`.
+pub const EXPRESSIONS: u8 = 6;
 /// How far over the car a brick is held, in studs (`g_carPartHoverHeight`).
 const HOVER: f32 = 1.2;
 /// A plate's height against a stud's width.
@@ -92,10 +92,15 @@ pub enum Act {
     Copy,
     /// Asks before a racer is deleted; `Scrap` is the answer.
     Delete,
+    /// The answer to the question the page of `Page::Scrap` asks.
     Scrap(bool),
+    /// The test drive.
+    Drive,
     /// One of a minifigure's four parts.
     Part(usize),
     Mix,
+    /// The face the driver pulls for the photograph on the licence.
+    Look,
     /// On to the next screen of a new racer, or done with the one being changed.
     Next,
     /// The way back from a screen a racer is made on.
@@ -111,6 +116,23 @@ pub enum Act {
     Turn,
     Add,
     Undo,
+}
+
+/// What the question page (`Page::Scrap`) asks, which the original asks with
+/// `MenuScreen::ShowConfirmDialog`: the answer is "no" unless it is chosen otherwise.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum Ask {
+    /// Whether to delete the racer on show.
+    #[default]
+    Delete,
+    /// Whether to go back to a page, giving up what was changed on this one.
+    Lose(Page),
+    /// Whether to give up making a new racer.
+    Abandon,
+    /// Whether to replace a car that has been built on with one the game handed out.
+    Quick,
+    /// Whether to take a car that has been built on apart.
+    Strip,
 }
 
 /// The game's data a racer is built from.
@@ -139,10 +161,19 @@ pub struct Bench {
     view: i32,
     /// Which of the game's racers the quick build gave last.
     quick: usize,
+    /// What the question page asks, and the page it was asked from, which "no" and
+    /// the way back return to.
+    ask: Ask,
+    from: Page,
+    /// The test drive has been chosen.
+    pub drive: bool,
     /// Something to tell the player, until they do something else.
     said: Option<String>,
     /// What is on show is no longer what it should be.
     stale: bool,
+    /// The name left on the licence as the page was done with: it may be a cheat code
+    /// (`crate::cheats`), which is taken from here.
+    code: Option<String>,
 }
 
 impl Bench {
@@ -157,6 +188,16 @@ impl Bench {
             });
         }
         self.kit.as_ref()
+    }
+
+    /// What the minifigure on the bench is made of, and the face it pulls.
+    pub fn cosmetics(&self) -> Cosmetics {
+        self.racer.cosmetics
+    }
+
+    /// The name that was on the licence when it was done with, once.
+    pub fn take_code(&mut self) -> Option<String> {
+        self.code.take()
     }
 
     /// The racer as it stands, with the car as it has been built so far.
@@ -270,6 +311,14 @@ fn open_sets(bench: &Bench, progress: &Progress) -> Vec<usize> {
         .collect()
 }
 
+/// A place of the licence page's layout, which are all told from the corner of the
+/// licence itself.
+pub fn on_licence(art: &Art, name: &str) -> Rect {
+    let card = art.place("drvrlice", "license").min;
+    let place = art.place("drvrlice", name);
+    Rect::from_corners(place.min + card, place.max + card)
+}
+
 /// The choices there are of a part of the minifigure: those nothing has to be won
 /// for, those won, and the one the racer wore when it was last kept
 /// (`MenuRacerCarousel::CollectHats` and the rest).
@@ -286,6 +335,26 @@ fn open_parts(bench: &Bench, garage: &Garage, progress: &Progress, part: usize) 
             kept == Some(at) || progress.part_open(kit.catalogue.mark(part, at as usize))
         })
         .collect()
+}
+
+/// What each of the driver page's four selectors shows: the minifigure on the
+/// bench, and the choices of each part with the one worn among them. The port's
+/// own pictures of parts (`parts`) are made from this.
+pub fn part_choices(
+    bench: &Bench,
+    garage: &Garage,
+    progress: &Progress,
+) -> (Cosmetics, [(Vec<u8>, usize); 4]) {
+    let cosmetics = bench.racer.cosmetics;
+    let choices = [0, 1, 2, 3].map(|part| {
+        let open = open_parts(bench, garage, progress, part);
+        let at = open
+            .iter()
+            .position(|at| *at == worn(cosmetics)[part])
+            .unwrap_or(0);
+        (open, at)
+    });
+    (cosmetics, choices)
 }
 
 /// A minifigure's parts in the order the builder has them.
@@ -314,6 +383,8 @@ pub fn items(
     progress: &Progress,
     online: bool,
 ) -> Vec<Item> {
+    // What is open of the parts is shown by `parts`, not counted here.
+    let _ = progress;
     let selector = |area: Rect, picture: Option<String>, words: String, act: Act| Item {
         widget: Widget::Selector {
             area,
@@ -377,11 +448,10 @@ pub fn items(
                     button(art, "garage", "delracer", text::DELETE_RACER, Act::Delete),
                     some,
                 ),
-                Item {
-                    action: Action::Nothing,
-                    enabled: false,
-                    ..button(art, "garage", "testtrck", text::TEST_DRIVE, Act::Pick)
-                },
+                only_if(
+                    button(art, "garage", "testtrck", text::TEST_DRIVE, Act::Drive),
+                    some,
+                ),
                 Item {
                     widget: Widget::Button {
                         at: art.place("garage", "goback").min,
@@ -398,10 +468,17 @@ pub fn items(
                 },
             ]
         }
-        Page::Scrap => vec![
-            button(art, "garage", "picka", text::YES, Act::Scrap(true)),
-            button(art, "garage", "pickb", text::NO, Act::Scrap(false)),
-        ],
+        Page::Scrap => {
+            // The two kinds of question have their own words for the answers.
+            let (yes, no) = match bench.ask {
+                Ask::Delete | Ask::Abandon => (text::YES, text::NO),
+                _ => (text::CONTINUE, text::CANCEL),
+            };
+            vec![
+                button(art, "garage", "picka", yes, Act::Scrap(true)),
+                button(art, "garage", "pickb", no, Act::Scrap(false)),
+            ]
+        }
         Page::Racer => vec![
             Item {
                 action: Action::Go(Page::Driver),
@@ -424,20 +501,15 @@ pub fn items(
                 .enumerate()
                 .map(|(part, (name, chosen))| {
                     let place = art.place("editdrvr", name);
-                    let middle = place.center().y;
-                    let area = Rect::new(
-                        place.min.x + 96.0,
-                        middle - 16.0,
-                        place.max.x,
-                        middle + 16.0,
-                    );
-                    // Counted among those there are to choose from.
-                    let open = open_parts(bench, garage, progress, part);
-                    let at = open.iter().position(|at| *at == chosen).unwrap_or(0);
+                    // The arrows are at the selector's ends, with its carousel between.
+                    let middle = place.min.y + 32.0;
+                    let area = Rect::new(place.min.x, middle - 16.0, place.max.x, middle + 16.0);
+                    let _ = (part, chosen);
                     selector(
                         area,
                         None,
-                        format!("{} OF {}", at + 1, open.len()),
+                        // The part itself is shown in the selector (`parts`).
+                        String::new(),
                         Act::Part(part),
                     )
                 })
@@ -448,7 +520,7 @@ pub fn items(
             items
         }
         Page::Licence => {
-            let place = art.place("drvrlice", "ftext");
+            let place = on_licence(art, "ftext");
             vec![
                 Item {
                     widget: Widget::Field {
@@ -458,6 +530,7 @@ pub fn items(
                     action: Action::Type(Typed::Racer),
                     enabled: true,
                 },
+                button(art, "drvrlice", "swapface", text::EXPRESSION, Act::Look),
                 only_if(next("drvrlice", false), !bench.racer.name.trim().is_empty()),
                 give_up("drvrlice"),
             ]
@@ -573,31 +646,24 @@ pub fn notes(
         }
         Page::Scrap => vec![
             banner(art.string(text::BUILD_MENU)),
-            line(92.0, art.string(text::DELETING)),
+            line(
+                92.0,
+                art.string(match bench.ask {
+                    Ask::Delete => text::DELETING,
+                    Ask::Abandon => text::ABANDONING,
+                    _ => text::LOSING,
+                }),
+            ),
         ],
         Page::Racer => vec![
             banner(art.string(text::EDIT_RACER_BANNER)),
             line(92.0, bench.racer.name.clone()),
         ],
         Page::Driver => {
-            let mut notes = vec![banner(art.string(text::BUILD_DRIVER))];
-            for (name, part) in ["hatsel", "facesel", "torsosel", "legsel"]
-                .iter()
-                .zip(PART_NAMES)
-            {
-                let place = art.place("editdrvr", name);
-                notes.push((
-                    Rect::new(place.min.x, place.min.y, place.min.x + 80.0, place.max.y),
-                    part.into(),
-                    "font_ths",
-                    LABEL,
-                    false,
-                ));
-            }
-            notes
+            vec![banner(art.string(text::BUILD_DRIVER))]
         }
         Page::Licence => {
-            let place = art.place("drvrlice", "ftext");
+            let place = on_licence(art, "ftext");
             vec![
                 banner(art.string(text::MAKE_LICENSE)),
                 (
@@ -647,7 +713,8 @@ pub fn back(page: Page, bench: &Bench) -> Option<(Page, bool)> {
     let new = bench.slot.is_none();
     Some(match page {
         Page::Garage => (Page::Main, false),
-        Page::Scrap | Page::Racer => (Page::Garage, false),
+        Page::Scrap => (bench.from, false),
+        Page::Racer => (Page::Garage, false),
         Page::Driver if new => (Page::Garage, false),
         Page::Licence if new => (Page::Driver, false),
         Page::Car if new => (Page::Licence, false),
@@ -659,12 +726,48 @@ pub fn back(page: Page, bench: &Bench) -> Option<(Page, bool)> {
 
 /// The way back with `Escape`, taken: what was changed on the page is given up if
 /// its way back gives it up.
+///
+/// `EditDriverScreen`, `DriverLicenseScreen` and `EditCarScreen` ask first when there
+/// is something to lose (`HasUnsavedChanges`), and the driver's screen of a new racer
+/// whether to give up making it.
 pub fn escape(page: Page, art: &Art, bench: &mut Bench, garage: &Garage) -> Option<Page> {
     let (to, given_up) = back(page, bench)?;
+    if page == Page::Driver && bench.slot.is_none() {
+        return Some(ask(bench, page, Ask::Abandon));
+    }
     if given_up {
+        if changed(page, bench, garage) {
+            return Some(ask(bench, page, Ask::Lose(to)));
+        }
         bench.take(art, garage, bench.slot)?;
     }
     Some(to)
+}
+
+/// Puts a question to the player: the page that asks it.
+fn ask(bench: &mut Bench, from: Page, question: Ask) -> Page {
+    (bench.ask, bench.from) = (question, from);
+    Page::Scrap
+}
+
+/// Whether what is on a page of a racer already in the garage has been changed from
+/// what is kept (`HasUnsavedChanges` of each screen).
+fn changed(page: Page, bench: &Bench, garage: &Garage) -> bool {
+    let Some(kept) = bench.slot.and_then(|slot| garage.racers.get(slot)) else {
+        return false;
+    };
+    let (now, then) = (&bench.racer.cosmetics, &kept.cosmetics);
+    match page {
+        Page::Driver => {
+            (now.hat, now.face, now.torso, now.legs) != (then.hat, then.face, then.torso, then.legs)
+        }
+        Page::Licence => bench.racer.name != kept.name || now.expression != then.expression,
+        Page::Car => {
+            let shown = bench.shown();
+            shown.car != kept.car || shown.chassis != kept.chassis
+        }
+        _ => false,
+    }
 }
 
 /// Whether a page is one of the garage's.
@@ -712,6 +815,28 @@ pub fn arrive(page: Page, art: &Art, bench: &mut Bench, garage: &Garage, setting
     }
 }
 
+/// The car taken apart to its chassis.
+fn strip(bench: &mut Bench) -> Option<()> {
+    let kit = bench.kit.as_ref()?;
+    let chassis = bench.car.chassis(&kit.library)?.to_string();
+    bench.car = Car::new(&kit.library, &chassis);
+    bench.racer.stock = true;
+    Some(())
+}
+
+/// `LoadQuickBuildCar`: the next of the game's cars on this chassis.
+fn quick(bench: &mut Bench) -> Option<()> {
+    let kit = bench.kit.as_ref()?;
+    let chassis = bench.car.chassis(&kit.library)?;
+    let count = kit.stock.len();
+    let next = (1..=count)
+        .map(|step| (bench.quick + step) % count)
+        .find(|&at| kit.stock[at].chassis == chassis)?;
+    bench.car = Car::read(&kit.library, &kit.stock[next].car);
+    (bench.quick, bench.racer.stock) = (next, true);
+    Some(())
+}
+
 /// Does what a widget of the garage's is for. `change` is which way a selector was
 /// turned, and nought for something chosen. Returns the page to go to, if another.
 pub fn act(
@@ -750,16 +875,41 @@ pub fn act(
             settings.racer = garage.racers.len();
             garage.keep();
         }
-        Act::Delete if chosen => return Some(Page::Scrap),
+        Act::Delete if chosen => return Some(ask(bench, page, Ask::Delete)),
+        Act::Drive if chosen => {
+            bench.drive = true;
+            return None;
+        }
         Act::Scrap(yes) if chosen => {
-            if let (true, Some(slot)) = (yes, settings.racer.checked_sub(1))
-                && slot < garage.racers.len()
-            {
-                garage.racers.remove(slot);
-                settings.racer = settings.racer.min(garage.racers.len());
-                garage.keep();
+            let (question, from) = (std::mem::take(&mut bench.ask), bench.from);
+            if !yes {
+                return Some(from);
             }
-            return Some(Page::Garage);
+            return match question {
+                Ask::Delete => {
+                    if let Some(slot) = settings.racer.checked_sub(1)
+                        && slot < garage.racers.len()
+                    {
+                        garage.racers.remove(slot);
+                        settings.racer = settings.racer.min(garage.racers.len());
+                        garage.keep();
+                    }
+                    Some(Page::Garage)
+                }
+                Ask::Abandon => Some(Page::Garage),
+                Ask::Lose(to) => {
+                    bench.take(art, garage, bench.slot)?;
+                    Some(to)
+                }
+                Ask::Quick => {
+                    quick(bench)?;
+                    Some(from)
+                }
+                Ask::Strip => {
+                    strip(bench)?;
+                    Some(from)
+                }
+            };
         }
         Act::Part(part) if !chosen => {
             let open = open_parts(bench, garage, progress, part);
@@ -771,6 +921,10 @@ pub fn act(
                 _ => &mut c.legs,
             };
             *value = turned(&open, *value, change)?;
+            // `EditDriverScreen`: a new face is pulled with its own expression.
+            if part == 1 {
+                bench.racer.cosmetics.expression = 0;
+            }
         }
         Act::Mix if chosen => {
             // `EditDriverScreen`: a part of each kind, picked at random from those
@@ -790,7 +944,15 @@ pub fn act(
                 expression: 0,
             };
         }
+        Act::Look if chosen => {
+            // `DriverLicenseScreen::OnIconUnfocused`: the next of the six expressions.
+            let c = &mut bench.racer.cosmetics;
+            c.expression = (c.expression + 1) % EXPRESSIONS;
+        }
         Act::Next if chosen => {
+            if page == Page::Licence {
+                bench.code = Some(bench.racer.name.clone());
+            }
             // A new racer is made a screen at a time, and kept at the last of them.
             return Some(match (page, bench.slot) {
                 (Page::Driver, None) => Page::Licence,
@@ -802,6 +964,10 @@ pub fn act(
             });
         }
         Act::GiveUp if chosen => {
+            // Backing out of a new racer's licence keeps its name, and so a code.
+            if page == Page::Licence && bench.slot.is_none() {
+                bench.code = Some(bench.racer.name.clone());
+            }
             sfx.play(id::MENU_BACK);
             return escape(page, art, bench, garage);
         }
@@ -812,22 +978,18 @@ pub fn act(
             bench.car = Car::new(&kit.library, &kit.sets.get(bench.set)?.chassis);
             (bench.racer.stock, bench.brick) = (true, 0);
         }
+        // `EditCarScreen::OnIconUnfocused`: a car built on is not replaced unasked.
         Act::Strip if chosen => {
-            let kit = bench.kit.as_ref()?;
-            let chassis = bench.car.chassis(&kit.library)?.to_string();
-            bench.car = Car::new(&kit.library, &chassis);
-            bench.racer.stock = true;
+            if !bench.racer.stock {
+                return Some(ask(bench, page, Ask::Strip));
+            }
+            strip(bench)?;
         }
         Act::Quick if chosen => {
-            // `LoadQuickBuildCar`: the next of the game's cars on this chassis.
-            let kit = bench.kit.as_ref()?;
-            let chassis = bench.car.chassis(&kit.library)?;
-            let count = kit.stock.len();
-            let next = (1..=count)
-                .map(|step| (bench.quick + step) % count)
-                .find(|&at| kit.stock[at].chassis == chassis)?;
-            bench.car = Car::read(&kit.library, &kit.stock[next].car);
-            (bench.quick, bench.racer.stock) = (next, true);
+            if !bench.racer.stock {
+                return Some(ask(bench, page, Ask::Quick));
+            }
+            quick(bench)?;
         }
         Act::Set if !chosen => {
             bench.set = turned(&open_sets(bench, progress), bench.set, change)?;
@@ -993,7 +1155,15 @@ pub fn show(
     time: Res<Time<Real>>,
     mut bench: ResMut<Bench>,
     mut clear: ResMut<ClearColor>,
-    mut camera: Single<&mut Transform, (With<Camera3d>, Without<Turntable>)>,
+    mut camera: Single<
+        &mut Transform,
+        (
+            With<Camera3d>,
+            Without<Turntable>,
+            Without<bevy::camera::visibility::RenderLayers>,
+            Without<super::licence::Lens>,
+        ),
+    >,
     mut tables: Query<&mut Transform, With<Turntable>>,
     exhibits: Query<Entity, With<Exhibit>>,
     (mut meshes, mut materials, mut images): (
@@ -1035,8 +1205,14 @@ pub fn show(
     for exhibit in &exhibits {
         commands.entity(exhibit).despawn();
     }
+    // `DriverLicenseScreen::CreateDriverScene`: the licence has its driver alone, in
+    // the photograph (`licence`).
+    if page == Page::Licence {
+        return;
+    }
     let racer = match page {
-        Page::Garage | Page::Scrap => garage.racing(&settings).cloned(),
+        Page::Garage => garage.racing(&settings).cloned(),
+        Page::Scrap if bench.ask == Ask::Delete => garage.racing(&settings).cloned(),
         _ => Some(bench.shown()),
     };
     let Some(model) = racer.and_then(|racer| crate::world::load_built(&art.jam, &racer, true))

@@ -65,6 +65,41 @@ impl Circuits {
     }
 }
 
+impl Circuits {
+    /// What `GarageScreen::StartTestDrive` does: the race to run is `test` of the race
+    /// table (the folder of the same name), one racer alone on it. The circuit is put
+    /// among the others for as long as the drive lasts, and `settings` keeps the one
+    /// that was chosen to go back to.
+    pub fn begin_test_drive(&mut self, settings: &mut Settings) {
+        if settings.test_drive.is_some() {
+            return;
+        }
+        settings.test_drive = Some(settings.circuit);
+        let group = self.0.iter().map(|c| c.group).max().map_or(0, |g| g + 1);
+        self.0.push(Circuit {
+            name: "Test track".into(),
+            race: Some(TEST_TRACK.into()),
+            layout: Layout::default(),
+            group,
+        });
+        settings.circuit = self.0.len() - 1;
+    }
+
+    /// The test drive is over: the circuit chosen before it is chosen again. Whether
+    /// there was a drive.
+    pub fn end_test_drive(&mut self, settings: &mut Settings) -> bool {
+        let Some(before) = settings.test_drive.take() else {
+            return false;
+        };
+        self.0.pop();
+        settings.circuit = before;
+        true
+    }
+}
+
+/// The folder of the race the garage's test drive is run on.
+pub const TEST_TRACK: &str = "TEST";
+
 /// The last three are longer than any race of the original's.
 pub const LAP_CHOICES: [i32; 7] = [1, 3, 5, 7, 10, 15, 20];
 pub const MAX_OPPONENTS: usize = 5;
@@ -76,6 +111,9 @@ pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("H
 #[derive(Resource, Clone)]
 pub struct Settings {
     pub circuit: usize,
+    /// A test drive from the garage is on (`Circuits::begin_test_drive`): the circuit
+    /// that was chosen before it.
+    pub test_drive: Option<usize>,
     pub lap_choice: usize,
     /// The circuit (`c0` and so on) being raced for, when the race is one of a series.
     pub championship: Option<String>,
@@ -97,6 +135,8 @@ pub struct Settings {
     /// The wheels go to full lock almost at once, instead of turning as slowly as the
     /// original's do.
     pub quick_steering: bool,
+    /// Which of `SPEEDS` the cars go at.
+    pub speed: usize,
     pub vsync: bool,
     pub fullscreen: bool,
     /// Edges smoothed by multisampling.
@@ -129,6 +169,16 @@ pub const BRICK_RULES: [&str; 7] = [
 /// The rule that picks colours afresh.
 pub const RANDOM_BRICKS: usize = 6;
 
+/// How fast the cars may be, the computer's among them, the original's being one
+/// (`Kart::pace`).
+pub const SPEEDS: [(&str, f32); 5] = [
+    ("Original", 1.0),
+    ("1.25x", 1.25),
+    ("1.5x", 1.5),
+    ("1.75x", 1.75),
+    ("2x", 2.0),
+];
+
 /// The settings the original has no counterpart for.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Extra {
@@ -137,18 +187,20 @@ pub enum Extra {
     Bricks,
     Elimination,
     Steering,
+    Speed,
     VSync,
     Fullscreen,
     Smoothing,
 }
 
 impl Extra {
-    pub const RACE: [Extra; 5] = [
+    pub const RACE: [Extra; 6] = [
         Extra::Mirror,
         Extra::Reverse,
         Extra::Bricks,
         Extra::Elimination,
         Extra::Steering,
+        Extra::Speed,
     ];
     pub const VIDEO: [Extra; 3] = [Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
 
@@ -159,6 +211,7 @@ impl Extra {
             Extra::Bricks => "Bricks",
             Extra::Elimination => "Elimination",
             Extra::Steering => "Steering",
+            Extra::Speed => "Car speed",
             Extra::VSync => "Frame rate",
             Extra::Fullscreen => "Full screen",
             Extra::Smoothing => "Smooth edges",
@@ -177,6 +230,7 @@ impl Settings {
         });
         Settings {
             circuit: circuit.unwrap_or(0),
+            test_drive: None,
             lap_choice: 1,
             championship: None,
             time_race: false,
@@ -189,6 +243,7 @@ impl Settings {
             bricks: 0,
             elimination: false,
             quick_steering: false,
+            speed: 0,
             vsync: true,
             fullscreen: false,
             smoothing: true,
@@ -214,6 +269,7 @@ impl Settings {
             ("bricks", self.bricks),
             ("elimination", on(self.elimination)),
             ("steering", on(self.quick_steering)),
+            ("speed", self.speed),
             ("vsync", on(self.vsync)),
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
@@ -260,6 +316,7 @@ impl Settings {
                 "bricks" if value < BRICK_RULES.len() => self.bricks = value,
                 "elimination" => self.elimination = on,
                 "steering" => self.quick_steering = on,
+                "speed" if value < SPEEDS.len() => self.speed = value,
                 "vsync" => self.vsync = on,
                 "fullscreen" => self.fullscreen = on,
                 "smoothing" => self.smoothing = on,
@@ -306,6 +363,9 @@ impl Settings {
             }
             Extra::Elimination => flip(&mut self.elimination),
             Extra::Steering => flip(&mut self.quick_steering),
+            Extra::Speed => {
+                self.speed = (self.speed as i32 + change).rem_euclid(SPEEDS.len() as i32) as usize
+            }
             Extra::VSync => flip(&mut self.vsync),
             Extra::Fullscreen => flip(&mut self.fullscreen),
             Extra::Smoothing => flip(&mut self.smoothing),
@@ -326,6 +386,7 @@ impl Settings {
                 "Original"
             }
             .to_string(),
+            Extra::Speed => SPEEDS[self.speed].0.to_string(),
             Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
             Extra::Fullscreen => on(self.fullscreen),
             Extra::Smoothing => on(self.smoothing),
@@ -335,7 +396,7 @@ impl Settings {
     /// How many of the computer's cars race: none against the clock, and a full field
     /// in a circuit race, whatever a single race is set to.
     pub fn field(&self) -> usize {
-        if self.time_race {
+        if self.time_race || self.test_drive.is_some() {
             0
         } else if self.championship.is_some() {
             MAX_OPPONENTS
@@ -366,6 +427,11 @@ impl Settings {
 
     pub fn sound_volume(&self) -> f32 {
         self.sound as f32 / MAX_VOLUME as f32
+    }
+
+    /// How many times as fast as the original's the cars are.
+    pub fn pace(&self) -> f32 {
+        SPEEDS[self.speed].1
     }
 
     /// Multiplier on the AI drivers' top speed.
@@ -401,12 +467,13 @@ pub fn keep(settings: Res<Settings>, mut kept: Local<Option<String>>) {
 
 pub const MAX_VOLUME: usize = 20;
 /// The plain menu's rows: the six settings it always had, the extras, and the start.
-const EXTRAS: [Extra; 8] = [
+const EXTRAS: [Extra; 9] = [
     Extra::Mirror,
     Extra::Reverse,
     Extra::Bricks,
     Extra::Elimination,
     Extra::Steering,
+    Extra::Speed,
     Extra::VSync,
     Extra::Fullscreen,
     Extra::Smoothing,
@@ -564,6 +631,7 @@ fn settings_come_back_as_they_were_kept() {
         settings.music,
         settings.bricks,
     ) = (4, 2, 7, 3);
+    settings.speed = 4;
     (settings.mirror, settings.vsync, settings.elimination) = (true, false, true);
     let mut back = Settings::new(&Circuits(Vec::new()));
     back.read(&settings.write());
@@ -573,6 +641,7 @@ fn settings_come_back_as_they_were_kept() {
         (4, 2, 7, 3)
     );
     assert!(back.mirror && !back.vsync && back.elimination && !back.reverse && back.smoothing);
+    assert_eq!(back.pace(), 2.0);
     // A circuit race is three laps against a full field, and leaves the settings be.
     back.championship = Some("c0".into());
     assert_eq!(
@@ -582,7 +651,8 @@ fn settings_come_back_as_they_were_kept() {
     (back.championship, back.elimination) = (None, false);
     assert_eq!((back.laps(), back.field()), (LAP_CHOICES[4], 2));
     // Nonsense and things out of range are passed over.
-    back.read("laps=99\nbricks=six\nfuel=3\nopponents=1\n\nmusic 4");
+    back.read("laps=99\nbricks=six\nfuel=3\nopponents=1\n\nmusic 4\nspeed=5");
+    assert_eq!(back.speed, 4);
     assert_eq!(
         (back.lap_choice, back.bricks, back.opponents, back.music),
         (4, 3, 1, 7)
@@ -614,5 +684,5 @@ fn single_races_are_listed_in_their_circuits_order() {
     );
     assert_eq!(listed[12], ("Rocket Racer Run", 3));
     // The built-in circuits come last, in a set of their own.
-    assert_eq!((listed.len(), listed[13].1, listed[15].1), (16, 4, 4));
+    assert_eq!((listed.len(), listed[13].1, listed[16].1), (17, 4, 4));
 }

@@ -55,6 +55,7 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
         .init_resource::<Assets<Image>>()
         .init_resource::<crate::audio::Sfx>()
         .init_resource::<crate::variant::Variant>()
+        .init_resource::<crate::cheats::Raced>()
         .init_resource::<Pause>()
         .init_resource::<crate::replay::Photo>()
         .insert_resource(Track::new())

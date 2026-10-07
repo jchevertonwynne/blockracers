@@ -30,6 +30,10 @@ use std::sync::Arc;
 const DEFAULT_JAM: &str = "Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM";
 /// Half-width of the band around the recorded racing line that the AI may use.
 const LANE: f32 = 4.0;
+/// Added to the tag of a floor made of a surface cars drive through, which keeps it solid.
+const FLOOR_TAGS: usize = 5000;
+/// The radius of the ring a race without a route is given for its road, in our units.
+const RING: f32 = 60.0;
 
 /// The game is Z-up; this turns it onto Bevy's Y-up axes, mirrored if the race is.
 fn to_world(p: [f32; 3]) -> Vec3 {
@@ -46,6 +50,22 @@ pub struct Surface {
     pub material: usize,
     /// Its vertices each say which bone they move with, and are in that bone's space.
     pub skinned: bool,
+    /// What lights it, if the scene's lights do (`lighting::Lit`): a normal to each
+    /// vertex, and the material's ambient and diffuse colours.
+    pub lit: Option<(Vec<Vec3>, Vec3, Vec3)>,
+}
+
+impl Surface {
+    /// What has the scene's lights light this surface, if it is one they do.
+    pub fn lit(&self) -> Option<crate::lighting::Lit> {
+        let (normals, ambient, diffuse) = self.lit.clone()?;
+        let Some(bevy::mesh::VertexAttributeValues::Float32x4(base)) =
+            self.mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+        else {
+            return None;
+        };
+        Some(crate::lighting::Lit::new(normals, base.clone(), ambient, diffuse))
+    }
 }
 
 /// A pair of wheels: the game rigs each axle as one bone of the wheel model.
@@ -110,6 +130,9 @@ pub struct Library<'a> {
     /// A material with no picture is drawn in its own colour, and not left white
     /// for its model's own colours to show.
     plain: bool,
+    /// The models that have normals are lit by the scene's lights as they are drawn
+    /// (`lighting`), and not once as they are made.
+    dynamic: bool,
 }
 
 impl<'a> Library<'a> {
@@ -120,6 +143,7 @@ impl<'a> Library<'a> {
             materials: HashMap::new(),
             textures: HashMap::new(),
             plain: false,
+            dynamic: false,
         };
         for file in files {
             let Some(data) = jam.get(file) else { continue };
@@ -138,6 +162,15 @@ impl<'a> Library<'a> {
         self.plain = true;
     }
 
+    /// Has the models with normals left to be lit by the scene's lights.
+    pub fn dynamic(&mut self) {
+        self.dynamic = true;
+    }
+
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic
+    }
+
     /// Has one material stand for another, where a model names a part for
     /// someone else to fill in: a figure's "torso", say.
     pub fn alias(&mut self, name: &str, of: &str) {
@@ -146,9 +179,37 @@ impl<'a> Library<'a> {
         }
     }
 
+    /// A material by its name. A face's material for a look the material files
+    /// don't define is its plain one with the look's own picture, where there is one.
+    fn material(&self, name: &str) -> Option<std::borrow::Cow<'_, materials::Material>> {
+        use std::borrow::Cow;
+        if let Some(material) = self.materials.get(name) {
+            return Some(Cow::Borrowed(material));
+        }
+        let look = build::LOOKS.iter().find(|look| name.ends_with(*look))?;
+        let plain = format!("{}{}", name.strip_suffix(look)?, build::LOOKS[0]);
+        let mut material = self.materials.get(&plain)?.clone();
+        let pictured = |dir: &String| self.jam.get(&format!("{dir}/{name}.BMP")).is_some();
+        if self.dirs.iter().any(pictured) {
+            material.texture = Some(name.to_string());
+        }
+        Some(Cow::Owned(material))
+    }
+
+    /// How a picture is read. A face's picture for a look the texture files don't
+    /// define is read as its plain one is.
+    fn definition(&self, name: &str) -> materials::Texture {
+        let plain = || {
+            let look = build::LOOKS.iter().find(|look| name.ends_with(*look))?;
+            let plain = format!("{}{}", name.strip_suffix(look)?, build::LOOKS[0]);
+            self.textures.get(self.materials.get(&plain)?.texture.as_ref()?)
+        };
+        self.textures.get(name).or_else(plain).cloned().unwrap_or_default()
+    }
+
     /// The picture a material is drawn with.
     pub fn texture(&self, material: &str) -> Option<image::Pixels> {
-        let info = self.materials.get(material)?;
+        let info = self.material(material)?;
         if let (None, true) = (&info.texture, self.plain) {
             let [red, green, blue, _] = info.diffuse;
             return Some(image::Pixels {
@@ -158,7 +219,7 @@ impl<'a> Library<'a> {
             });
         }
         let name = info.texture.clone()?;
-        let definition = self.textures.get(&name).cloned().unwrap_or_default();
+        let definition = self.definition(&name);
         let mut pixels = self.picture(&name, &definition)?;
         if definition.flip {
             let row = pixels.width as usize * 4;
@@ -171,7 +232,7 @@ impl<'a> Library<'a> {
     /// things drawn without lighting or vertex colours.
     pub fn tinted(&self, material: &str) -> Option<image::Pixels> {
         let mut pixels = self.texture(material)?;
-        let info = self.materials.get(material)?;
+        let info = self.material(material)?;
         let tint = [
             info.diffuse[0],
             info.diffuse[1],
@@ -188,7 +249,7 @@ impl<'a> Library<'a> {
 
     /// Whether a material is added to what is behind it.
     pub fn additive(&self, material: &str) -> bool {
-        self.materials.get(material).is_some_and(|m| m.additive)
+        self.material(material).is_some_and(|m| m.additive)
     }
 
     /// A texture's pixels, from whichever of the folders holds it.
@@ -250,13 +311,10 @@ impl<'a> Library<'a> {
             let info = model
                 .materials
                 .get(*material)
-                .and_then(|name| self.materials.get(name));
+                .and_then(|name| self.material(name));
+            let info = info.as_deref();
             let texture_name = info.and_then(|m| m.texture.clone()).unwrap_or_default();
-            let definition = self
-                .textures
-                .get(&texture_name)
-                .cloned()
-                .unwrap_or_default();
+            let definition = self.definition(&texture_name);
             let texture = self.picture(&texture_name, &definition).map(|mut pixels| {
                 if definition.flip {
                     let row = pixels.width as usize * 4;
@@ -310,7 +368,7 @@ impl<'a> Library<'a> {
                 indices
                     .iter()
                     .map(|i| {
-                        if model.normals.is_empty() {
+                        if model.normals.is_empty() || self.dynamic {
                             colour(vertex(i))
                         } else {
                             lit(i)
@@ -333,9 +391,18 @@ impl<'a> Library<'a> {
             } else {
                 mesh
             };
+            let lit_by_scene = (self.dynamic && !model.normals.is_empty()).then(|| {
+                let normals = indices
+                    .iter()
+                    .map(|&i| Vec3::from(model.normals[i as usize]).normalize_or_zero())
+                    .collect();
+                let own = |c: [u8; 4]| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.0;
+                (normals, own(info.map_or([255; 4], |m| m.ambient)), own(diffuse))
+            });
             surfaces.push(Surface {
                 mesh,
                 skinned,
+                lit: lit_by_scene,
                 texture,
                 cutout: definition.color_key.is_some() || info.is_some_and(|m| m.alpha_test),
                 blend: definition.tga || info.is_some_and(|m| m.blend),
@@ -400,6 +467,11 @@ fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
     let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/PELVIS.SDB"))?)?;
     let driver_surfaces = posed(&figure, &library, &skeleton);
 
+    // A champion's car weighs what the champion's entry says, wherever its chassis
+    // would have the weight.
+    let mut chassis = chassis(jam, &driver.chassis)?;
+    chassis.mass = driver.mass;
+    chassis.centre = Vec3::from(driver.centre);
     Some(KartModel {
         outline: outline(&body, &axles, wheel_scale, reach),
         body: body_surfaces,
@@ -408,7 +480,7 @@ fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
         wheel_scale,
         driver: driver_surfaces,
         driver_scale: figure.scale,
-        chassis: chassis(jam, &driver.chassis)?,
+        chassis,
     })
 }
 
@@ -503,10 +575,24 @@ pub fn load_built(jam: &Jam, racer: &Racer, detailed: bool) -> Option<KartModel>
     let library = Library::new(jam, files.iter().map(String::as_str), &[leb::DIR]);
     let body_surfaces = library.surfaces(&body, |_| true, Vec3::from);
 
-    let (chassis, wheels) = chassis_entry(jam, &racer.chassis)?;
+    let (mut chassis, wheels) = chassis_entry(jam, &racer.chassis)?;
+    // `RaceState::CreateRacer`: the chassis' weight and a unit for each plate of brick,
+    // and the centre of mass where the bricks' is.
+    let (plates, middle) = car.weight(&bricks);
+    chassis.mass += plates as f32;
+    chassis.centre = Vec3::new(
+        middle[0] * build::STUD_SIZE + chassis.centre.x,
+        middle[1] * build::STUD_SIZE + chassis.centre.y,
+        chassis.centre.z,
+    );
     let (axles, wheel_scale, reach) = load_wheels(jam, &wheels)?;
 
-    let (driver, driver_scale) = built_figure(jam, racer.cosmetics)?;
+    // The expression is worn where the menus show the driver; a race has the plain face.
+    let cosmetics = Cosmetics {
+        expression: if detailed { racer.cosmetics.expression } else { 0 },
+        ..racer.cosmetics
+    };
+    let (driver, driver_scale) = built_figure(jam, cosmetics)?;
     Some(KartModel {
         outline: outline(&body, &axles, wheel_scale, reach),
         body: body_surfaces,
@@ -527,6 +613,35 @@ fn built_figure(jam: &Jam, cosmetics: Cosmetics) -> Option<(Vec<Surface>, f32)> 
     let library = Library::new(jam, files.iter().map(String::as_str), &folders);
     let skeleton = parse_skeleton(build::skeleton(jam, &catalogue, cosmetics, false)?)?;
     Some((posed(&figure, &library, &skeleton), figure.scale))
+}
+
+/// One part of a minifigure of these cosmetics, posed as it sits in a car: 0 the
+/// hat, 1 the face, 2 the torso, 3 the legs. The port's own, for the build menu's
+/// selectors (`MenuRacerCarousel::RefreshItemModel` shows each part by itself).
+pub fn figure_part(jam: &Jam, cosmetics: Cosmetics, part: usize) -> Option<Vec<Surface>> {
+    // A part by itself has the plain face.
+    let cosmetics = Cosmetics { expression: 0, ..cosmetics };
+    let catalogue = build::Catalogue::open(jam)?;
+    let mut figure = build::figure(jam, &catalogue, cosmetics, false)?;
+    let name = |names: &[String], at: u8| names.get(at as usize).or(names.first()).cloned();
+    let face = format!("{}dflt", build::face(&catalogue, cosmetics)?);
+    let torso = name(&catalogue.torsos, cosmetics.torso)?;
+    let legs = name(&catalogue.legs, cosmetics.legs)?;
+    let material = |wanted: &str| figure.materials.iter().position(|m| m == wanted);
+    let head = material(&face).and_then(|face| {
+        figure.batches.iter().find(|b| b.material == face).and_then(|b| b.bone)
+    });
+    let (face, torso, legs) = (material(&face), material(&torso), material(&legs));
+    figure.batches.retain(|b| match part {
+        0 => b.bone == head && Some(b.material) != face,
+        1 => Some(b.material) == face,
+        2 => Some(b.material) == torso,
+        _ => Some(b.material) == legs,
+    });
+    let (files, folders) = build::Catalogue::files();
+    let library = Library::new(jam, files.iter().map(String::as_str), &folders);
+    let skeleton = parse_skeleton(build::skeleton(jam, &catalogue, cosmetics, false)?)?;
+    Some(posed(&figure, &library, &skeleton))
 }
 
 /// The minifigure of what a player races as, and its scale: the one they built, the
@@ -579,6 +694,10 @@ pub struct Chassis {
     pub stats: [f32; 3],
     /// How high the engine revs.
     pub engine_pitch: f32,
+    /// The chassis' own weight, and where its centre of mass is (`ChassisModelTable::Item`'s
+    /// `m_baseMass` and `m_centerOfMass`).
+    pub mass: f32,
+    pub centre: Vec3,
 }
 
 fn chassis(jam: &Jam, name: &str) -> Option<Chassis> {
@@ -637,6 +756,8 @@ fn chassis_entry(jam: &Jam, name: &str) -> Option<(Chassis, String)> {
             numbers(0x3c, 0, 1)?[0],
         ],
         engine_pitch: numbers(0x2f, 0, 1).map_or(1.0, |v| v[0]),
+        mass: numbers(0x2c, 0, 1).map_or(0.0, |v| v[0]),
+        centre: numbers(0x2a, 0, 3).map_or(Vec3::ZERO, |v| vec3(&v)),
     };
     Some((chassis, wheels))
 }
@@ -746,9 +867,29 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
     );
     let surfaces = library.surfaces(&model, |_| true, to_world);
 
-    let route_file = with_ext(".RRB").next()?;
-    let lap = route::Record::parse(jam.get(route_file)?, false)?.lap();
-    let line: Vec<Vec3> = lap.into_iter().map(to_world).collect();
+    let grid = with_ext(".SPB").find_map(|f| route::parse_start_positions(jam.get(f)?));
+    // A race with no recorded route (the test track, where there is no lap to run) has
+    // a ring round its starting place for the road the cars are held to.
+    let route_file = with_ext(".RRB").next();
+    let line: Vec<Vec3> = match route_file {
+        Some(file) => route::Record::parse(jam.get(file)?, false)?
+            .lap()
+            .into_iter()
+            .map(to_world)
+            .collect(),
+        None => {
+            let (_, position, forward) = grid.as_ref()?.first()?;
+            let (start, forward) = (to_world(*position), to_world(*forward).normalize_or_zero());
+            let left = Vec3::Y.cross(forward).normalize_or_zero();
+            let centre = start + left * RING;
+            (0..16)
+                .map(|i| {
+                    let turn = Quat::from_rotation_y(i as f32 / 16.0 * std::f32::consts::TAU);
+                    centre + turn * (start - centre)
+                })
+                .collect()
+        }
+    };
     let mut track = Track::from_loop(&line, LANE);
 
     // The solid world, minus trigger surfaces (checkpoints and the like).
@@ -781,10 +922,20 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
             .unwrap_or_default();
         surface.force = to_world(surface.force).to_array();
         let corner = |i: u16| volume.vertices.get(i as usize).copied().map(to_world);
+        // The floor of the test track's starting place is made of the surface that
+        // stands for an open door, which a car drives through; a floor of it holds.
+        let mut tag = tri[3] as usize + 1;
+        if route_file.is_none() && surface.non_solid {
+            let [a, b, c] = [tri[0], tri[1], tri[2]]
+                .map(|i| Vec3::from(volume.vertices.get(i as usize).copied().unwrap_or_default()));
+            if (b - a).cross(c - a).normalize_or_zero().z > 0.5 {
+                tag += FLOOR_TAGS;
+            }
+        }
         track.collision.add_tagged(
             [corner(tri[0])?, corner(tri[1])?, corner(tri[2])?],
             surface,
-            tri[3] as usize + 1,
+            tag,
         );
     }
     // The race definition names the volume that is the finish line.
@@ -871,8 +1022,7 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
                 .push((to_world(trigger.centre), trigger.radius * UNIT, zone));
         }
     }
-    if let Some(mut grid) = with_ext(".SPB").find_map(|f| route::parse_start_positions(jam.get(f)?))
-    {
+    if let Some(mut grid) = grid {
         grid.sort_by_key(|g| g.0);
         track.course.grid = grid
             .into_iter()
@@ -907,7 +1057,8 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
         .collect();
 
     info!(
-        "loaded {race}: {model_file}, {route_file}, lap {:.0}, {} targets",
+        "loaded {race}: {model_file}, {}, lap {:.0}, {} targets",
+        route_file.unwrap_or("no route"),
         track.length,
         targets.len()
     );
@@ -950,6 +1101,8 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
     world.swatches.extend(
         crate::hazards::SWATCHES
             .iter()
+            .chain([crate::hazards::CRANE_SHADOW].iter())
+            .chain(crate::beams::PICTURES.iter())
             .filter_map(|material| picture(&library, material)),
     );
     let sky = with_ext(".SKB").find_map(|f| crate::sky::Sky::parse(jam.get(f)?));
@@ -974,7 +1127,7 @@ fn picture(library: &Library, material: &str) -> Option<(String, image::Pixels)>
 
 /// Adds the emitters of an emitter file that pass `keep` and aren't there already,
 /// with pictures from `library` and the material animation at `animation`.
-fn add_emitters(
+pub(crate) fn add_emitters(
     jam: &Jam,
     file: &str,
     library: &Library,
@@ -1203,6 +1356,23 @@ mod tests {
     use super::*;
 
     /// Needs the original game data; silently passes without it.
+    #[test]
+    fn a_built_car_weighs_its_bricks_and_has_its_centre_among_them() {
+        let Some(jam) = open_jam() else { return };
+        for racer in crate::garage::stock(&jam) {
+            let bricks = leb::Library::open(&jam, false).unwrap();
+            let car = build::Car::read(&bricks, &racer.car);
+            let (plates, middle) = car.weight(&bricks);
+            assert!(plates > 0, "{}", racer.chassis);
+            assert!(middle[0].abs() < 6.0 && middle[1].abs() < 4.0, "{middle:?}");
+            let kart = load_built(&jam, &racer, false).unwrap();
+            assert_eq!(kart.chassis.mass, 2500.0 + plates as f32);
+        }
+        let bricks = leb::Library::open(&jam, false).unwrap();
+        let bare = build::Car::new(&bricks, "rrchas0");
+        assert_eq!(bare.weight(&bricks), (0, [0.0; 3]));
+    }
+
     #[test]
     fn every_racer_of_the_game_s_own_is_a_car_on_wheels_with_a_driver() {
         let Some(jam) = open_jam() else { return };

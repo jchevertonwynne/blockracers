@@ -15,6 +15,12 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   so **`cargo clean` deletes it** — don't run it without re-cloning afterwards.
 - **Code:** `src/assets/` holds the file-format readers; everything else in `src/` is
   the game. Each module's header comment says which part of the original it follows.
+- **Our own circuits:** `src/track.rs` lays out the four built here (`track::Layout`) and
+  what each has besides its road (`Extras`: byways, infields, speed pads and banked
+  corners, each so far round the lap). The computer's cars take the byways
+  (`kart::Ai::byway`), `items::laid` puts the bricks where those features are,
+  `src/gauntlet.rs` stands hazards of the game's round each, and `src/helter.rs` is the
+  helter skelter's scenery.
 - **Built cars:** `src/build.rs` has the rules of putting bricks on a chassis, the
   bytes a car is saved as and the model made of one, and a racer's minifigure;
   `src/assets/leb.rs`, `gcb.rs` and `lrs.rs` read the bricks, the minifigure's heads
@@ -28,6 +34,10 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   bound to, which the race reads (`input::Actions`) instead of the keys themselves;
   the menus read keys, and a pad's buttons are passed on to them as keys. The
   bindings are changed on the options' controls page and kept with the settings.
+  An axis can be bound to the accelerator and the brake (`input::Bound::Axis`; a
+  pad's triggers to begin with), and from the countdown to the finish a pad hums
+  with the engine (`input::engine_hum`: a steady shake where the original has a
+  sine, which a pad's motors can't play). No pad has been tried on any of this.
 - **What has been won:** `src/progress.rs` keeps the circuits opened, the part sets
   and minifigure parts won and the records beaten; a racer's trophies are in its own
   record (`assets::lrs`). The build menu offers only what has been won. A circuit
@@ -39,17 +49,57 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   shown, and after a circuit won for the first time the film for its part set: the
   champion beside their car, or Rocket Racer's and then the credits, which the
   options have too. Every record beaten has Veronica Voltage's film, every
-  circuit race begins with its circuit's, and the game opens on its notice (not
-  in a demo). The two videos the original opens with (`HVSCmp.avi`,
-  `introcmp.avi`, Indeo 5) are not films of this kind and are not shown; nor is
-  the turning view of a circuit on the single race page (`SINGRACE/PST.CDB`),
-  which is one of these with a frame to each circuit. While a film plays the
+  circuit race begins with its circuit's. The game opens straight on its main
+  menu, and is meant to: the notice the original opens on (`LEGAL`) is shown
+  only when `BRICK_FILM` asks for it, and the two videos the original plays
+  first (`HVSCmp.avi`, `introcmp.avi`, Indeo 5) are not to be ported. A film's
+  lights light the models that have normals (`src/lighting.rs`: `Lights` is the
+  scene's, `Lit` a mesh they light); only the films' models have any, and a race
+  has no lights, so everything else keeps the colours it was made with. A film's
+  changes of colour and sprays of particles are played; none has streamed sound.
+  The view of a circuit on the race pages (`SINGRACE/PST.CDB`, one of these with
+  a frame to each circuit) is `src/frontend/circuit.rs`'s. While a film plays the
   menus neither draw nor take keys (`film::Showing`). Online, the film for first
   place is shown about whoever won a race, before the room shows its results.
 - **Minifigures standing:** `build::figure` makes one sitting, for a car, or
   standing, for the films and for the main menu, where the champion of the last
   circuit opened stands (`src/frontend/mascot.rs`), drawn onto a picture by a
   camera of its own, as the room's portraits are.
+- **Models on the menus:** each is drawn onto a picture by a camera of its own, on
+  a render layer of its own: `portraits.rs` (7), `mascot.rs` (8), `circuit.rs` (9,
+  the race pages' view of the circuit), `parts.rs` (10, the driver page's parts)
+  and `licence.rs` (11, the licence's photograph), all in `src/frontend/`. A query
+  for the screen's own `Camera3d` must leave out those with `RenderLayers`, or it
+  stops matching one camera once a second is there. Not drawn: the bricks page's
+  carousel of bricks, the garage's own racer and car slots, and the race's mascot
+  in the circuit's view.
+- **The build menu's other pages:** the licence picks the face its driver pulls
+  (`Cosmetics::expression`, worn in the menus and not in a race) and takes the
+  original's cheat codes as its name (`src/cheats.rs`: they last the session, a
+  circuit or time race clears them, and online only the three that change a
+  car's looks apply). A face's material for a look the material files don't
+  define is its plain one with the look's picture (`world::Library::material`).
+  The licence page's layout places everything from the corner of the licence
+  itself (`workshop::on_licence`), and shows the driver in its photograph only.
+  Leaving a page with something changed asks first (`Page::Scrap`). The garage's
+  test drive is the race of folder `TEST`, alone and with no lights to wait
+  for. That circuit has no recorded route, so `world::load_in` gives it a ring
+  for a road, a stand-in: the car starts on the circuit's one grid place and is
+  driven where the player likes, but the computer (a demo's driver too) follows
+  the ring and not the road, and nothing ends the drive but leaving it.
+- **Loading:** `src/loading.rs` shows the race's `LOADSCRN.LSB` picture and its
+  ticks (`LoadingScreen`) for the frames before a race, which is loaded in one go.
+- **The car's body:** `src/physics.rs` follows `RacerCarBody` and
+  `RacerRigidBody`: angular momentum and its impulses (`physics::Rigid`, sent
+  online in `net::state::State`), with a mass and centre of mass (`Kart::mass`,
+  `centre`) that a built car takes from its bricks (`build::Car::weight`). A
+  floating car is still levelled by an averaged probe; the original's slide body
+  is not ported, and nor is its ride height (`RIDE_HEIGHT` is 0, and says why).
+- **Ribbons:** `src/beams.rs` draws the lightning's bolt, the hook's rope and the
+  streaks behind missiles and cannon balls (`BeamMesh`, `RaceTrailManager`) from
+  the `Action`s in the world; `hazards::hazard_looks` draws the crane's shadow (a
+  flat square, where the original lays a decal on the road) and the ghost's
+  after-images. The rope does not wind back in, and front wheels leave no marks.
 - **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
   games drive their own car ahead of the host's word and are shown the rest. Online
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and
@@ -71,7 +121,7 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
 - If the original does something the port has no feature for yet, build the feature.
   Don't leave a stand-in without saying so.
 - What the port adds to the original (replays, photo mode, reversed circuits, the brick
-  rules, elimination, quick steering, the video options, online play) is off until asked for, and says in its
+  rules, elimination, quick steering, faster cars, the video options, online play) is off until asked for, and says in its
   module comment that it is the port's own.
 - Units: the game's are Z-up; ours are Y-up, with one game unit `physics::UNIT` of
   ours. Use `scenery::to_world` for positions.
@@ -79,6 +129,12 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   be conjugated (`assets::adb::turn`, `opponent::facing`). Getting this wrong shows up
   as doors opening backwards or wheels sitting beside their car.
 - Comments say what the code does or why, as the surrounding code does. No history.
+- No circuit's event table has look targets (0x55), external forces (0x59), event
+  links (0x39), material animations (0x29) or changes of colour that name a model;
+  `events.rs` doesn't read them, and a test says so.
+- Not wanted, so not to be ported or listed as missing: the original's two-player
+  split screen (online play has its place in the menus), and anything shown before
+  the main menu as the game opens.
 
 ## Running it
 
@@ -98,7 +154,7 @@ menu instead. These combine with it:
 
 | Variable | Does |
 |---|---|
-| `BRICK_RACE=RACEC0R0` | which race folder to load (`BRICK`, `FIGURE8` and `GAUNTLET` are the built-in circuits; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
+| `BRICK_RACE=RACEC0R0` | which race folder to load (`TEST` is the garage's test drive; `BRICK`, `FIGURE8`, `GAUNTLET` and `HELTER` are the built-in circuits; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
 | `BRICK_CAM=x,y,z,tx,ty,tz` | fixed camera, in the game's coordinates |
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
@@ -113,9 +169,12 @@ menu instead. These combine with it:
 | `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brick_racers_garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
 | `BRICK_FILM=C_AWARD1` | a film to show as the menu opens, by its folder in `/MENUDATA` (`C_AWARD1` to `C_AWARD4` are the circuit's places, `WINCAR` a champion's car set won, `WINCAR:c3` being the fourth circuit's, `WINRRCAR` Rocket Racer's, which is thirty-seven seconds, `WINVVCAR` Veronica Voltage's, `CIRCUIT1` to `CIRCUIT7` those before each circuit, `LEGAL` the opening notice and `CREDITS` the credits, which are two minutes; a key ends it after a second) |
 | `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brick_racers_progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
+| `BRICK_CHEATS=FSTFRWRD,NWHLS` | the licence's cheat codes, as if each were typed as its name (`NSLWJ`, `FLYSKYHGH`, `PGLLRD`, `PGLLYLL`, `PGLLGRN`, `LNFRRRM`, `RPCRNLY`, `MXPMX`, `FSTFRWRD`, `NWHLS`, `NCHSSS`, `NDRVR`; `NMRCHTS` clears them) |
+| `BRICK_LOADING=4` | begin on the loading screen and hold it that many seconds of the real clock, its ticks filling in (demos otherwise skip it) |
 | `BRICK_RACER=4` | which of the garage's racers the player races as, counted from one |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |
+| `BRICK_SPEED=2` | how many times as fast as the original's the cars are, the computer's too (1 to 2 by quarters; `Kart::pace`; online it is the host's that counts) |
 | `BRICK_BRICKS=red\|yellow\|blue\|green\|none\|random` | what the circuit's bricks are made |
 | `BRICK_OPPONENTS=1` | how many of the computer's cars race |
 | `BRICK_PHOTOS=<folder>` | where photo mode saves (default `screenshots/`) |
@@ -157,6 +216,11 @@ The game opens a window and plays audio on the machine the user is sitting at.
 - **Screenshots come back black (56,997 bytes) when the window is covered.** That is
   the user working in another window, not a rendering bug. Retry, and get on with
   something that doesn't need the screen in the meantime.
+- **Give a run a hard stop.** One demo sat for eighteen minutes without quitting
+  while the renderer was logging errors. Start it in the background and kill it if
+  it outlives its time by more than a few seconds.
+- **A build folder to each checkout.** Two checkouts building into one `target/`
+  overwrite each other's test binary, and a test run then tests the other's code.
 - **Don't trust a screenshot you didn't just take.** Check the file's time, and look
   at it before describing what it shows.
 

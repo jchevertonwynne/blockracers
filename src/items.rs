@@ -82,6 +82,13 @@ const SHIELD_TIMES: [f32; 4] = [4.0, 6.0, 8.0, 10.0];
 const DEFLECTING_SHIELD: u8 = 2;
 /// A turbo lights for 0.4 s, burns for 1, 1.5 or 5 s and dies away over 0.7 s; the car
 /// is boosted for all of it (`TurboAction`).
+/// What dropping an oil slick or a magnet and firing a turbo do to the car's pitch
+/// (`ApplyPitchImpulse`): the rate in radians a second, and for how long.
+const OIL_PITCH: f32 = 1.5;
+const DROP_PITCH_TIME: f32 = 0.15;
+const TURBO_PITCH: f32 = -2.5;
+const TURBO_PITCH_TIME_L0: f32 = 0.125;
+const TURBO_PITCH_TIME: f32 = 0.25;
 pub const TURBO_TIMES: [f32; 3] = [0.4 + 1.0 + 0.7, 0.4 + 1.5 + 0.7, 0.4 + 5.0 + 0.7];
 pub const WARP_TIME: f32 = 1.5;
 /// The warp takes this long to open before it carries the kart off.
@@ -112,11 +119,17 @@ const HOOK_GRAVITY: f32 = 90.176 * UNIT;
 const HOOK_RANGE: f32 = 500.0 * UNIT;
 const HOOK_FLIGHT_TIME: f32 = 3.0;
 const HOOK_PULL_TIME: f32 = 4.0;
+pub const HOOK_PULL_SECONDS: f32 = HOOK_PULL_TIME;
 /// Acceleration on both ends of the rope.
 const HOOK_PULL: f32 = 180.0 * UNIT;
 const HOOK_RELEASE_DISTANCE: f32 = 12.0 * UNIT;
 const LIGHTNING_TIME: f32 = 7.0;
+pub const LIGHTNING_SECONDS: f32 = LIGHTNING_TIME;
 const LIGHTNING_RANGE: f32 = 50.0 * UNIT;
+/// The bolt's cross-section is a flat V: twice `g_lightningBeamThickness` across and
+/// that thickness less a quarter (`LightningAction::Initialize`) up.
+const LIGHTNING_WIDTH: f32 = 2.0 * 0.85 * UNIT;
+const LIGHTNING_HEIGHT: f32 = 0.675 * UNIT;
 const LIGHTNING_MIN_RANGE: f32 = 3.0 * UNIT;
 const LIGHTNING_CONE: f32 = 0.5;
 /// The bolt stays on the car it has struck this long before it can strike another.
@@ -490,6 +503,7 @@ pub fn setup_items(
     mut commands: Commands,
     track: Res<Track>,
     settings: Res<crate::menu::Settings>,
+    raced: Res<crate::cheats::Raced>,
     mut rng: ResMut<crate::meshgen::Rng>,
     loaded: Option<Res<LoadedWorld>>,
     models: Option<Res<Models>>,
@@ -568,7 +582,8 @@ pub fn setup_items(
             .map(|loaded| loaded.targets.clone())
             .unwrap_or_default(),
     ));
-    let rule = settings.brick_rule();
+    // The licence's colour codes decide the coloured bricks before a setting does.
+    let rule = raced.brick_rule().unwrap_or(settings.brick_rule());
     let placed = loaded.is_some();
     let models = models.as_deref();
     let mut spawn = |pos: Vec3, power: Option<Power>| {
@@ -595,8 +610,6 @@ pub fn setup_items(
             },
         );
     };
-    let powers = POWERS;
-
     // Circuits from the original game come with their own brick placements.
     if let Some(loaded) = loaded {
         for &(power, pos) in &loaded.bricks {
@@ -606,26 +619,100 @@ pub fn setup_items(
         return;
     }
 
-    // Otherwise: rows of bricks at regular stations around the lap, alternating
-    // coloured and white, each row spread over the width of the road.
-    const STATIONS: usize = 10;
-    for station in 1..STATIONS {
-        let s = track.length * station as f32 / STATIONS as f32;
-        if station % 2 == 1 {
-            for (i, lat) in [-0.75, -0.25, 0.25, 0.75].into_iter().enumerate() {
-                spawn(
-                    track.point(s, lat * track.road),
-                    Some(powers[(i + station / 2) % 4]),
-                );
-            }
-        } else {
-            for lat in [-0.65, 0.0, 0.65] {
-                spawn(track.point(s, lat * track.road), None);
-            }
-        }
+    // Otherwise they are laid where the circuit's own features ask for them.
+    for (power, pos) in laid(&track) {
+        spawn(pos, power);
     }
     commands.insert_resource(assets);
 }
+
+/// How far apart the rows of bricks round a built-in circuit are, about, and the
+/// fewest rows there are.
+const ROW_SPACING: f32 = 330.0;
+const FEWEST_ROWS: usize = 8;
+
+/// Where the bricks of a built-in circuit lie, on its surface: rows at regular stations
+/// round the lap, alternately coloured and white, and one or more wherever there is
+/// something to be gone out of the way for. Each byway has a coloured row in its
+/// middle and a white brick towards either end, each jump a coloured brick in the air
+/// past its lip, each infield a row of white ones across its grass, and each banked
+/// corner a coloured one high on the bank.
+pub fn laid(track: &Track) -> Vec<(Option<Power>, Vec3)> {
+    let mut bricks = Vec::new();
+    let n = track.n();
+    let rows = FEWEST_ROWS.max((track.length / ROW_SPACING).round() as usize);
+    for row in 1..rows {
+        // A row that would lie on a jump lies just before it.
+        let mut at = row * n / rows;
+        if let Some(jump) = track
+            .jumps
+            .iter()
+            .find(|jump| (jump.0..jump.1).contains(&at))
+        {
+            at = jump.0.min(jump.1) - 4;
+        }
+        if row % 2 == 1 {
+            for (i, lat) in [-0.75, -0.25, 0.25, 0.75].into_iter().enumerate() {
+                let power = POWERS[(i + row / 2) % 4];
+                bricks.push((Some(power), track.edge(at, lat * track.road)));
+            }
+        } else {
+            for lat in [-0.65, 0.0, 0.65] {
+                bricks.push((None, track.edge(at, lat * track.road)));
+            }
+        }
+    }
+    for (b, branch) in track.branches.iter().enumerate() {
+        let length = branch.length();
+        for (i, lat) in [-0.5, 0.5].into_iter().enumerate() {
+            let at = branch.point(length / 2.0) + branch.right * lat * branch.road;
+            bricks.push((Some(POWERS[(2 * b + i + 3) % 4]), at));
+        }
+        for part in [0.25, 0.75] {
+            bricks.push((None, branch.point(length * part)));
+        }
+    }
+    for &(from, to) in &track.jumps {
+        // The lip is the highest of it, and the dip is on the side that falls away.
+        let lip = (from..to)
+            .max_by(|&a, &b| track.pts[a].y.total_cmp(&track.pts[b].y))
+            .unwrap_or(from);
+        let over = if track.pts[lip + 3].y < track.pts[lip - 3].y {
+            lip + JUMP_BRICK
+        } else {
+            lip - JUMP_BRICK
+        };
+        let height = track.pts[lip].y + 1.0;
+        bricks.push((Some(Power::Green), track.pts[over].with_y(height)));
+    }
+    for infield in &track.infields {
+        let grass = track.grass(infield);
+        if let Some(&[a, _, _, d]) = grass.get(grass.len() / 2) {
+            for part in [0.3, 0.5, 0.7] {
+                bricks.push((None, a.lerp(d, part)));
+            }
+        }
+    }
+    let mut i = 0;
+    let mut banks = 0;
+    while i < n {
+        let from = i;
+        while i < n && track.bank[i] != 0.0 {
+            i += 1;
+        }
+        if i > from {
+            let middle = (from + i) / 2;
+            let high = track.bank[middle].signum() * 0.75 * track.road;
+            bricks.push((Some(POWERS[banks % 4]), track.edge(middle, high)));
+            banks += 1;
+        }
+        i += 1;
+    }
+    bricks
+}
+
+/// How many samples past a jump's lip the brick over its dip is.
+const JUMP_BRICK: usize = 5;
 
 pub fn pickups(
     mut commands: Commands,
@@ -996,6 +1083,8 @@ pub struct Shot {
     speed: f32,
     age: f32,
     life: f32,
+    /// How long it takes to get where it was aimed.
+    flight: f32,
 }
 
 /// What a shot can come to.
@@ -1015,6 +1104,7 @@ impl Shot {
             from,
             vel,
             gravity,
+            flight: duration,
             speed: delta.with_y(0.0).length() / duration,
             age: 0.0,
             life,
@@ -1088,6 +1178,21 @@ impl Shot {
         );
     }
 
+    /// How far through its flight it is, from 0 to 1.
+    pub fn progress(&self) -> f32 {
+        (self.age / self.flight.max(1e-3)).clamp(0.0, 1.0)
+    }
+
+    /// How high it was `back` seconds ago.
+    pub fn height_back(&self, back: f32) -> f32 {
+        let t = (self.age - back).max(0.0);
+        self.from.y + self.vel.y * t - 0.5 * self.gravity * t * t
+    }
+
+    pub fn age(&self) -> f32 {
+        self.age
+    }
+
     fn position(&self) -> Vec3 {
         self.from + self.vel * self.age - Vec3::Y * 0.5 * self.gravity * self.age * self.age
     }
@@ -1118,6 +1223,7 @@ pub fn use_items(
     track: Res<Track>,
     targets: Option<Res<Targets>>,
     events: Option<Res<TrackEvents>>,
+    raced: Option<Res<crate::cheats::Raced>>,
     mut sfx: ResMut<Sfx>,
     mut q: Query<(Entity, &mut Kart, &mut Controls)>,
 ) {
@@ -1133,11 +1239,17 @@ pub fn use_items(
             continue;
         }
         // With nothing to fire, the button sounds the horn.
-        let Some(power) = k.held.take() else {
+        let Some(held) = k.held.take() else {
             k.cues.horn = true;
             continue;
         };
         let level = std::mem::take(&mut k.whites).min(3);
+        // The licence's `RPCRNLY`, `MXPMX` and `FLYSKYHGH` change what a brick fires;
+        // the brick is used up all the same.
+        let raced = raced.as_deref().copied().unwrap_or_default();
+        let Some((power, level)) = raced.fired(held, level) else {
+            continue;
+        };
 
         // What is dropped lands on the ground under the car (`ComputeDropPosition`).
         let ground = track.collision.ground(k.pos + Vec3::Y * 0.5, DROP_PROBE);
@@ -1266,7 +1378,7 @@ pub fn use_items(
                 );
             }
             (Power::Red, 2) => {
-                let size = Vec3::new(0.3, 0.3, LIGHTNING_RANGE);
+                let size = Vec3::new(LIGHTNING_WIDTH, LIGHTNING_HEIGHT, LIGHTNING_RANGE);
                 spawn(
                     Action::Lightning {
                         owner,
@@ -1348,6 +1460,7 @@ pub fn use_items(
                 }
             }
             (Power::Yellow, 0) => {
+                k.nose(OIL_PITCH, DROP_PITCH_TIME);
                 spawn(
                     Action::OilSlick { owner, age: 0.0 },
                     &assets.disc,
@@ -1389,6 +1502,7 @@ pub fn use_items(
                 spawn(action, &assets.stick, &assets.red, muzzle, Vec3::ONE);
             }
             (Power::Yellow, 2) => {
+                k.nose(OIL_PITCH, DROP_PITCH_TIME);
                 let action = Action::Magnet {
                     owner,
                     time: MAGNET_ARMED_TIME,
@@ -1420,7 +1534,18 @@ pub fn use_items(
                 k.cursed = 0.0;
             }
             (Power::Green, 3) => k.warp_start = WARP_START,
-            (Power::Green, level) => k.start_boost(level),
+            (Power::Green, level) => {
+                // `TurboAction::StartBoost`.
+                k.nose(
+                    TURBO_PITCH,
+                    if level == 0 {
+                        TURBO_PITCH_TIME_L0
+                    } else {
+                        TURBO_PITCH_TIME
+                    },
+                );
+                k.start_boost(level)
+            }
         }
     }
 }
@@ -1449,6 +1574,7 @@ impl ItemAssets {
                 speed: CANNONBALL_SPEED,
                 age: 0.0,
                 life: EMPLACED_LIFE,
+                flight: 1.0,
             }
         } else {
             Shot::lobbed(
@@ -1498,7 +1624,7 @@ impl ItemAssets {
             crackle: 0.0,
             shocked: None,
         };
-        let transform = Transform::from_scale(Vec3::new(0.3, 0.3, LIGHTNING_RANGE));
+        let transform = Transform::from_scale(Vec3::new(LIGHTNING_WIDTH, LIGHTNING_HEIGHT, LIGHTNING_RANGE));
         commands.spawn((
             action,
             Mesh3d(self.cube.clone()),
@@ -2319,5 +2445,54 @@ mod tests {
         let k = kart(&world, owner);
         assert!(k.s - start > 200.0, "warped {}", k.s - start);
         assert!(k.vel.length() > crate::physics::MAX_SPEED);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn bricks_are_laid_where_a_circuit_s_features_are() {
+    use crate::track::{Layout, WALL};
+    for layout in Layout::ALL {
+        let track = Track::built(layout);
+        let bricks = laid(&track);
+        let near = |p: Vec3, reach: f32| bricks.iter().any(|b| b.1.distance(p) < reach);
+        // Each byway has bricks of its own, off the road.
+        for branch in &track.branches {
+            let middle = branch.point(branch.length() / 2.0);
+            let coloured = bricks
+                .iter()
+                .filter(|b| b.0.is_some() && b.1.distance(middle) < branch.road)
+                .count();
+            assert_eq!(coloured, 2, "{layout:?}");
+            assert!(!track.on_road(middle, WALL));
+        }
+        // Each jump has one in the air over its dip, higher than its lip.
+        for &(from, to) in &track.jumps {
+            let over: Vec<_> = bricks
+                .iter()
+                .filter(|b| (from..to).contains(&track.nearest(b.1.with_y(0.0))))
+                .collect();
+            assert_eq!(over.len(), 1, "{layout:?}");
+            let ground = track.collision.ground(over[0].1, 20.0).unwrap();
+            assert!(over[0].1.y - ground.point.y > 6.0 && ground.point.y < 0.1);
+        }
+        // Each infield has some on its grass, and each bank one on its high side.
+        for infield in &track.infields {
+            let grass = track.grass(infield);
+            let [a, _, _, d] = grass[grass.len() / 2];
+            assert!(near((a + d) / 2.0, 0.1), "{layout:?}");
+        }
+        let banked = bricks.iter().filter(|b| {
+            let i = track.nearest(b.1);
+            track.bank[i] != 0.0 && b.1.y > track.pts[i].y + 0.3
+        });
+        assert!(banked.count() >= 1, "{layout:?}");
+        // Every one of them is over ground a car can be on.
+        for (_, at) in &bricks {
+            assert!(
+                track.collision.ground(*at + Vec3::Y, 20.0).is_some(),
+                "{layout:?} {at}"
+            );
+        }
     }
 }

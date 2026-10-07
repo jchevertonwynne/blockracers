@@ -5,11 +5,11 @@
 //! (the `.CEB` file: what the events set off), `MenuSceneScreen::SceneWidget` and,
 //! for the racer the film is about, `AwardCinematicScreen::CreateWidgets`.
 //!
-//! The port draws its models unlit, so a film's lights are not cast: everything in
-//! it is made as bright as its lights come to. Of what a `.CEB` file can set off,
-//! the films the port shows use sounds, fades, words and pictures, and those are
-//! what is here; sprays of particles, things moved about and streamed sound are
-//! not. The game's two opening films are video files, and not films of this kind.
+//! A film's ambient and directional lights light the models that have normals
+//! (`lighting`); the rest keep the colours they were made with. Of what a `.CEB`
+//! file can set off, here are sounds, fades, words, pictures, changes of a model's
+//! colours and sprays of particles. No film has streamed sound, and it is not here.
+//! The game's two opening films are video files, and not films of this kind.
 //!
 //! `BRICK_FILM=<folder>` shows a film of `/MENUDATA` when the menu opens: `C_AWARD1`
 //! to `C_AWARD4` are those for the places of a circuit, `WINCAR` the one for a
@@ -37,7 +37,9 @@ use crate::assets::{
     tokens::{Token, tokenize},
 };
 use crate::frontend::Art;
-use crate::scenery::{self, Animated, Prop, PropDef, Recast, ReelDef, Rig, Scrolling};
+use crate::lighting::{Beam, Lights, Lit};
+use crate::particles::{self, EmitterDef, Emitters, Look};
+use crate::scenery::{self, Animated, Prop, PropDef, Recast, ReelDef, Rig};
 use crate::world::Library;
 use crate::assets::lrs::Racer;
 use crate::{Screen, build, roster};
@@ -66,9 +68,8 @@ const LOOKS: [(&str, &str); 6] = [
     ("sad", "sad"),
     ("suprz", "suprz"),
 ];
-/// How much of a directional light's colour everything is brightened by, the port
-/// having no way to cast it.
-const BEAM_SHARE: f32 = 0.5;
+/// The most directional lights a frame casts.
+const MOST_BEAMS: usize = 7;
 /// The screen the films' words are placed on.
 const SCREEN: Vec2 = Vec2::new(640.0, 480.0);
 /// Where nothing is.
@@ -77,7 +78,7 @@ const NOWHERE: Vec3 = Vec3::new(0.0, -4000.0, 0.0);
 const LONGEST_STEP: f32 = 0.05;
 
 /// Every `key "name" { ... }` of a file, with what is between its braces.
-fn entries(tokens: &[Token], key: u16) -> Vec<(String, &[Token])> {
+pub(crate) fn entries(tokens: &[Token], key: u16) -> Vec<(String, &[Token])> {
     let mut out = Vec::new();
     for at in 0..tokens.len().saturating_sub(2) {
         let (Token::Key(found), Token::Str(name), Token::LCurly) =
@@ -101,7 +102,7 @@ fn entries(tokens: &[Token], key: u16) -> Vec<(String, &[Token])> {
 }
 
 /// The `n`th number after a key.
-fn number(fields: &[Token], key: u16, n: usize) -> Option<f32> {
+pub(crate) fn number(fields: &[Token], key: u16, n: usize) -> Option<f32> {
     let at = fields.iter().position(|t| *t == Token::Key(key))?;
     match fields.get(at + 1 + n)? {
         Token::Int(value) => Some(*value as f32),
@@ -110,7 +111,7 @@ fn number(fields: &[Token], key: u16, n: usize) -> Option<f32> {
     }
 }
 
-fn text(fields: &[Token], key: u16) -> Option<String> {
+pub(crate) fn text(fields: &[Token], key: u16) -> Option<String> {
     let at = fields.iter().position(|t| *t == Token::Key(key))?;
     match fields.get(at + 1)? {
         Token::Str(value) => Some(value.to_lowercase()),
@@ -118,7 +119,7 @@ fn text(fields: &[Token], key: u16) -> Option<String> {
     }
 }
 
-fn vec3(fields: &[Token], key: u16, from: usize) -> Option<Vec3> {
+pub(crate) fn vec3(fields: &[Token], key: u16, from: usize) -> Option<Vec3> {
     Some(Vec3::new(
         number(fields, key, from)?,
         number(fields, key, from + 1)?,
@@ -223,6 +224,84 @@ enum Effect {
     Words(String, f32, Option<Color>),
     /// A picture in the middle of the screen, by its file.
     Picture(String),
+    /// `CutsceneColorEvent`: the colours baked into a model's vertices are shifted
+    /// down by bits and have an offset added, the offset changing at a rate a second.
+    Colour {
+        target: String,
+        shifts: [u32; 3],
+        offsets: [f32; 3],
+        rates: [f32; 3],
+    },
+    /// `CutsceneAnimationEvent`: a spray of particles of one of the film's emitters,
+    /// at the mark that sets it off unless it says where, or at what it names.
+    Spray {
+        emitter: String,
+        target: Option<String>,
+        position: Option<Vec3>,
+        facing: Option<(Vec3, Vec3)>,
+    },
+}
+
+/// A mark in a film's frame: a time, and a place that what it sets off may be put at
+/// (position, the way it faces and what is up to it, in the game's axes).
+struct Mark {
+    name: String,
+    span: Span,
+    position: Vec3,
+    direction: Vec3,
+    up: Vec3,
+}
+
+/// A light a film turns on for a while (`AmbientLightEvent`, `DirectionalLightEvent`):
+/// its colour of nought to one, which way it shines if it is a directional one and
+/// the times it is on and off for if it blinks.
+struct Glow {
+    span: Span,
+    colour: Vec3,
+    direction: Vec3,
+    blink: Option<(f32, f32)>,
+    /// Whether it is lit at the moment, and how long that has to go.
+    shown: bool,
+    timer: f32,
+}
+
+impl Glow {
+    fn of(fields: &[Token]) -> Glow {
+        // The blink is given in frames of the original's 30 a second.
+        let blink = number(fields, 0x3c, 0)
+            .zip(number(fields, 0x3c, 1))
+            .map(|(on, off)| (on * 0.033_333_33, off * 0.033_333_33));
+        Glow {
+            span: Span::of(fields),
+            colour: vec3(fields, 0x38, 0).unwrap_or_default() / 255.0,
+            direction: vec3(fields, 0x39, 0).unwrap_or(Vec3::NEG_Z),
+            blink,
+            shown: false,
+            timer: 0.0,
+        }
+    }
+
+    /// Runs it on by a step: whether it is on now, having begun and not ended, and
+    /// blinking as the original's `Update` does.
+    fn on(&mut self, frame: u32, step: f32) -> bool {
+        if self.span.begins(frame) {
+            self.shown = true;
+            self.timer = self.blink.map_or(0.0, |blink| blink.0);
+        } else if self.span.state == State::Going {
+            if let Some((on, off)) = self.blink {
+                if step > self.timer {
+                    self.shown = !self.shown;
+                    self.timer = if self.shown { on } else { off };
+                } else {
+                    self.timer -= step;
+                }
+            }
+        }
+        if self.span.ends(frame) {
+            self.shown = false;
+        }
+        self.shown
+    }
 }
 
 /// A film, read and ready to be put on.
@@ -234,11 +313,13 @@ pub struct Film {
     cues: Vec<Cue>,
     shots: Vec<Shot>,
     lenses: HashMap<String, Lens>,
-    /// `Frame::TransformEvent`: names with a time, which is all the films use of them.
-    marks: Vec<(String, Span)>,
-    /// The ambient light and the directional ones, as colours of nought to one.
-    glows: Vec<(Span, Vec3)>,
-    beams: Vec<(Span, Vec3)>,
+    /// `Frame::TransformEvent`: a name, a time and where the mark is.
+    marks: Vec<Mark>,
+    /// The emitters of the film's own animations, for its sprays.
+    emitters: Vec<(String, EmitterDef, Look)>,
+    /// The ambient light and the directional ones.
+    glows: Vec<Glow>,
+    beams: Vec<Glow>,
     /// What a mark sets off as it begins, and what goes as it ends: the mark's
     /// name and the effect's kind and name.
     effects: HashMap<(u16, String), Effect>,
@@ -258,6 +339,8 @@ const SOUND: u16 = 0x2f;
 const FADE: u16 = 0x60;
 const WORDS: u16 = 0x3f;
 const PICTURE: u16 = 0x4d;
+const COLOUR: u16 = 0x2b;
+const SPRAY: u16 = 0x3c;
 
 impl Film {
     /// The film in a folder of `/MENUDATA`, with the racer it is about made of
@@ -279,6 +362,7 @@ impl Film {
             shots: Vec::new(),
             lenses: HashMap::new(),
             marks: Vec::new(),
+            emitters: Vec::new(),
             glows: Vec::new(),
             beams: Vec::new(),
             effects: HashMap::new(),
@@ -334,14 +418,19 @@ impl Film {
             });
         }
         for (name, fields) in entries(frame, 0x37) {
-            film.marks.push((name, Span::of(fields)));
+            film.marks.push(Mark {
+                name,
+                span: Span::of(fields),
+                position: vec3(fields, 0x33, 0).unwrap_or_default(),
+                direction: vec3(fields, 0x34, 0).unwrap_or(Vec3::X),
+                up: vec3(fields, 0x34, 3).unwrap_or(Vec3::Z),
+            });
         }
-        let colour = |fields: &[Token]| vec3(fields, 0x38, 0).unwrap_or_default() / 255.0;
         for (_, fields) in entries(frame, 0x35) {
-            film.glows.push((Span::of(fields), colour(fields)));
+            film.glows.push(Glow::of(fields));
         }
         for (_, fields) in entries(frame, 0x3a) {
-            film.beams.push((Span::of(fields), colour(fields)));
+            film.beams.push(Glow::of(fields));
         }
         film.worlds(jam, &dir, &worlds, (!request.own).then_some(cosmetics));
         film.effects(jam, &dir);
@@ -375,6 +464,7 @@ impl Film {
         let folders = [dir, folders[0], folders[1], crate::assets::leb::DIR];
         let mut library = Library::new(jam, lists.iter().copied(), &folders);
         library.plain();
+        library.dynamic();
         // What the film leaves to be filled in is the champion's own.
         if let Some(champion) = &self.champion {
             for (part, material) in champion {
@@ -484,7 +574,9 @@ impl Film {
         };
         let made = (|| {
             let catalogue = build::Catalogue::open(jam)?;
-            let figure = build::figure(jam, &catalogue, cosmetics, true)?;
+            // The film's own tracks work the face, from its first look.
+            let figure =
+                build::figure(jam, &catalogue, Cosmetics { expression: 0, ..cosmetics }, true)?;
             let (files, folders) = build::Catalogue::files();
             let parts = Library::new(jam, files.iter().map(String::as_str), &folders);
             let face = build::face(&catalogue, cosmetics)?.to_string();
@@ -572,6 +664,38 @@ impl Film {
                 self.effects.insert((PICTURE, name), Effect::Picture(file));
             }
         }
+        // The jointed, model and bsp names an event may act on.
+        let target = |fields: &[Token]| {
+            [0x5d, 0x5e, 0x5f].iter().find_map(|key| text(fields, *key))
+        };
+        for (name, fields) in entries(&tokens, COLOUR) {
+            let each = |key: u16| [0, 1, 2].map(|n| number(fields, key, n).unwrap_or(0.0));
+            let Some(target) = target(fields) else { continue };
+            let effect = Effect::Colour {
+                target,
+                shifts: each(0x2c).map(|shift| shift as u32),
+                offsets: each(0x2d),
+                rates: each(0x2e),
+            };
+            self.effects.insert((COLOUR, name), effect);
+        }
+        for (name, fields) in entries(&tokens, SPRAY) {
+            // `animation "emitter"`
+            let at = fields.iter().position(|t| *t == Token::Key(0x3d));
+            let Some(Token::Str(emitter)) = at.and_then(|at| fields.get(at + 2)) else {
+                continue;
+            };
+            let spray = Effect::Spray {
+                emitter: emitter.to_lowercase(),
+                target: target(fields),
+                position: vec3(fields, 0x39, 0),
+                facing: vec3(fields, 0x3e, 0).zip(vec3(fields, 0x3e, 3)),
+            };
+            self.effects.insert((SPRAY, name), spray);
+        }
+        if self.effects.keys().any(|key| key.0 == SPRAY) {
+            self.emitters(jam, dir, &scenery::names(&tokens, 0x27));
+        }
         // `"mark" { kind attached "effect" }`
         let bound = |key: u16| {
             entries(&tokens, key).into_iter().filter_map(|(mark, fields)| {
@@ -585,6 +709,27 @@ impl Film {
         };
         self.begun = bound(0x56).collect();
         self.ended = bound(0x57).collect();
+    }
+
+    /// The emitters of the film's animations (`CutsceneAnimation::Load`): an emitter
+    /// file and a material animation of the same name, with the pictures of the
+    /// film's own materials.
+    fn emitters(&mut self, jam: &Jam, dir: &str, animations: &[String]) {
+        let mut libraries: Vec<&str> = jam.list(dir).collect();
+        libraries.retain(|file| file.ends_with(".MDB") || file.ends_with(".TDB"));
+        libraries.sort();
+        let library = Library::new(jam, libraries.iter().copied(), &[dir]);
+        for name in animations {
+            let name = name.to_uppercase();
+            crate::world::add_emitters(
+                jam,
+                &format!("{dir}/{name}.EMB"),
+                &library,
+                &format!("{dir}/{name}.MAB"),
+                |_| true,
+                &mut self.emitters,
+            );
+        }
     }
 
     /// How long the film runs, in seconds.
@@ -690,7 +835,8 @@ impl Request {
         }
     }
 
-    /// `SplashCinematicScreen`: the notice the game opens on, which any key ends.
+    /// `SplashCinematicScreen`: the notice the original opens on, which any key ends.
+    /// The port opens on its menu, and shows this only when asked (`BRICK_FILM`).
     pub fn legal() -> Request {
         Request {
             folder: "LEGAL".into(),
@@ -765,11 +911,13 @@ struct Playing {
     cast: HashMap<String, Entity>,
     /// The cameras in use, the last to begin being the one seen through.
     shots: Vec<usize>,
-    /// The ambient light there is, of the film's.
+    /// The ambient light there is, of the film's, and the directional ones cast, in
+    /// the order they were turned on (`Frame::SetAmbientMaterial`, `AddLight`).
     glow: Option<usize>,
-    /// How bright everything was last made.
-    lit: Vec3,
-    materials: Vec<Handle<StandardMaterial>>,
+    cast_beams: Vec<usize>,
+    /// The colour changes going on, and the sprays, by the effect's name.
+    tints: HashMap<String, Tint>,
+    sprays: HashMap<String, Entity>,
     /// The fade there is: how far through it is, how long it takes, its colour and
     /// whether the colour is going.
     fade: Option<(f32, f32, Color, bool)>,
@@ -783,6 +931,67 @@ struct Playing {
     car: Option<Entity>,
     /// Where the camera was and how it saw, to be given back.
     camera: (Transform, Projection, ClearColorConfig),
+}
+
+/// A colour event going on (`CutsceneColorEvent`): the model's meshes with the
+/// colours they had.
+struct Tint {
+    shifts: [u32; 3],
+    offsets: [f32; 3],
+    rates: [f32; 3],
+    saved: Vec<(Handle<Mesh>, Vec<[f32; 4]>)>,
+}
+
+impl Tint {
+    /// `GdbColoredVertexArrayBase::ApplyColorTransform`: each colour is shifted down
+    /// and the offset added, to at most 255. A mesh's colours are linear, and the
+    /// transform is of the 8-bit ones.
+    fn apply(&self, meshes: &mut Assets<Mesh>) {
+        for (handle, base) in &self.saved {
+            let colours: Vec<[f32; 4]> = base
+                .iter()
+                .map(|colour| {
+                    let mut out = *colour;
+                    for n in 0..3 {
+                        let eight = (colour[n].max(0.0).powf(1.0 / 2.2) * 255.0).round() as i32;
+                        let moved = ((eight >> self.shifts[n]) + self.offsets[n] as i32).clamp(0, 255);
+                        out[n] = (moved as f32 / 255.0).powf(2.2);
+                    }
+                    out
+                })
+                .collect();
+            if let Some(mut mesh) = meshes.get_mut(handle) {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+            }
+        }
+    }
+
+    /// `ClearColorTransform`: the colours as they were.
+    fn clear(&self, meshes: &mut Assets<Mesh>) {
+        for (handle, base) in &self.saved {
+            if let Some(mut mesh) = meshes.get_mut(handle) {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, base.clone());
+            }
+        }
+    }
+}
+
+/// The meshes of a model, and of what hangs on it, whose vertices have colours baked
+/// in: those that the scene's lights light have none to change.
+fn coloured(
+    root: Entity,
+    children: &Query<&Children>,
+    solids: &Query<(&Mesh3d, Has<Lit>)>,
+) -> Vec<Handle<Mesh>> {
+    let mut found = Vec::new();
+    let mut open = vec![root];
+    while let Some(at) = open.pop() {
+        if let Ok((mesh, false)) = solids.get(at) {
+            found.push(mesh.0.clone());
+        }
+        open.extend(children.get(at).into_iter().flatten().copied());
+    }
+    found
 }
 
 /// Something of a film's, which goes when the film does.
@@ -817,9 +1026,11 @@ impl Playing {
 fn leave(
     mut commands: Commands,
     mut showing: ResMut<Showing>,
+    mut lights: ResMut<Lights>,
     mut camera: Single<(&mut Transform, &mut Projection, &mut Camera), Screens>,
     all: Query<Entity, With<Piece>>,
 ) {
+    *lights = Lights::default();
     showing.request = None;
     showing.next.clear();
     if let Some(playing) = showing.playing.take() {
@@ -865,6 +1076,10 @@ fn open(
         let prop = scenery::spawn(def, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
         commands.entity(prop).insert((Piece, Visibility::Hidden));
         cast.insert(name, prop);
+    }
+    let defs = std::mem::take(&mut film.emitters);
+    if !defs.is_empty() {
+        commands.insert_resource(Emitters::new(defs, &mut meshes, &mut materials, &mut images));
     }
     // `SceneEntityGroup`: the car, on its wheels and with nobody in it, where the
     // film has a box for one.
@@ -940,8 +1155,9 @@ fn open(
         cast,
         shots: Vec::new(),
         glow: None,
-        lit: Vec3::ONE,
-        materials: Vec::new(),
+        cast_beams: Vec::new(),
+        tints: HashMap::new(),
+        sprays: HashMap::new(),
         fade: None,
         words: HashMap::new(),
         car,
@@ -965,11 +1181,12 @@ fn play(
     mut sound: ResMut<crate::audio::Cue>,
     mut camera: Single<(&mut Transform, &mut Projection, &mut Camera), Screens>,
     mut pieces: Query<(&mut Transform, &mut Visibility, &mut Prop, Option<&mut Animated>), With<Piece>>,
-    scrolling: Query<&Scrolling, With<Piece>>,
+    mut lights: ResMut<Lights>,
     mut veils: Query<&mut BackgroundColor, With<Piece>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    (mut images, mut meshes): (ResMut<Assets<Image>>, ResMut<Assets<Mesh>>),
     all: Query<Entity, With<Piece>>,
+    (children, solids): (Query<&Children>, Query<(&Mesh3d, Has<Lit>)>),
+    emitters: Option<Res<Emitters>>,
 ) {
     let Some(playing) = &mut showing.playing else {
         return;
@@ -985,6 +1202,7 @@ fn play(
     if frame >= film.length || skipped {
         let (transform, lens, camera) = &mut *camera;
         playing.close(&mut commands, all.iter(), (&mut **transform, &mut **lens, &mut **camera));
+        *lights = Lights::default();
         *sound = crate::audio::Cue::Theme;
         showing.playing = None;
         return;
@@ -1066,46 +1284,97 @@ fn play(
         }
     }
 
-    for (at, (span, _)) in film.glows.iter_mut().enumerate() {
-        if span.begins(frame) {
-            playing.glow = Some(at);
-        }
-        if span.ends(frame) && playing.glow == Some(at) {
+    // `Frame::Draw`: the lights are those the frame has by now.
+    for (at, glow) in film.glows.iter_mut().enumerate() {
+        let was = glow.shown;
+        if glow.on(frame, step) {
+            // The last to be lit is the ambient light.
+            if !was {
+                playing.glow = Some(at);
+            }
+        } else if playing.glow == Some(at) {
             playing.glow = None;
         }
     }
-    let mut beams = Vec3::ZERO;
-    for (span, colour) in &mut film.beams {
-        span.begins(frame);
-        span.ends(frame);
-        if span.state == State::Going {
-            beams += *colour;
-        }
-    }
-    let lit = match playing.glow {
-        Some(glow) => (film.glows[glow].1 + beams * BEAM_SHARE).min(Vec3::ONE),
-        None if beams != Vec3::ZERO => (beams * BEAM_SHARE).min(Vec3::ONE),
-        None => Vec3::ONE,
-    };
-    if playing.materials.is_empty() {
-        let handles = scrolling.iter().flat_map(|prop| prop.materials.iter().cloned());
-        playing.materials = handles.collect();
-    }
-    if lit != playing.lit {
-        playing.lit = lit;
-        for handle in &playing.materials {
-            if let Some(mut material) = materials.get_mut(handle) {
-                let alpha = material.base_color.alpha();
-                material.base_color = Color::srgba(lit.x, lit.y, lit.z, alpha);
+    for (at, beam) in film.beams.iter_mut().enumerate() {
+        let was = beam.shown;
+        let shown = beam.on(frame, step);
+        if shown && !was && !playing.cast_beams.contains(&at) {
+            // Seven at most; one more puts the first out.
+            if playing.cast_beams.len() >= MOST_BEAMS {
+                playing.cast_beams.remove(0);
             }
+            playing.cast_beams.push(at);
+        } else if !shown {
+            playing.cast_beams.retain(|cast| *cast != at);
         }
+    }
+    let now = Lights {
+        ambient: playing.glow.map(|at| film.glows[at].colour),
+        beams: playing
+            .cast_beams
+            .iter()
+            .map(|at| Beam {
+                direction: film.beams[*at].direction,
+                colour: film.beams[*at].colour,
+            })
+            .collect(),
+    };
+    if *lights != now {
+        *lights = now;
     }
 
     let mut art = art;
-    for (name, span) in &mut film.marks {
-        if span.begins(frame) {
+    for mark in &mut film.marks {
+        let name = &mark.name;
+        if mark.span.begins(frame) {
             for (_, kind, effect) in film.begun.iter().filter(|bound| bound.0 == *name) {
                 match film.effects.get(&(*kind, effect.clone())) {
+                    Some(Effect::Colour { target, shifts, offsets, rates }) => {
+                        if let (false, Some(&model)) =
+                            (playing.tints.contains_key(effect), playing.cast.get(target))
+                        {
+                            let saved = coloured(model, &children, &solids)
+                                .into_iter()
+                                .filter_map(|handle| {
+                                    let base = meshes.get(&handle)?.attribute(Mesh::ATTRIBUTE_COLOR)?;
+                                    let bevy::mesh::VertexAttributeValues::Float32x4(base) = base else {
+                                        return None;
+                                    };
+                                    Some((handle.clone(), base.clone()))
+                                })
+                                .collect();
+                            let tint = Tint { shifts: *shifts, offsets: *offsets, rates: *rates, saved };
+                            tint.apply(&mut meshes);
+                            playing.tints.insert(effect.clone(), tint);
+                        }
+                    }
+                    Some(Effect::Spray { emitter, target, position, facing: way }) => {
+                        let Some(emitters) = &emitters else { continue };
+                        if playing.sprays.contains_key(effect) {
+                            continue;
+                        }
+                        // `CutsceneAnimationEvent::StartAt`: where it says, else where the
+                        // model it names is, else where the mark is.
+                        let model = target.as_ref().and_then(|target| {
+                            let (transform, ..) = pieces.get(*playing.cast.get(target)?).ok()?;
+                            Some(*transform)
+                        });
+                        let at = position.unwrap_or(mark.position);
+                        let (direction, up) = way.unwrap_or((mark.direction, mark.up));
+                        let turn = scenery::basis() * facing(direction, up) * scenery::basis().inverse();
+                        let mut place = Transform::from_translation(scenery::to_world(at)).with_rotation(turn);
+                        if let (None, Some(model)) = (position, model) {
+                            place.translation = model.translation;
+                        }
+                        if let Some(spray) = emitters.spawn(&mut commands, emitter, place) {
+                            commands.entity(spray).insert(Piece);
+                            // One that ends itself can't be stopped.
+                            if emitters.persistent(emitter) {
+                                playing.sprays.insert(effect.clone(), spray);
+                            }
+                        }
+                    }
                     Some(Effect::Sound(sound)) => sfx.play(crate::audio::id::AMBIENT + sound),
                     Some(Effect::Fade {
                         seconds,
@@ -1173,8 +1442,14 @@ fn play(
                 }
             }
         }
-        if span.ends(frame) {
+        if mark.span.ends(frame) {
             for (_, kind, effect) in film.ended.iter().filter(|bound| bound.0 == *name) {
+                if let Some(tint) = playing.tints.remove(effect) {
+                    tint.clear(&mut meshes);
+                }
+                if let Some(spray) = playing.sprays.remove(effect) {
+                    commands.entity(spray).despawn();
+                }
                 if let Some(line) = playing.words.remove(&(*kind, effect.clone())) {
                     commands.entity(line).despawn();
                 }
@@ -1182,6 +1457,17 @@ fn play(
                     playing.fade = None;
                 }
             }
+        }
+    }
+    // `CutsceneColorEvent::Update`: an offset that has a rate moves on, when it has
+    // moved by a whole step of a colour.
+    for tint in playing.tints.values_mut() {
+        let by = tint.rates.map(|rate| rate * step);
+        if by.iter().any(|by| *by as i32 != 0) {
+            for n in 0..3 {
+                tint.offsets[n] += by[n];
+            }
+            tint.apply(&mut meshes);
         }
     }
     // `MenuAnimationList::Entry`: the colour comes over the screen or goes from it,
@@ -1239,7 +1525,14 @@ pub fn plugin(app: &mut App) {
         .add_systems(OnExit(Screen::Menu), leave)
         .add_systems(
             Update,
-            (open, play, scenery::animate, scenery::cycle)
+            (
+                open,
+                play,
+                scenery::animate,
+                scenery::cycle,
+                particles::emit,
+                particles::particles,
+            )
                 .chain()
                 .run_if(in_state(Screen::Menu)),
         );
@@ -1285,6 +1578,33 @@ mod tests {
         ));
         assert!(film.begun.contains(&("fw".into(), SOUND, "firewrks".into())));
         assert_eq!((film.glows.len(), film.beams.len()), (26, 4));
+    }
+
+    #[test]
+    fn the_third_circuit_s_film_has_lights_colour_events_and_sprays() {
+        let Some(jam) = crate::world::jam() else {
+            return;
+        };
+        let racer = crate::garage::stock(&jam).into_iter().next().unwrap();
+        let request = Request::circuit(&jam, 2, racer.cosmetics, None).unwrap();
+        let film = Film::load(&jam, &request).unwrap();
+        // Thirteen ambient lights that make the lightning, and the one beam.
+        assert_eq!((film.glows.len(), film.beams.len()), (13, 1));
+        assert_eq!(film.beams[0].colour, Vec3::new(232.0, 206.0, 184.0) / 255.0);
+        let colours = film.effects.keys().filter(|key| key.0 == COLOUR).count();
+        let sprays = film.effects.keys().filter(|key| key.0 == SPRAY).count();
+        assert_eq!((colours, sprays), (4, 3));
+        assert!(film.emitters.iter().any(|emitter| emitter.0 == "bubbles"));
+        // No film's `.CEB` has any streamed sound (kind 0x36).
+        let mut files: Vec<String> = Vec::new();
+        for dir in ["CIRCUIT1", "CIRCUIT2", "CIRCUIT3", "CIRCUIT4", "CIRCUIT5", "CIRCUIT6", "CIRCUIT7", "CREDITS", "C_AWARD1", "C_AWARD2", "C_AWARD3", "C_AWARD4", "LEGAL", "SINGRACE", "WINCAR", "WINRRCAR", "WINVVCAR"] {
+            files.extend(jam.list(&format!("{DIR}/{dir}")).filter(|f| f.ends_with(".CEB")).map(String::from));
+        }
+        assert_eq!(files.len(), 17);
+        for file in files {
+            let tokens = tokenize(jam.get(&file).unwrap());
+            assert!(entries(&tokens, 0x36).is_empty(), "{file}");
+        }
     }
 
     #[test]

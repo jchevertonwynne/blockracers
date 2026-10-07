@@ -445,7 +445,7 @@ pub fn draw(
     let banner_at = Vec2::new(width / 2.0, TOP + line * 21.0 / 8.0 + line / 2.0);
     let yellow = Color::srgb(1.0, 1.0, 0.0);
     match race.phase {
-        Phase::Countdown => {
+        Phase::Countdown if race.countdown > 0.0 => {
             // Each number starts big and shrinks through its second.
             let left = race.countdown.max(0.0);
             let swell = 1.0 + left.fract();
@@ -533,8 +533,10 @@ pub fn draw(
     let time_width = frame.width("font_ths", "0:00:00", 1.0);
     let time_x = width - time_width * 11.0 / 8.0;
     let white = Color::WHITE;
+    // `RaceHud::m_hideRaceInfo`: the garage's test drive has no laps or times to show.
+    let info = settings.test_drive.is_none();
     if race.phase != Phase::Intro {
-        if !blink {
+        if info && !blink {
             frame.write(
                 "font_ths",
                 &clock(shown),
@@ -543,18 +545,20 @@ pub fn draw(
                 white,
             );
         }
-        let count = format!("{}/{}", player.display_lap(laps), laps);
-        let count_x = time_x - frame.width("font_ths", &count, 1.0) - 14.0;
-        frame.write("font_ths", &count, Vec2::new(count_x, TOP), 1.0, white);
-        let label = string(text::LAP);
-        frame.write(
-            "font_ths",
-            &label,
-            Vec2::new(count_x - frame.width("font_ths", &label, 1.0) - 8.0, TOP),
-            1.0,
-            white,
-        );
-        if let Some(best) = best_lap {
+        if info {
+            let count = format!("{}/{}", player.display_lap(laps), laps);
+            let count_x = time_x - frame.width("font_ths", &count, 1.0) - 14.0;
+            frame.write("font_ths", &count, Vec2::new(count_x, TOP), 1.0, white);
+            let label = string(text::LAP);
+            frame.write(
+                "font_ths",
+                &label,
+                Vec2::new(count_x - frame.width("font_ths", &label, 1.0) - 8.0, TOP),
+                1.0,
+                white,
+            );
+        }
+        if let Some(best) = best_lap.filter(|_| info) {
             let y = TOP + line * 7.0 / 8.0;
             let label = string(text::BEST);
             frame.write("font_ths", &clock(best), Vec2::new(time_x, y), 1.0, white);

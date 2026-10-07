@@ -82,6 +82,7 @@ impl Drive {
             start_boost: self.start_boost.map(|level| level.min(1)),
             course: None,
             direct: self.direct,
+            hand: true,
         }
     }
 }
@@ -127,6 +128,8 @@ pub struct Rules {
     pub reverse: bool,
     pub bricks: u8,
     pub elimination: bool,
+    /// Which of `menu::SPEEDS` every car goes at.
+    pub speed: u8,
     pub opponents: u8,
     pub difficulty: u8,
 }
@@ -151,6 +154,7 @@ impl Rules {
             reverse: settings.reverse,
             bricks: settings.bricks as u8,
             elimination: settings.elimination,
+            speed: settings.speed as u8,
             opponents: settings.opponents as u8,
             difficulty: settings.difficulty as u8,
         }
@@ -167,6 +171,7 @@ impl Rules {
         (settings.mirror, settings.reverse, settings.elimination) =
             (self.mirror, self.reverse, self.elimination);
         settings.bricks = (self.bricks as usize).min(crate::menu::BRICK_RULES.len() - 1);
+        settings.speed = (self.speed as usize).min(crate::menu::SPEEDS.len() - 1);
         settings.opponents = (self.opponents as usize).min(crate::menu::MAX_OPPONENTS);
         settings.difficulty = (self.difficulty as usize).min(crate::menu::DIFFICULTIES.len() - 1);
         true

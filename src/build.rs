@@ -4,13 +4,13 @@
 //! as, and the model made of it follow `CarBuildModel` and its `PieceGrid`,
 //! `PieceList` and `Placement`; the minifigure follows `DriverModelBuilder`.
 //!
-//! The original cuts away the faces one brick hides behind another before it draws
-//! a car (`ResolvePrimitiveIntersections`). That is left out: the faces are drawn
-//! and the depth buffer hides them.
+//! Before a car is drawn the faces one brick hides behind another are cut away, as
+//! `ResolvePrimitiveIntersections` does: where flat faces of two pieces lie in one
+//! plane and overlap, both are cut down to the overlap and the overlap taken out.
 //!
-//! The original also gives a built car the weight of its bricks and moves its centre
-//! of mass to where they are. The port's cars have no weight to give, so a built
-//! car handles as its chassis does.
+//! A built car weighs what its chassis does and a unit more for each plate of its
+//! bricks, and its centre of mass is moved to where they are (`weight`,
+//! `ComputeHighPieceCentroid`); `world::load_built` hands both to the car's body.
 
 use crate::assets::{
     Jam,
@@ -22,6 +22,11 @@ use crate::assets::{
 };
 use std::collections::HashMap;
 
+/// Where the middle of the grid is, in studs (`g_carBuildModelCenterXOffset` and `Y`).
+const CENTRE_X: f32 = 4.5;
+const CENTRE_Y: f32 = 2.5;
+/// A stud's width in the game's units on the model (`g_carBuildModelTextureCoordinateScale`).
+pub const STUD_SIZE: f32 = 0.25;
 pub const WIDTH: i32 = 10;
 pub const DEPTH: i32 = 6;
 /// The most pieces a car may be made of, its chassis among them.
@@ -363,6 +368,42 @@ impl Car {
         bytes
     }
 
+    /// `CarBuildModel::ComputeHighPieceCentroid`: how many plates the bricks are in
+    /// all, and where their middle is in studs from the middle of the grid (nought
+    /// for a car without bricks). The chassis is not counted.
+    pub fn weight(&self, library: &Library) -> (i32, [f32; 3]) {
+        let (mut count, mut sums) = (0, [0i64; 3]);
+        for placed in &self.pieces {
+            let Some(piece) = library.piece(placed.kind).filter(|piece| piece.is_brick()) else {
+                continue;
+            };
+            let (width, depth) = piece.span(placed.rotation);
+            for y in 0..depth {
+                for x in 0..width {
+                    let cell = piece.cell(x, y, placed.rotation);
+                    let (top, bottom) = (cell.top(), cell.bottom());
+                    let plates = (top - bottom) as i64;
+                    count += plates as i32;
+                    sums[0] += plates * (x + placed.x) as i64;
+                    sums[1] += plates * (y + placed.y) as i64;
+                    sums[2] += (bottom..top).map(|z| (z + placed.height) as i64).sum::<i64>();
+                }
+            }
+        }
+        if count == 0 {
+            return (0, [0.0; 3]);
+        }
+        let n = count as f32;
+        (
+            count,
+            [
+                sums[0] as f32 / n - CENTRE_X,
+                sums[1] as f32 / n - CENTRE_Y,
+                sums[2] as f32 / n,
+            ],
+        )
+    }
+
     /// The chassis table's name for the car's chassis.
     pub fn chassis<'a>(&self, library: &'a Library) -> Option<&'a str> {
         let piece = library.piece(self.pieces.first()?.kind)?;
@@ -388,7 +429,13 @@ impl Car {
     /// library every stud left showing is modelled; with the plain one the tops of
     /// bricks are given a picture of studs.
     pub fn model(&self, library: &Library, palette: &Palette) -> Model {
-        let mut shape = Shape::new(palette, library.piece(STUD).is_none());
+        self.model_cut(library, palette, true)
+    }
+
+    /// The car as a model, with the faces its bricks hide from each other cut away
+    /// or, with `cut` off, left in.
+    pub fn model_cut(&self, library: &Library, palette: &Palette, cut: bool) -> Model {
+        let mut shape = Shape::new(palette, library.piece(STUD).is_none(), cut);
         for piece in &self.pieces {
             if let Some(shape_of) = library.piece(piece.kind) {
                 shape.add(
@@ -425,7 +472,7 @@ impl Car {
     /// One piece on its own as a model, its middle at the model's: what the builder
     /// holds over the car. `BuildPieceModel`, after `CenterOnPiece`.
     pub fn piece_model(library: &Library, palette: &Palette, kind: u16, colour: u8) -> Model {
-        let mut shape = Shape::new(palette, library.piece(STUD).is_none());
+        let mut shape = Shape::new(palette, library.piece(STUD).is_none(), true);
         let Some(piece) = library.piece(kind) else {
             return shape.finish([0.0; 3]);
         };
@@ -473,25 +520,200 @@ impl Palette {
     }
 }
 
+/// A corner of a face as the car has it: where, which way it faces and where in the
+/// picture.
+#[derive(Clone, Copy)]
+struct Corner {
+    pos: [f32; 3],
+    normal: [i8; 3],
+    uv: [f32; 2],
+}
+
+impl Corner {
+    /// A corner between two others: `from` and `to`, `to` being `along` of the way.
+    /// Its place is for the caller to say.
+    fn between(from: Corner, to: Corner, along: f32) -> Corner {
+        let mix = |a: f32, b: f32| a * (1.0 - along) + b * along;
+        Corner {
+            pos: from.pos,
+            normal: [0, 1, 2].map(|i| mix(from.normal[i] as f32, to.normal[i] as f32) as i8),
+            uv: [0, 1].map(|i| mix(from.uv[i], to.uv[i])),
+        }
+    }
+}
+
+/// `BuildPrimitive`: a face of one piece, three corners or four.
+#[derive(Clone)]
+struct Prim {
+    material: usize,
+    /// An underside, which is never drawn.
+    bottom: bool,
+    /// Which piece of the car it belongs to.
+    part: usize,
+    flags: u8,
+    corners: Vec<Corner>,
+}
+
+// What `BuildPrimitive::m_flags` says of a face: every corner on a whole stud and
+// plate, all in one plane across X, Y or Z, and a parallelogram.
+const ON_GRID: u8 = 0x01;
+const SAME_X: u8 = 0x02;
+const SAME_Y: u8 = 0x04;
+const SAME_Z: u8 = 0x08;
+const PARALLELOGRAM: u8 = 0x80;
+/// Faces in a plane this close count as in the one plane (the original reuses
+/// `g_minAudibleSoundVolume` for it, and its negative).
+const PLANE_EPSILON: f32 = 0.005;
+
+impl Prim {
+    fn low(&self, axis: usize) -> f32 {
+        self.corners
+            .iter()
+            .map(|c| c.pos[axis])
+            .fold(f32::MAX, f32::min)
+    }
+
+    fn high(&self, axis: usize) -> f32 {
+        self.corners
+            .iter()
+            .map(|c| c.pos[axis])
+            .fold(f32::MIN, f32::max)
+    }
+
+    /// Whether the two overlap, not just touch, along `axis`.
+    fn overlaps(&self, other: &Prim, axis: usize) -> bool {
+        self.low(axis) < other.high(axis) && other.low(axis) < self.high(axis)
+    }
+
+    /// Turns the quad round its corners until its first two are at the low end of
+    /// `axis` (or its last two at the high end), the way `ROTATE_BUILD_PRIMITIVE_*`
+    /// do; false if it has no such edge.
+    fn turn_to(&mut self, axis: usize, low: bool) -> bool {
+        let (lo, hi) = (self.low(axis), self.high(axis));
+        for _ in 0..4 {
+            let c = &self.corners;
+            let (at, edge) = if low { (lo, [0, 1]) } else { (hi, [2, 3]) };
+            if edge.iter().all(|&i| c[i].pos[axis] == at) {
+                return true;
+            }
+            self.corners = vec![c[1], c[3], c[0], c[2]];
+        }
+        false
+    }
+}
+
+/// Cuts `lhs` and `rhs`, two quads in a plane, down to where they overlap, giving
+/// back the pieces cut off (`CLIP_BUILD_PRIMITIVE_MIN` and `_MAX`). `first` and
+/// `second` are the two axes of the plane, cut in that order. None if a quad is not
+/// square to them.
+fn clip(lhs: &mut Prim, rhs: &mut Prim, [first, second]: [usize; 2]) -> Option<Vec<Prim>> {
+    let mut outside = Vec::new();
+    for (cut, other) in [(first, second), (second, first)] {
+        for low in [true, false] {
+            let (l, r) = if low {
+                (lhs.low(cut), rhs.low(cut))
+            } else {
+                (lhs.high(cut), rhs.high(cut))
+            };
+            if l == r {
+                continue;
+            }
+            // The one that reaches further is the one that is cut.
+            if (low && r < l) || (!low && r > l) {
+                std::mem::swap(lhs, rhs);
+            }
+            if !lhs.turn_to(cut, low) {
+                return None;
+            }
+            let (min, max) = (lhs.low(cut), lhs.high(cut));
+            let at = if low { rhs.low(cut) } else { rhs.high(cut) };
+            let along = (at - min) / (max - min);
+            let c = lhs.corners.clone();
+            let mut first_corner = Corner::between(c[0], c[2], along);
+            first_corner.pos[cut] = at;
+            let mut second_corner = Corner::between(c[1], c[3], along);
+            second_corner.pos = first_corner.pos;
+            second_corner.pos[other] = c[1].pos[other];
+            let mut off = lhs.clone();
+            if low {
+                (off.corners[2], off.corners[3]) = (first_corner, second_corner);
+                (lhs.corners[0], lhs.corners[1]) = (first_corner, second_corner);
+            } else {
+                (off.corners[0], off.corners[1]) = (first_corner, second_corner);
+                (lhs.corners[2], lhs.corners[3]) = (first_corner, second_corner);
+            }
+            outside.push(off);
+        }
+    }
+    Some(outside)
+}
+
+/// `ResolvePrimitiveIntersections`: where quads of different pieces lie in one plane
+/// and overlap, both are cut to the overlap and the overlap is taken out.
+fn resolve(prims: &mut Vec<Prim>) {
+    // Each pass is for faces across one axis: the flags that say so, the axis, and
+    // the plane's own two axes in the order they are cut.
+    const PASSES: [(u8, usize, [usize; 2]); 3] = [
+        (PARALLELOGRAM | SAME_Z | ON_GRID, 2, [1, 0]),
+        (PARALLELOGRAM | SAME_Y | ON_GRID, 1, [2, 0]),
+        (PARALLELOGRAM | SAME_X | ON_GRID, 0, [2, 1]),
+    ];
+    for (mask, axis, plane_axes) in PASSES {
+        let (mut plane, rest): (Vec<Prim>, Vec<Prim>) = std::mem::take(prims)
+            .into_iter()
+            .partition(|p| p.flags & mask == mask && p.corners.len() == 4);
+        *prims = rest;
+        let mut l = 0;
+        while l + 1 < plane.len() {
+            let mut r = l + 1;
+            while r < plane.len() {
+                let (a, b) = (&plane[l], &plane[r]);
+                let level = if axis == 2 {
+                    let delta = a.low(2) - b.low(2);
+                    -PLANE_EPSILON < delta && delta < PLANE_EPSILON
+                } else {
+                    a.low(axis) == b.low(axis)
+                };
+                let [p, q] = plane_axes;
+                if !(level && a.part != b.part && a.overlaps(b, p) && a.overlaps(b, q)) {
+                    r += 1;
+                    continue;
+                }
+                let (mut a, mut b) = (a.clone(), b.clone());
+                let Some(cut) = clip(&mut a, &mut b, plane_axes) else {
+                    r += 1;
+                    continue;
+                };
+                plane.swap_remove(r);
+                plane.swap_remove(l);
+                plane.extend(cut);
+                r = l + 1;
+            }
+            l += 1;
+        }
+        prims.extend(plane);
+    }
+}
+
 /// A model being put together a face at a time: `EmitPieceGeometry`.
 struct Shape<'a> {
     palette: &'a Palette,
     /// Whether tops are given the picture of studs, there being no studs to model.
     pictured: bool,
-    vertices: Vec<Vertex>,
-    normals: Vec<[f32; 3]>,
-    /// The corners of each material's triangles.
-    by_material: HashMap<usize, Vec<u32>>,
+    /// Whether the faces pieces hide from each other are cut away.
+    cut: bool,
+    prims: Vec<Prim>,
+    parts: usize,
 }
 
 impl<'a> Shape<'a> {
-    fn new(palette: &'a Palette, pictured: bool) -> Self {
+    fn new(palette: &'a Palette, pictured: bool, cut: bool) -> Self {
         Shape {
             palette,
             pictured,
-            vertices: Vec::new(),
-            normals: Vec::new(),
-            by_material: HashMap::new(),
+            cut,
+            prims: Vec::new(),
+            parts: 0,
         }
     }
 
@@ -502,6 +724,8 @@ impl<'a> Shape<'a> {
         const TOP: u16 = 2;
         /// Marks a face of some other material for the picture of studs.
         const PICTURED: u16 = 0x800;
+        let part = self.parts;
+        self.parts += 1;
         let (width, depth) = (piece.width as f32, piece.depth as f32);
         let origin = at.map(|v| v as f32);
         let coloured = self
@@ -511,9 +735,6 @@ impl<'a> Shape<'a> {
             .copied()
             .unwrap_or(0);
         for face in library.faces(piece) {
-            if face.flags == BOTTOM {
-                continue;
-            }
             let pictured = self.pictured && (face.flags == TOP || face.flags & PICTURED != 0);
             let material = match face.material {
                 3.. if self.pictured && face.flags & PICTURED != 0 => face.material as usize + 1,
@@ -521,46 +742,81 @@ impl<'a> Shape<'a> {
                 TOP if self.pictured => coloured + 1,
                 _ => coloured,
             };
-            let corners: Vec<u32> = face
+            let on_grid = face
+                .corners
+                .iter()
+                .all(|c| c.position.iter().all(|v| v.fract() == 0.0));
+            let corners: Vec<Corner> = face
                 .corners
                 .iter()
                 .map(|corner| {
                     let [sx, sy, sz] = corner.position;
-                    let [nx, ny, nz] = corner.normal.map(|n| n as f32 / 127.0);
+                    let [nx, ny, nz] = corner.normal;
+                    let flip = |n: i8| n.saturating_neg();
                     let (x, y, normal) = match rotation & 3 {
                         0 => (sx, sy, [nx, ny, nz]),
-                        1 => (sy, width - sx, [ny, -nx, nz]),
-                        2 => (width - sx, depth - sy, [-nx, -ny, nz]),
-                        _ => (depth - sy, sx, [-ny, nx, nz]),
+                        1 => (sy, width - sx, [ny, flip(nx), nz]),
+                        2 => (width - sx, depth - sy, [flip(nx), flip(ny), nz]),
+                        _ => (depth - sy, sx, [flip(ny), nx, nz]),
                     };
                     let uv = match corner.uv {
                         Some(uv) => uv,
                         None if pictured => [x * STUD_PICTURE, y * STUD_PICTURE],
                         None => [0.0; 2],
                     };
-                    self.vertices.push(Vertex {
+                    Corner {
                         pos: [x + origin[0], y + origin[1], sz + origin[2]],
+                        normal,
                         uv,
-                        color: [255; 4],
-                    });
-                    self.normals.push(normal);
-                    self.vertices.len() as u32 - 1
+                    }
                 })
                 .collect();
-            let triangles = self.by_material.entry(material).or_default();
-            triangles.extend(&corners[..3]);
-            if let [_, second, third, fourth] = corners[..] {
-                triangles.extend([third, second, fourth]);
+            let mut flags = if on_grid { ON_GRID } else { 0 };
+            for (axis, same) in [(0, SAME_X), (1, SAME_Y), (2, SAME_Z)] {
+                if corners.iter().all(|c| c.pos[axis] == corners[0].pos[axis]) {
+                    flags |= same;
+                }
             }
+            if let [a, b, c, d] = &corners[..]
+                && (0..3).all(|i| b.pos[i] + c.pos[i] == d.pos[i] + a.pos[i])
+            {
+                flags |= PARALLELOGRAM;
+            }
+            self.prims.push(Prim {
+                material,
+                bottom: face.flags == BOTTOM,
+                part,
+                flags,
+                corners,
+            });
         }
     }
 
     fn finish(mut self, offset: [f32; 3]) -> Model {
-        for vertex in &mut self.vertices {
-            let [x, y, z] = vertex.pos;
-            vertex.pos = [x + offset[0], y + offset[1], z * PLATE + offset[2]];
+        if self.cut {
+            resolve(&mut self.prims);
         }
-        let mut materials: Vec<usize> = self.by_material.keys().copied().collect();
+        let mut vertices = Vec::new();
+        let mut normals = Vec::new();
+        let mut by_material: HashMap<usize, Vec<u32>> = HashMap::new();
+        for prim in self.prims.iter().filter(|p| !p.bottom) {
+            let first = vertices.len() as u32;
+            for corner in &prim.corners {
+                let [x, y, z] = corner.pos;
+                vertices.push(Vertex {
+                    pos: [x + offset[0], y + offset[1], z * PLATE + offset[2]],
+                    uv: corner.uv,
+                    color: [255; 4],
+                });
+                normals.push(corner.normal.map(|n| n as f32 / 127.0));
+            }
+            let triangles = by_material.entry(prim.material).or_default();
+            triangles.extend([first, first + 1, first + 2]);
+            if prim.corners.len() == 4 {
+                triangles.extend([first + 2, first + 1, first + 3]);
+            }
+        }
+        let mut materials: Vec<usize> = by_material.keys().copied().collect();
         materials.sort();
         Model {
             materials: self.palette.materials.clone(),
@@ -569,13 +825,13 @@ impl<'a> Shape<'a> {
                 .map(|material| Batch {
                     material,
                     bone: None,
-                    indices: self.by_material.remove(&material).unwrap_or_default(),
+                    indices: by_material.remove(&material).unwrap_or_default(),
                     joints: Vec::new(),
                 })
                 .collect(),
-            vertices: self.vertices,
+            vertices,
             scale: 1.0,
-            normals: self.normals,
+            normals,
         }
     }
 }
@@ -817,6 +1073,10 @@ fn body(catalogue: &Catalogue, cosmetics: Cosmetics, standing: bool) -> Option<S
     Some(format!("{folder}/{}", catalogue.bodies.get(at)?.to_uppercase()))
 }
 
+/// What ends the name of a face's materials, one to each of the looks it can have
+/// (`DriverPartCatalog::m_faceExpressions`).
+pub const LOOKS: [&str; 6] = ["dflt", "angry", "blink", "happy", "sad", "suprz"];
+
 /// A minifigure: sitting, as races show it, or standing, as the menus and the films
 /// do. Its body, and the head its hat is part of, with the faces of each given the
 /// materials the figure was made with. `DriverModelBuilder::BuildDriverModel`, for
@@ -840,7 +1100,9 @@ pub fn figure(
         names.get(at as usize).or(names.first())
     }
     let head = parts.model(pick(&catalogue.hats, cosmetics.hat)?)?;
-    let face = format!("{}dflt", pick(&catalogue.faces, cosmetics.face)?);
+    // `DriverModelBuilder::ApplyFaceExpression`: the face's material of the look chosen.
+    let look = LOOKS.get(cosmetics.expression as usize).unwrap_or(&LOOKS[0]);
+    let face = format!("{}{look}", pick(&catalogue.faces, cosmetics.face)?);
     let torso = pick(&catalogue.torsos, cosmetics.torso)?.clone();
     let legs = pick(&catalogue.legs, cosmetics.legs)?.clone();
 
@@ -933,6 +1195,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Cutting away what bricks hide from each other leaves fewer triangles, and
+    /// never any that were not there.
+    #[test]
+    fn the_faces_bricks_hide_from_each_other_are_cut_away() {
+        let Some(jam) = jam() else { return };
+        let library = Library::open(&jam, true).unwrap();
+        let palette = Palette::open(&jam, true).unwrap();
+        let count = |model: &Model| model.batches.iter().map(|b| b.indices.len() / 3).sum::<usize>();
+        let (mut whole, mut cut) = (0, 0);
+        for racer in lrs::read(jam.get("/MENUDATA/QBUILD.LRS").unwrap()) {
+            let car = Car::read(&library, &racer.car);
+            let (all, less) = (
+                count(&car.model_cut(&library, &palette, false)),
+                count(&car.model_cut(&library, &palette, true)),
+            );
+            assert!(less < all, "{}: {less} of {all}", racer.chassis);
+            whole += all;
+            cut += less;
+        }
+        println!("triangles of the quick-build cars: {whole} whole, {cut} cut");
     }
 
     #[test]

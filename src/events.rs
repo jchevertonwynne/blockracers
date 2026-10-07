@@ -2,7 +2,12 @@
 //! event table (`.EVB`) ties sounds to numbered events, which are set going by racers
 //! driving into trigger spheres (`.TRB`) or onto marked surfaces, and by timers
 //! (`.TIB`). This follows `RaceEventTable`, `SoundResource`, `TriggerList` and
-//! `RaceTimerList`; the event tables' animations and particles are not played.
+//! `RaceTimerList`; and what events do besides sounds: part animations
+//! (`PartAnimationResource`), sky states, particles (`ParticleResource`), a car's
+//! colours (`ColorTransformResource`), models that come and go
+//! (`ModelDistanceResource`) and the lap zones (read in `world`). No circuit's table has
+//! look targets, external forces, event links, material animations of its own or a
+//! colour change that names a model, so none of those is read.
 
 use crate::assets::{
     Jam, route,
@@ -244,17 +249,21 @@ fn parse_particles(tokens: &[Token]) -> Vec<EventParticles> {
         .collect()
 }
 
-/// A colour's channels are shifted down and then added to. Our cars' materials can
-/// only be multiplied, so what is added counts as so much more of the colour: a
-/// stand-in, right for the dark of a tunnel and near enough for the glow of lava.
+/// What `GdbColoredVertexArrayBase::ApplyColorTransform` makes of a colour: each channel
+/// is shifted down and then added to, and held to 255. The car's materials are drawn
+/// unlit in white vertex colours, so the colour a white channel becomes is the colour
+/// the car's material is given.
 fn tint(shifts: [f32; 3], offsets: [f32; 3]) -> Vec3 {
-    Vec3::from([0, 1, 2].map(|c| 0.5f32.powf(shifts[c]) + 2.0 * offsets[c] / 255.0))
+    Vec3::from([0, 1, 2].map(|c| {
+        let shifted = (255u32 >> (shifts[c] as u32).min(31)) as f32;
+        (shifted + offsets[c]).min(255.0) / 255.0
+    }))
 }
 
 fn parse_tints(tokens: &[Token]) -> Vec<EventTint> {
     records(tokens, 0x4d)
         .into_iter()
-        // Those naming a model tint the model, which the port doesn't do.
+        // No circuit's names a model (the test below counts), so only a car's are read.
         .filter(|(_, fields)| !fields.contains(&Token::Key(0x33)))
         .map(|(header, fields)| {
             let three = |key: u16| {
@@ -1354,7 +1363,7 @@ fn events_set_off_particles_tints_and_models() {
                 on_end: false,
                 no_end: true
             },
-            Some(Vec3::splat(0.5))
+            Some(Vec3::splat(127.0 / 255.0))
         )
     );
     assert_eq!(
@@ -1373,8 +1382,8 @@ fn events_set_off_particles_tints_and_models() {
     let moon = load("RACEC0R3").unwrap();
     assert_eq!(moon.particles[0].follows, Some(("mmlavbl".to_string(), 0)));
     assert!(moon.tints.iter().any(|t| {
-        t.tint
-            .is_some_and(|c| c.x > 1.4 && c.y == 1.0 && c.z == 1.0)
+        t.when.event == 6
+            && t.tint == Some(Vec3::new(167.0, 132.0, 132.0) / 255.0)
     }));
     let lasers: Vec<_> = moon
         .models
@@ -1419,4 +1428,40 @@ fn events_set_off_particles_tints_and_models() {
             }
             .begins(7, true)
     );
+}
+
+/// No circuit's event table has look targets (0x55), external forces (0x59), event
+/// links (0x39), material animations (0x29) or a colour change that names a model.
+#[cfg(test)]
+#[test]
+fn no_circuit_uses_the_events_that_are_not_read() {
+    let Some(jam) = Jam::open(
+        std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into()),
+    ) else {
+        return;
+    };
+    let mut tables = 0;
+    for c in 0..4 {
+        for r in 0..4 {
+            for f in jam
+                .list(&format!("/GAMEDATA/RACEC{c}R{r}"))
+                .filter(|f| f.ends_with(".EVB"))
+            {
+                tables += 1;
+                let tokens = tokenize(jam.get(f).unwrap());
+                for key in [0x29, 0x39, 0x55, 0x59] {
+                    assert!(
+                        !tokens.contains(&Token::Key(key)),
+                        "{f} has section {key:#x}"
+                    );
+                }
+                assert!(
+                    records(&tokens, 0x4d)
+                        .iter()
+                        .all(|(_, fields)| !fields.contains(&Token::Key(0x33)))
+                );
+            }
+        }
+    }
+    assert_eq!(tables, 13);
 }

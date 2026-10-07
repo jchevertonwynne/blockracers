@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::items::Power;
 use crate::kart::{Kart, LapTimes};
+use crate::physics::Rigid;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Standing {
@@ -45,6 +46,9 @@ pub struct State {
     rot: Quat,
     facing: Vec3,
     contacts: u8,
+    wheel_mask: u8,
+    /// The body's angular momentum and what is left of its impulses.
+    rigid: Rigid,
     ground_normal: Vec3,
     /// What of the surface under the car its driving feels: how it rolls, grips,
     /// holds on a slope and is pushed.
@@ -110,6 +114,8 @@ impl State {
             rot: k.rot,
             facing: k.facing,
             contacts: k.contacts,
+            wheel_mask: k.wheel_mask,
+            rigid: k.rigid,
             ground_normal: k.ground_normal,
             surface: (
                 [
@@ -176,6 +182,7 @@ impl State {
         (k.pos, k.vel, k.rot, k.facing) = (s.pos, s.vel, s.rot, s.facing);
         (k.contacts, k.ground_normal, k.wall_contact, k.air_time) =
             (s.contacts, s.ground_normal, s.wall_contact, s.air_time);
+        (k.wheel_mask, k.rigid) = (s.wheel_mask, s.rigid);
         (k.sliding, k.slide_tight, k.drifting, k.slipping) =
             (s.sliding, s.slide_tight, s.drifting, s.slipping);
         (k.slip_ratio, k.turn_radius, k.yaw_impulse, k.yaw_kick) =

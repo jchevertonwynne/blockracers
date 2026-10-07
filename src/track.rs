@@ -7,6 +7,7 @@ use crate::collision::Collision;
 use crate::meshgen::*;
 use bevy::prelude::*;
 use std::collections::HashMap;
+use std::f32::consts::TAU;
 
 /// Half-width of the tarmac.
 pub const ROAD_HW: f32 = 8.0;
@@ -316,6 +317,334 @@ const GAUNTLET_TUNNELS: &[[[f32; 2]; 2]] = &[
     [[341.5, -308.8], [236.6, -308.8]],
     [[-331.1, -213.8], [-331.1, -95.0]],
 ];
+
+/// A piece of a circuit that is drawn rather than plotted, from where the last one
+/// left off.
+enum Leg {
+    /// Straight on for a length, climbing by the second.
+    Straight(f32, f32),
+    /// Round to the right through so many degrees, or to the left if they are fewer
+    /// than none, at a radius, climbing by the last.
+    Turn(f32, f32, f32),
+}
+use Leg::{Straight, Turn};
+
+/// The helter skelter, from the start line and back to it: esses, rollers, a tunnel
+/// that winds, switchbacks over a hill, a swing out round an island, a spiral of two
+/// turns up over itself, the long way down from the top of it, a jump, a tunnel with a
+/// kink in it, a crest, a chicane and a hairpin with rollers after it, and more esses
+/// on the way home. The lengths of the straights before the island and either side of
+/// the crest are what bring it back to where it began.
+const HELTER: &[Leg] = &[
+    Straight(170.0, 0.0),
+    // Esses.
+    Turn(-40.0, 34.0, 0.0),
+    Turn(80.0, 34.0, 0.0),
+    Turn(-80.0, 34.0, 0.0),
+    Turn(40.0, 34.0, 0.0),
+    // Rollers.
+    Straight(15.0, 0.0),
+    Straight(15.0, ROLLER),
+    Straight(15.0, -ROLLER),
+    Straight(15.0, ROLLER),
+    Straight(15.0, -ROLLER),
+    Straight(15.0, ROLLER),
+    Straight(15.0, -ROLLER),
+    Straight(15.0, ROLLER),
+    Straight(15.0, -ROLLER),
+    Straight(15.0, 0.0),
+    Turn(90.0, 60.0, 0.0),
+    Straight(30.0, 0.0),
+    // The winding tunnel.
+    Turn(-35.0, 55.0, 0.0),
+    Turn(70.0, 55.0, 0.0),
+    Turn(-35.0, 55.0, 0.0),
+    Straight(30.0, 0.0),
+    // Switchbacks over a hill.
+    Turn(-90.0, 22.0, 0.0),
+    Straight(70.0, 3.0),
+    Turn(180.0, 22.0, 2.0),
+    Straight(70.0, 1.0),
+    Turn(-180.0, 22.0, -1.0),
+    Straight(70.0, -3.0),
+    Turn(90.0, 22.0, -2.0),
+    Straight(110.23, 0.0),
+    // Out round the island, which the first of the byways goes straight past.
+    Turn(-50.0, 45.0, 0.0),
+    Straight(20.0, 0.0),
+    Turn(100.0, 45.0, 0.0),
+    Straight(20.0, 0.0),
+    Turn(-50.0, 45.0, 0.0),
+    Straight(40.0, 0.0),
+    Turn(90.0, 50.0, 0.0),
+    Straight(80.0, 0.0),
+    // The spiral: twice round, each turn far enough over the last to drive under.
+    Turn(720.0, 42.0, 2.0 * SPIRAL_RISE),
+    Straight(50.0, 0.0),
+    // The long way down.
+    Turn(-60.0, 70.0, -5.0),
+    Turn(150.0, 90.0, -17.0),
+    Straight(70.0, -6.0),
+    // The run up to the jump, and the landing.
+    Straight(150.0, 0.0),
+    Straight(60.0, 0.0),
+    // The tunnel with a kink in it.
+    Straight(40.0, 0.0),
+    Turn(-30.0, 60.0, 0.0),
+    Turn(30.0, 60.0, 0.0),
+    Straight(60.0, 0.0),
+    Turn(-90.0, 30.0, 0.0),
+    // A straight with a crest in the middle of it.
+    Straight(90.85, 0.0),
+    Straight(20.0, 3.0),
+    Straight(20.0, -3.0),
+    Straight(90.85, 0.0),
+    // Out through a chicane to a hairpin, whose inside the other byway cuts across,
+    // and back over rollers.
+    Turn(-90.0, 30.0, 0.0),
+    Straight(50.0, 0.0),
+    Turn(30.0, 40.0, 0.0),
+    Turn(-60.0, 40.0, 0.0),
+    Turn(30.0, 40.0, 0.0),
+    Straight(80.0, 0.0),
+    Turn(180.0, 30.0, 0.0),
+    Straight(35.0, 0.0),
+    Straight(15.0, ROLLER),
+    Straight(15.0, -ROLLER),
+    Straight(15.0, ROLLER),
+    Straight(15.0, -ROLLER),
+    Straight(15.0, 0.0),
+    // Esses, a kink, and home.
+    Turn(40.0, 36.0, 0.0),
+    Turn(-80.0, 36.0, 0.0),
+    Turn(80.0, 36.0, 0.0),
+    Turn(-40.0, 36.0, 0.0),
+    Straight(120.0, 0.0),
+    Turn(25.0, 50.0, 0.0),
+    Turn(-25.0, 50.0, 0.0),
+    Straight(30.0, 0.0),
+    Turn(90.0, 45.0, 0.0),
+    Straight(70.0, 0.0),
+];
+/// How high the helter skelter's rollers are.
+const ROLLER: f32 = 1.5;
+/// How far each turn of the helter skelter's spiral is over the one before.
+const SPIRAL_RISE: f32 = 14.0;
+/// The helter skelter's tunnels: where each begins and ends, as (x, z).
+const HELTER_TUNNELS: &[[[f32; 2]; 2]] = &[
+    [[511.1, 74.1], [511.1, 200.3]],
+    [[216.6, 426.0], [200.5, 306.0]],
+];
+/// Where the lip of the helter skelter's jump is, as (x, z).
+const HELTER_JUMPS: &[[f32; 2]] = &[[216.6, 496.1]];
+
+/// A way off a circuit's road and back onto it further round, straight from one place
+/// on the racing line to another, each so far round the lap: how far its tarmac and
+/// its barriers are from its middle, how high the bumps along it are, whether it has
+/// a shed over it, and how often one of the computer's cars takes it.
+struct Byway {
+    from: f32,
+    to: f32,
+    road: f32,
+    wall: f32,
+    bumps: f32,
+    covered: bool,
+    taken: f32,
+}
+
+/// What a circuit has besides its road, each thing so far round the lap.
+struct Extras {
+    byways: &'static [Byway],
+    /// Corners with grass inside them and no barrier before it, to be cut across:
+    /// where the open stretch begins and ends.
+    infields: &'static [(f32, f32)],
+    /// Speed pads: where, and how far right of the middle of the road.
+    pads: &'static [(f32, f32)],
+    /// Banked corners: where the bank begins and ends, and how steep it is across the
+    /// road at its steepest.
+    banks: &'static [(f32, f32, f32)],
+}
+
+/// The brick circuit's: a ridge road straight across the dip, the last corner's grass,
+/// and the hill's two sweeps banked.
+const BRICK_EXTRAS: Extras = Extras {
+    byways: &[Byway {
+        from: 410.0,
+        to: 524.0,
+        road: 5.0,
+        wall: 7.0,
+        bumps: 0.0,
+        covered: false,
+        taken: 0.4,
+    }],
+    infields: &[(924.0, 996.0)],
+    pads: &[(60.0, 0.0), (570.0, 0.0)],
+    banks: &[(236.0, 330.0, 0.15), (606.0, 644.0, 0.15)],
+};
+/// The figure of eight's: a cut across the west loop's kink, the grass inside that
+/// loop's far end, and the east loop banked.
+const FIGURE_EIGHT_EXTRAS: Extras = Extras {
+    byways: &[Byway {
+        from: 956.0,
+        to: 1096.0,
+        road: 5.0,
+        wall: 7.0,
+        bumps: 0.0,
+        covered: false,
+        taken: 0.4,
+    }],
+    infields: &[(876.0, 936.0)],
+    pads: &[(50.0, 0.0), (240.0, 0.0)],
+    banks: &[(180.0, 320.0, 0.15)],
+};
+/// The gauntlet's: a gap between the legs of a hairpin, the grass inside the corner
+/// after the lava, and the climbing loop banked.
+const GAUNTLET_EXTRAS: Extras = Extras {
+    byways: &[Byway {
+        from: 1970.0,
+        to: 2060.0,
+        road: 5.0,
+        wall: 6.5,
+        bumps: 0.0,
+        covered: false,
+        taken: 0.3,
+    }],
+    infields: &[(990.0, 1024.0)],
+    pads: &[(1904.0, 0.0), (2554.0, 0.0)],
+    banks: &[(2330.0, 2490.0, 0.15)],
+};
+/// The helter skelter's. One byway goes straight on where the road swings out round
+/// the island: the shorter way, but narrow and bumpy. The other cuts across the inside
+/// of the hairpin at a right angle to the road, through a shed that hides it. The
+/// first corner and the one before the spiral have grass inside them, and the spiral
+/// and the sweep down from it are banked.
+const HELTER_EXTRAS: Extras = Extras {
+    byways: &[
+        Byway {
+            from: 1279.0,
+            to: 1476.0,
+            road: 6.0,
+            wall: 8.5,
+            bumps: 1.2,
+            covered: false,
+            taken: 0.4,
+        },
+        Byway {
+            from: 3509.0,
+            to: 3653.0,
+            road: 4.0,
+            wall: 5.5,
+            bumps: 0.0,
+            covered: true,
+            taken: 0.25,
+        },
+    ],
+    infields: &[(462.0, 557.0), (1516.0, 1594.0)],
+    pads: &[(140.0, 0.0), (1200.0, 0.0), (3120.0, 0.0)],
+    banks: &[(1690.0, 2190.0, 0.12), (2335.0, 2550.0, 0.15)],
+};
+/// How many samples a bank takes to come up to its steepest, and to go down again.
+const BANK_EASE: f32 = 12.0;
+/// How long and how wide a speed pad is.
+pub const PAD_LENGTH: f32 = 8.0;
+pub const PAD_WIDTH: f32 = 7.0;
+/// How long each bump of a byway is, and how far from the byway's ends they keep, so
+/// that it is level where it leaves the road and comes back to it.
+const BUMP_LENGTH: f32 = 20.0;
+const BUMP_MARGIN: f32 = 40.0;
+/// How much the grass inside a corner slows a car, where the verge's is 20.
+const LAWN_DRAG: f32 = 30.0;
+/// How many samples a lap zone is kept from the ends of a byway or an infield.
+const ZONE_CLEAR: usize = 15;
+/// How far a byway's surface is over the road's where they share the ground, so that a
+/// wheel on both is on the byway.
+const BYWAY_LIFT: f32 = 0.01;
+/// How far in from a byway's ends its shed begins, how high the shed's roof is and how
+/// thick its walls and roof are.
+const SHED_INSET: f32 = 12.0;
+const SHED_HEIGHT: f32 = 6.0;
+const SHED_THICK: f32 = 1.0;
+
+/// How far apart the points of a drawn circuit are put, at most: close and even, so
+/// that the spline keeps to the straights and the arcs.
+const DRAWN_STEP: f32 = 10.0;
+
+/// The control points of a circuit drawn as `legs`, as (x, height, z): it sets off
+/// from the origin along x. The last leg's end is left to the first one's start.
+fn drawn(legs: &[Leg]) -> Vec<[f32; 3]> {
+    let (mut at, mut height, mut heading) = (Vec2::ZERO, 0.0, 0.0f32);
+    let mut points = Vec::new();
+    for leg in legs {
+        match *leg {
+            Straight(length, rise) => {
+                let count = (length / DRAWN_STEP).ceil().max(1.0);
+                let along = Vec2::from_angle(heading) * length;
+                for k in 0..count as usize {
+                    let t = k as f32 / count;
+                    let p = at + along * t;
+                    points.push([p.x, height + rise * t, p.y]);
+                }
+                (at, height) = (at + along, height + rise);
+            }
+            Turn(degrees, radius, rise) => {
+                let angle = degrees.to_radians();
+                // The centre is off to the side turned to.
+                let out =
+                    |heading: f32| Vec2::from_angle(heading).perp() * -radius * angle.signum();
+                let centre = at - out(heading);
+                let count = (angle.abs() * radius / DRAWN_STEP)
+                    .max(degrees.abs() / 30.0)
+                    .ceil();
+                for k in 0..count as usize {
+                    let t = k as f32 / count;
+                    let p = centre + out(heading + angle * t);
+                    points.push([p.x, height + rise * t, p.y]);
+                }
+                heading += angle;
+                (at, height) = (centre + out(heading), height + rise);
+            }
+        }
+    }
+    points
+}
+
+/// A jump, from the foot of its ramp: the road curves up to a lip, drops into a dip,
+/// and comes up again to a lower lip with a slope down from it to land on. The dip's
+/// sides can be driven up, so a car that falls short gets out, whichever way it is
+/// going. These are the lengths of the ramp, of each side of the dip, of its floor and
+/// of the landing, and the heights of the two lips.
+const JUMP_RAMP: f32 = 24.0;
+const JUMP_SIDES: (f32, f32) = (6.0, 6.0);
+const JUMP_FLOOR: f32 = 4.0;
+const JUMP_LANDING: f32 = 18.0;
+const JUMP_LIPS: (f32, f32) = (6.0, 4.5);
+/// How long a jump is from end to end.
+const JUMP_LENGTH: f32 = JUMP_RAMP + JUMP_SIDES.0 + JUMP_FLOOR + JUMP_SIDES.1 + JUMP_LANDING;
+
+/// How high a jump's road is, `along` it from the foot of the ramp.
+fn jump_height(along: f32) -> f32 {
+    if along < 0.0 {
+        return 0.0;
+    }
+    if along < JUMP_RAMP {
+        return JUMP_LIPS.0 * (along / JUMP_RAMP).powi(2);
+    }
+    // The stretches after the lip: the length of each, and the heights it runs between.
+    let mut left = along - JUMP_RAMP;
+    for (length, from, to) in [
+        (JUMP_SIDES.0, JUMP_LIPS.0, 0.0),
+        (JUMP_FLOOR, 0.0, 0.0),
+        (JUMP_SIDES.1, 0.0, JUMP_LIPS.1),
+        (JUMP_LANDING, JUMP_LIPS.1, 0.0),
+    ] {
+        if left < length {
+            return from + (to - from) * left / length;
+        }
+        left -= length;
+    }
+    0.0
+}
+
 /// How high a tunnel's roof is over its road, and how thick its walls and roof are.
 const TUNNEL_HEIGHT: f32 = 8.5;
 const TUNNEL_THICK: f32 = 1.6;
@@ -327,16 +656,23 @@ pub enum Layout {
     Brick,
     FigureEight,
     Gauntlet,
+    HelterSkelter,
 }
 
 impl Layout {
-    pub const ALL: [Layout; 3] = [Layout::Brick, Layout::FigureEight, Layout::Gauntlet];
+    pub const ALL: [Layout; 4] = [
+        Layout::Brick,
+        Layout::FigureEight,
+        Layout::Gauntlet,
+        Layout::HelterSkelter,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Layout::Brick => "Brick Circuit",
             Layout::FigureEight => "Figure Eight",
             Layout::Gauntlet => "Gauntlet",
+            Layout::HelterSkelter => "Helter Skelter",
         }
     }
 
@@ -346,14 +682,16 @@ impl Layout {
             Layout::Brick => "BRICK",
             Layout::FigureEight => "FIGURE8",
             Layout::Gauntlet => "GAUNTLET",
+            Layout::HelterSkelter => "HELTER",
         }
     }
 
     fn control(self, mirror: bool) -> Vec<Vec3> {
         let (points, scale) = match self {
-            Layout::Brick => (CONTROL, SCALE),
-            Layout::FigureEight => (FIGURE_EIGHT, 1.0),
-            Layout::Gauntlet => (GAUNTLET, 1.0),
+            Layout::Brick => (CONTROL.to_vec(), SCALE),
+            Layout::FigureEight => (FIGURE_EIGHT.to_vec(), 1.0),
+            Layout::Gauntlet => (GAUNTLET.to_vec(), 1.0),
+            Layout::HelterSkelter => (drawn(HELTER), 1.0),
         };
         // Mirrored, the built-in circuits are turned over the same way the game's are.
         let side = if mirror { -1.0 } else { 1.0 };
@@ -365,8 +703,27 @@ impl Layout {
 
     /// Where its tunnels begin and end, as (x, z) on the unmirrored circuit.
     fn tunnels(self) -> &'static [[[f32; 2]; 2]] {
-        if self == Layout::Gauntlet {
-            GAUNTLET_TUNNELS
+        match self {
+            Layout::Gauntlet => GAUNTLET_TUNNELS,
+            Layout::HelterSkelter => HELTER_TUNNELS,
+            _ => &[],
+        }
+    }
+
+    /// What it has besides its road.
+    fn extras(self) -> &'static Extras {
+        match self {
+            Layout::Brick => &BRICK_EXTRAS,
+            Layout::FigureEight => &FIGURE_EIGHT_EXTRAS,
+            Layout::Gauntlet => &GAUNTLET_EXTRAS,
+            Layout::HelterSkelter => &HELTER_EXTRAS,
+        }
+    }
+
+    /// Where the lips of its jumps are, as (x, z) on the unmirrored circuit.
+    fn jumps(self) -> &'static [[f32; 2]] {
+        if self == Layout::HelterSkelter {
+            HELTER_JUMPS
         } else {
             &[]
         }
@@ -387,6 +744,7 @@ impl Layout {
             Layout::Brick => (Vec2::new(-300.0, -340.0), Vec2::new(350.0, 150.0)),
             Layout::FigureEight => (Vec2::new(-340.0, -220.0), Vec2::new(330.0, 220.0)),
             Layout::Gauntlet => (Vec2::new(-540.0, -600.0), Vec2::new(650.0, 110.0)),
+            Layout::HelterSkelter => (Vec2::new(-260.0, -130.0), Vec2::new(790.0, 920.0)),
         }
     }
 }
@@ -418,6 +776,98 @@ pub struct Track {
     /// The stretches that run through a tunnel: the first sample of each and the one
     /// after its last.
     pub tunnels: Vec<(usize, usize)>,
+    /// The stretches that are a jump, from the foot of the ramp to the end of the
+    /// landing: the first sample of each and the one after its last.
+    pub jumps: Vec<(usize, usize)>,
+    /// The ways off the road and back onto it.
+    pub branches: Vec<Branch>,
+    /// How steeply each sample's road is banked: how much higher it is for each unit
+    /// to the right of its middle.
+    pub bank: Vec<f32>,
+    /// The corners with grass inside them and no barrier before it.
+    pub infields: Vec<Infield>,
+    pub pads: Vec<Pad>,
+}
+
+/// A stretch of the road with no barrier on one side of it, and grass beyond from one
+/// end of the stretch to the other.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Infield {
+    /// Its first sample, and its last.
+    pub from: usize,
+    pub to: usize,
+    /// Which side the grass is: 1 for the right, -1 for the left.
+    pub side: f32,
+}
+
+impl Infield {
+    /// Whether the barrier that would run on from sample `i` on `side` is left out.
+    fn opens(&self, i: usize, side: f32) -> bool {
+        (self.from..self.to).contains(&i) && side * self.side > 0.0
+    }
+}
+
+/// A speed pad: the sample its middle is at, and how far right of the middle of the road.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Pad {
+    pub at: usize,
+    pub lat: f32,
+}
+
+/// A way off the road and back onto it: a straight strip of its own, with barriers of
+/// its own where it is clear of the road, which has none across its ends.
+#[derive(Clone)]
+pub struct Branch {
+    /// Its middle, at even spacing from one end to the other, bumps and all.
+    pub pts: Vec<Vec3>,
+    /// The way it goes, on the ground, and what is to the right of that.
+    pub along: Vec3,
+    pub right: Vec3,
+    /// How far its tarmac and the inner faces of its barriers are from its middle.
+    pub road: f32,
+    pub wall: f32,
+    /// Whether it has a shed over it.
+    pub covered: bool,
+    /// The samples of the road it leaves from and comes back to.
+    pub ends: [usize; 2],
+    /// How often one of the computer's cars takes it.
+    pub taken: f32,
+}
+
+impl Branch {
+    pub fn length(&self) -> f32 {
+        (self.pts[self.pts.len() - 1] - self.pts[0]).dot(self.along)
+    }
+
+    /// How far along it a place is, and how far to the right of its middle.
+    pub fn place(&self, p: Vec3) -> (f32, f32) {
+        let from = p - self.pts[0];
+        (from.dot(self.along), from.dot(self.right))
+    }
+
+    /// Whether a place on its level is between its barriers.
+    fn holds(&self, p: Vec3) -> bool {
+        let (along, across) = self.place(p);
+        let (first, last) = (self.pts[0], self.pts[self.pts.len() - 1]);
+        let level = first.y + (last.y - first.y) * along / self.length();
+        along > 0.0
+            && along < self.length()
+            && across.abs() < self.wall
+            && (p.y - level).abs() < 3.0
+    }
+
+    /// The place on its middle this far along it, which may be past either end.
+    pub fn point(&self, along: f32) -> Vec3 {
+        let at = (along / self.length()).clamp(0.0, 1.0) * (self.pts.len() - 1) as f32;
+        let i = (at as usize).min(self.pts.len() - 2);
+        self.pts[i].lerp(self.pts[i + 1], at - i as f32)
+            + self.along * (along - along.clamp(0.0, self.length()))
+    }
+
+    /// Whether its shed is over the stretch that begins `along` it.
+    fn roofed(&self, along: f32) -> bool {
+        self.covered && along >= SHED_INSET && along < self.length() - SHED_INSET
+    }
 }
 
 /// The part of the road that is open between two distances round the lap, as lateral
@@ -516,14 +966,14 @@ impl Track {
         Track::built(Layout::Brick)
     }
 
-    /// The racing line of a built-in circuit as it is unmirrored, and nothing else.
+    /// The road of a built-in circuit as it is unmirrored: its line, jumps and banks,
+    /// and nothing to drive on.
     pub fn plain(layout: Layout) -> Self {
-        Track::from_loop(&layout.control(false), ROAD_HW)
+        Track::shaped(layout, false)
     }
 
-    /// One of the built-in circuits.
-    pub fn built(layout: Layout) -> Self {
-        let mirror = crate::scenery::mirror();
+    /// The line of a built-in circuit, with its tunnels, jumps and banks.
+    fn shaped(layout: Layout, mirror: bool) -> Self {
         let mut track = Track::from_loop(&layout.control(mirror), ROAD_HW);
         let side = if mirror { -1.0 } else { 1.0 };
         track.tunnels = layout
@@ -536,35 +986,219 @@ impl Track {
         for p in &mut track.pts {
             p.y = p.y.max(0.0);
         }
-        // Tarmac, verges and the inner faces of the barriers.
+        // A jump is cut into level road, its lip on the sample nearest where it is put.
         let n = track.n();
+        let ramp = (JUMP_RAMP / track.spacing).round() as usize;
+        let after = ((JUMP_LENGTH - JUMP_RAMP) / track.spacing).round() as usize;
+        track.jumps = layout
+            .jumps()
+            .iter()
+            .map(|&[x, z]| track.nearest(Vec3::new(x, 0.0, z * side)))
+            .map(|lip| (lip - ramp, lip + after + 1))
+            .collect();
+        for (from, to) in track.jumps.clone() {
+            for i in from..to {
+                // Measured from the lip, so that the lip is as high as it should be.
+                let past = (i as f32 - (from + ramp) as f32) * track.spacing;
+                track.pts[i].y = jump_height(JUMP_RAMP + past);
+            }
+        }
+        // A banked corner is tipped about its inner edge, which stays where it was:
+        // the outside of the corner is the high side.
+        for &(from, to, tilt) in layout.extras().banks {
+            let (from, to) = (track.index(from), track.index(to));
+            let turn: f32 = (from..to)
+                .map(|i| track.flat[i].cross(track.flat[i + 1]).y)
+                .sum();
+            for i in from..=to {
+                let ease = ((i - from).min(to - i) as f32 / BANK_EASE).min(1.0);
+                let ease = ease * ease * (3.0 - 2.0 * ease);
+                track.bank[i] = tilt * ease * turn.signum();
+                track.pts[i].y += tilt * ease * WALL;
+            }
+        }
+        track.fwd = (0..n)
+            .map(|i| (track.pts[(i + 1) % n] - track.pts[(i + n - 1) % n]).normalize())
+            .collect();
+        track
+    }
+
+    /// The sample this far round the lap.
+    fn index(&self, s: f32) -> usize {
+        (s / self.spacing).round() as usize % self.n()
+    }
+
+    /// The place `lat` to the right of the middle of sample `i`'s road, on its bank.
+    pub fn edge(&self, i: usize, lat: f32) -> Vec3 {
+        self.pts[i] + self.right[i] * lat + Vec3::Y * lat * self.bank[i]
+    }
+
+    /// The grass of an infield, as the quads it is laid in: each runs from one side of
+    /// the corner to the other, between the places the barrier would have stood.
+    pub fn grass(&self, infield: &Infield) -> Vec<[Vec3; 4]> {
+        let edge = |i: usize| self.edge(i, infield.side * WALL);
+        (0..(infield.to - infield.from) / 2)
+            .map(|k| (infield.from + k, infield.to - k))
+            .map(|(near, far)| [edge(near), edge(near + 1), edge(far - 1), edge(far)])
+            .collect()
+    }
+
+    /// One of the built-in circuits.
+    pub fn built(layout: Layout) -> Self {
+        let mut track = Track::shaped(layout, crate::scenery::mirror());
+        let (n, extras) = (track.n(), layout.extras());
+        // A byway runs straight from one place on the line to another, at an even
+        // slope but for its bumps.
+        track.branches = extras
+            .byways
+            .iter()
+            .map(|byway| {
+                let ends = [track.index(byway.from), track.index(byway.to)];
+                let [from, to] = ends.map(|i| track.pts[i]);
+                let length = xz_dist2(from, to).sqrt();
+                let along = (to - from).with_y(0.0) / length;
+                let count = (length / 2.0).round();
+                let bumps = ((length - 2.0 * BUMP_MARGIN) / BUMP_LENGTH)
+                    .floor()
+                    .max(0.0);
+                let first = (length - bumps * BUMP_LENGTH) / 2.0;
+                let height = |at: f32| {
+                    let over = at - first;
+                    let bump = if over > 0.0 && over < bumps * BUMP_LENGTH {
+                        byway.bumps * 0.5 * (1.0 - (TAU * over / BUMP_LENGTH).cos())
+                    } else {
+                        0.0
+                    };
+                    from.y + (to.y - from.y) * at / length + bump
+                };
+                Branch {
+                    pts: (0..=count as usize)
+                        .map(|k| length * k as f32 / count)
+                        .map(|at| (from + along * at).with_y(height(at)))
+                        .collect(),
+                    along,
+                    right: Vec3::new(-along.z, 0.0, along.x),
+                    road: byway.road,
+                    wall: byway.wall,
+                    covered: byway.covered,
+                    ends,
+                    taken: byway.taken,
+                }
+            })
+            .collect();
+        // The grass of an infield is on the inside of its corner.
+        track.infields = extras
+            .infields
+            .iter()
+            .map(|&(from, to)| (track.index(from), track.index(to)))
+            .map(|(from, to)| {
+                let turn: f32 = (from..to)
+                    .map(|i| track.flat[i].cross(track.flat[i + 1]).y)
+                    .sum();
+                Infield {
+                    from,
+                    to,
+                    side: -turn.signum(),
+                }
+            })
+            .collect();
+        track.pads = extras
+            .pads
+            .iter()
+            .map(|&(s, lat)| Pad {
+                at: track.index(s),
+                lat,
+            })
+            .collect();
+        // Scattered scenery keeps off all of them, and off what stands round the
+        // helter skelter.
+        if layout == Layout::HelterSkelter {
+            track.clearings.extend(crate::helter::clearings());
+        }
+        for branch in &track.branches {
+            for p in branch.pts.iter().step_by(4) {
+                track.clearings.push((*p, branch.wall + 7.0));
+            }
+        }
+        for infield in &track.infields {
+            for [a, _, _, d] in track.grass(infield) {
+                track
+                    .clearings
+                    .push(((a + d) / 2.0, a.distance(d) / 2.0 + 4.0));
+            }
+        }
+
+        let (branches, infields) = (track.branches.clone(), track.infields.clone());
+        let lawns: Vec<[Vec3; 4]> = infields
+            .iter()
+            .flat_map(|infield| track.grass(infield))
+            .collect();
+        let mut quads: Vec<([Vec3; 4], Surface)> = Vec::new();
+        // Tarmac, verges and the inner faces of the barriers.
         let grass = Surface {
             rolling_resistance: 20.0,
             ..default()
         };
         for i in 0..n {
             let j = (i + 1) % n;
-            let at = |k: usize, lat: f32| track.pts[k] + track.right[k] * lat;
-            let mut quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3, surface: Surface| {
-                track.collision.add([a, b, c], surface);
-                track.collision.add([a, c, d], surface);
-            };
             let mut strip = |from: f32, to: f32, surface: Surface| {
-                quad(at(i, from), at(i, to), at(j, to), at(j, from), surface);
+                let corners = [
+                    track.edge(i, from),
+                    track.edge(i, to),
+                    track.edge(j, to),
+                    track.edge(j, from),
+                ];
+                quads.push((corners, surface));
             };
             strip(-ROAD_HW - KERB, ROAD_HW + KERB, Surface::default());
             strip(-WALL, -ROAD_HW - KERB, grass);
             strip(ROAD_HW + KERB, WALL, grass);
-            for side in [-WALL, WALL] {
-                let (a, b) = (at(i, side), at(j, side));
-                quad(
-                    a - Vec3::Y,
-                    b - Vec3::Y,
-                    b + Vec3::Y * 3.0,
-                    a + Vec3::Y * 3.0,
+            // Beside a jump they are as high as a car in the air.
+            let jump = track.jumps.iter().any(|jump| (jump.0..jump.1).contains(&i));
+            let top = Vec3::Y * if jump { JUMP_LIPS.0 + 6.0 } else { 3.0 };
+            for side in [-1.0, 1.0] {
+                let (a, b) = (track.edge(i, side * WALL), track.edge(j, side * WALL));
+                // There is none across the end of a byway, or before an infield.
+                if branches.iter().any(|branch| branch.holds((a + b) / 2.0))
+                    || infields.iter().any(|infield| infield.opens(i, side))
+                {
+                    continue;
+                }
+                quads.push((
+                    [a - Vec3::Y, b - Vec3::Y, b + top, a + top],
                     Surface::default(),
-                );
+                ));
             }
+        }
+        // The grass inside a corner, which is slower going than the verge.
+        let lawn = Surface {
+            rolling_resistance: LAWN_DRAG,
+            ..default()
+        };
+        quads.extend(lawns.into_iter().map(|corners| (corners, lawn)));
+        // A byway's tarmac from barrier to barrier, and its barriers where they are
+        // clear of the road.
+        for branch in &branches {
+            let across = branch.right * branch.wall;
+            let lift = Vec3::Y * BYWAY_LIFT;
+            for step in branch.pts.windows(2) {
+                let (p, q) = (step[0] + lift, step[1] + lift);
+                quads.push((
+                    [p - across, p + across, q + across, q - across],
+                    Surface::default(),
+                ));
+                for side in [-1.0, 1.0] {
+                    let (a, b) = (p + across * side, q + across * side);
+                    if !track.on_road((a + b) / 2.0, WALL) {
+                        let (low, high) = (Vec3::Y, Vec3::Y * 3.0);
+                        quads.push(([a - low, b - low, b + high, a + high], Surface::default()));
+                    }
+                }
+            }
+        }
+        for ([a, b, c, d], surface) in quads {
+            track.collision.add([a, b, c], surface);
+            track.collision.add([a, c, d], surface);
         }
 
         // Sixteen evenly spaced checkpoint gates, the first on the start line.
@@ -591,7 +1225,18 @@ impl Track {
             });
         }
         track.course.compute_fractions();
-        for (zone, at) in [(2, n / 3), (0, 2 * n / 3)] {
+        // The lap zones are on road that no byway goes round and no infield is beside.
+        let stretches: Vec<(usize, usize)> = branches
+            .iter()
+            .map(|branch| (branch.ends[0], branch.ends[1]))
+            .chain(infields.iter().map(|infield| (infield.from, infield.to)))
+            .collect();
+        for (zone, mut at) in [(2, n / 3), (0, 2 * n / 3)] {
+            while let Some(&(_, to)) = stretches.iter().find(|&&(from, to)| {
+                (from.saturating_sub(ZONE_CLEAR)..to + ZONE_CLEAR).contains(&at)
+            }) {
+                at = to + ZONE_CLEAR;
+            }
             track.course.zones.push((track.pts[at], WALL + 3.0, zone));
         }
         track
@@ -658,6 +1303,11 @@ impl Track {
             lanes: Vec::new(),
             clearings: Vec::new(),
             tunnels: Vec::new(),
+            jumps: Vec::new(),
+            branches: Vec::new(),
+            bank: vec![0.0; n],
+            infields: Vec::new(),
+            pads: Vec::new(),
         }
     }
 
@@ -736,9 +1386,33 @@ impl Track {
         if !gates.is_empty() {
             self.course.compute_fractions();
         }
-        // A tunnel is entered by what was its way out.
-        for tunnel in &mut self.tunnels {
-            *tunnel = (n + 1 - tunnel.1, n + 1 - tunnel.0);
+        // A tunnel is entered by what was its way out, and a jump taken from its landing.
+        for stretch in self.tunnels.iter_mut().chain(&mut self.jumps) {
+            *stretch = (n + 1 - stretch.1, n + 1 - stretch.0);
+        }
+        // A byway is driven from what was its far end, a bank leans the other way from
+        // the new right, and an infield and a pad are on the other side.
+        for branch in &mut self.branches {
+            branch.pts.reverse();
+            (branch.along, branch.right) = (-branch.along, -branch.right);
+            branch.ends = [(n - branch.ends[1]) % n, (n - branch.ends[0]) % n];
+        }
+        self.bank[1..].reverse();
+        for bank in &mut self.bank {
+            *bank = -*bank;
+        }
+        for infield in &mut self.infields {
+            *infield = Infield {
+                from: n - infield.to,
+                to: n - infield.from,
+                side: -infield.side,
+            };
+        }
+        for pad in &mut self.pads {
+            *pad = Pad {
+                at: (n - pad.at) % n,
+                lat: -pad.lat,
+            };
         }
         // What was on the right is on the left, and as far from the line the other way.
         for lane in &mut self.lanes {
@@ -774,7 +1448,10 @@ impl Track {
 
     pub fn point(&self, s: f32, lat: f32) -> Vec3 {
         let (p, _, r) = self.sample(s);
-        p + r * lat
+        let x = s.rem_euclid(self.length) / self.spacing;
+        let (i, j) = (x as usize % self.n(), (x as usize + 1) % self.n());
+        let bank = self.bank[i] + (self.bank[j] - self.bank[i]) * x.fract();
+        p + r * lat + Vec3::Y * lat * bank
     }
 
     /// The point on the driving surface at distance `s` and lateral offset `lat`.
@@ -795,6 +1472,16 @@ impl Track {
                     .total_cmp(&self.pts[b].distance_squared(pos))
             })
             .unwrap()
+    }
+
+    /// Whether a place is on the road proper: within `reach` of the racing line to
+    /// either side, on its level.
+    pub fn on_road(&self, p: Vec3, reach: f32) -> bool {
+        let i = self.nearest(p);
+        let from = p - self.pts[i];
+        from.dot(self.right[i]).abs() < reach
+            && from.dot(self.flat[i]).abs() < 2.0 * self.spacing
+            && from.y.abs() < 3.0
     }
 
     /// Whether each sample's road is carried over another stretch of the circuit, so
@@ -846,14 +1533,20 @@ impl Track {
             let j = (i + 1) % n;
             let (p0, p1) = (self.pts[i], self.pts[j]);
             let (r0, r1) = (self.right[i], self.right[j]);
-            let at = |lat: f32| (p0 + r0 * lat, p1 + r1 * lat);
+            let at = |lat: f32| (self.edge(i, lat), self.edge(j, lat));
             let strip = |b: &mut BrickMesh, from: f32, to: f32, lift: f32, c: Color| {
                 let ((a0, a1), (b0, b1)) = (at(from), at(to));
                 let l = up * lift;
                 b.quad(a0 + l, b0 + l, b1 + l, a1 + l, c);
             };
 
-            strip(&mut b, -ROAD_HW, ROAD_HW, 0.0, road[(i / 2) % 2]);
+            // A jump is striped from end to end.
+            let surface = if self.jumps.iter().any(|jump| (jump.0..jump.1).contains(&i)) {
+                [YELLOW, BLACK][i % 2]
+            } else {
+                road[(i / 2) % 2]
+            };
+            strip(&mut b, -ROAD_HW, ROAD_HW, 0.0, surface);
             if i % 6 < 2 {
                 strip(&mut b, -0.2, 0.2, 0.02, WHITE);
             }
@@ -868,6 +1561,12 @@ impl Track {
                 let (a0, a1) = at(side * (WALL + 0.4));
                 let rot = Transform::IDENTITY.looking_to(a1 - a0, up).rotation;
                 let mid = (a0 + a1) / 2.0;
+                // There is none across the end of a byway, or before an infield.
+                if self.branches.iter().any(|branch| branch.holds(mid))
+                    || self.infields.iter().any(|infield| infield.opens(i, side))
+                {
+                    continue;
+                }
                 let half = Vec3::new(0.4, 0.45, a0.distance(a1) / 2.0 + 0.05);
                 b.cuboid(mid + up * 0.45, half, rot, barrier);
                 b.cyl(mid + up * 0.9, 0.25, 0.15, rot, barrier);
@@ -881,11 +1580,28 @@ impl Track {
                 }
             }
 
+            if span(i) && i % 8 == 0 {
+                // Where the road under the bridge goes the same way, as a spiral's
+                // does, columns stand on its barriers.
+                let under = (0..n).find(|&k| {
+                    p0.y - self.pts[k].y > 6.0
+                        && xz_dist2(p0, self.pts[k]) < 9.0
+                        && self.flat[k].dot(self.flat[i]).abs() > 0.95
+                });
+                if let Some(under) = under {
+                    let foot = self.pts[under].y + 1.05;
+                    for side in [-1.0, 1.0] {
+                        let base = (p0 + r0 * side * (WALL + 0.4)).with_y(foot);
+                        b.cyl(base, 0.4, p0.y - 0.85 - foot, Quat::IDENTITY, WHITE);
+                    }
+                }
+            }
             if span(i) {
-                // A bridge: a deck under the road, and nothing under that.
-                let rot = Transform::IDENTITY.looking_to(p1 - p0, up).rotation;
+                // A bridge: a deck under the road, banked as it is, and nothing under that.
+                let lean = (up - (r0 + r1) / 2.0 * self.bank[i]).normalize();
+                let rot = Transform::IDENTITY.looking_to(p1 - p0, lean).rotation;
                 let half = Vec3::new(WALL + 0.8, 0.4, p0.distance(p1) / 2.0 + 0.05);
-                b.cuboid((p0 + p1) / 2.0 - up * 0.45, half, rot, GREY);
+                b.cuboid((p0 + p1) / 2.0 - lean * 0.45, half, rot, GREY);
             }
             if let Some(&(from, to)) = self.tunnels.iter().find(|t| (t.0..t.1).contains(&i)) {
                 // A tunnel: a wall either side and a roof, with a portal at each end.
@@ -931,6 +1647,114 @@ impl Track {
                 for corner in [a, c] {
                     let half = Vec3::new(1.2, corner.y / 2.0 + 1.0, 1.2);
                     b.brick(corner.with_y(half.y), half, rot, YELLOW, (2, 2));
+                }
+            }
+        }
+
+        // The grass inside the corners that have it, a shade off the verge's.
+        let lawn = Color::srgb(0.24, 0.56, 0.26);
+        for infield in &self.infields {
+            for [a, c, d, e] in self.grass(infield) {
+                let lift = up * 0.002;
+                let corners = [a + lift, c + lift, d + lift, e + lift];
+                // Seen from above, whichever way round the corner goes.
+                if (c - a).cross(d - a).y > 0.0 {
+                    b.quad(corners[0], corners[1], corners[2], corners[3], lawn);
+                } else {
+                    b.quad(corners[3], corners[2], corners[1], corners[0], lawn);
+                }
+            }
+        }
+        // The speed pads: a bright patch with arrows up it, the way the race is run.
+        for pad in &self.pads {
+            let s = pad.at as f32 * self.spacing;
+            let place = |along: f32, across: f32, lift: f32| {
+                self.point(s + along, pad.lat + across) + up * lift
+            };
+            let (long, wide) = (PAD_LENGTH / 2.0, PAD_WIDTH / 2.0);
+            b.quad(
+                place(-long, -wide, 0.02),
+                place(-long, wide, 0.02),
+                place(long, wide, 0.02),
+                place(long, -wide, 0.02),
+                ORANGE,
+            );
+            for arrow in 0..3 {
+                let back = -long + 0.6 + arrow as f32 * 2.4;
+                b.tri(
+                    place(back, -wide + 0.8, 0.035),
+                    place(back, wide - 0.8, 0.035),
+                    place(back + 2.0, 0.0, 0.035),
+                    YELLOW,
+                );
+            }
+        }
+        // The byways: dirt between barriers of their own, where they are clear of the
+        // road, with banks under their bumps.
+        let dirt = [Color::srgb(0.58, 0.44, 0.28), Color::srgb(0.63, 0.49, 0.32)];
+        for branch in &self.branches {
+            for (k, step) in branch.pts.windows(2).enumerate() {
+                let (p, q) = (step[0], step[1]);
+                let (mid, rot) = (
+                    (p + q) / 2.0,
+                    Transform::IDENTITY.looking_to(q - p, up).rotation,
+                );
+                let half = p.distance(q) / 2.0 + 0.05;
+                let strip = |b: &mut BrickMesh, from: f32, to: f32, lift: f32, colour: Color| {
+                    let (a, c, l) = (branch.right * from, branch.right * to, up * lift);
+                    b.quad(p + a + l, p + c + l, q + c + l, q + a + l, colour);
+                };
+                // The dirt is laid in strips, each only where the road's tarmac isn't.
+                const STRIPS: usize = 6;
+                let wide = 2.0 * branch.road / STRIPS as f32;
+                for lane in 0..STRIPS {
+                    let from = -branch.road + wide * lane as f32;
+                    if !self.on_road(mid + branch.right * (from + wide / 2.0), ROAD_HW + KERB) {
+                        strip(&mut b, from, from + wide, 0.012, dirt[(k / 2) % 2]);
+                    }
+                }
+                let roofed = branch.roofed(branch.place(p).0);
+                let portal = roofed != branch.roofed(branch.place(p).0 - 4.0)
+                    || roofed != branch.roofed(branch.place(q).0 + 4.0);
+                for side in [-1.0, 1.0] {
+                    if self.on_road(mid + branch.right * side * branch.wall, WALL) {
+                        continue;
+                    }
+                    let (near, far) = (side * branch.road, side * branch.wall);
+                    strip(&mut b, near.min(far), near.max(far), 0.004, LIME);
+                    if roofed {
+                        // The shed's wall.
+                        let out = branch.right * side * (branch.wall + SHED_THICK / 2.0);
+                        let colour = if portal { YELLOW } else { RED };
+                        b.cuboid(
+                            mid + out + up * (SHED_HEIGHT / 2.0),
+                            Vec3::new(SHED_THICK / 2.0, SHED_HEIGHT / 2.0, half),
+                            rot,
+                            colour,
+                        );
+                        continue;
+                    }
+                    let barrier = if (k / 3) % 2 == 0 { WHITE } else { RED };
+                    let at = mid + branch.right * side * (branch.wall + 0.4);
+                    b.cuboid(at + up * 0.45, Vec3::new(0.4, 0.45, half), rot, barrier);
+                    b.cyl(at + up * 0.9, 0.25, 0.15, rot, barrier);
+                    if p.y > 0.05 || q.y > 0.05 {
+                        let out = branch.right * side * (branch.wall + 0.8);
+                        let (o0, o1) = (p + out, q + out);
+                        let (g0, g1) = (o0.with_y(-0.1), o1.with_y(-0.1));
+                        b.quad(o0, o1, g1, g0, TAN);
+                        b.quad(o1, o0, g0, g1, TAN);
+                    }
+                }
+                if roofed {
+                    let colour = if portal { YELLOW } else { DARK_GREY };
+                    b.brick(
+                        mid + up * (SHED_HEIGHT + SHED_THICK / 2.0),
+                        Vec3::new(branch.wall + SHED_THICK, SHED_THICK / 2.0, half),
+                        rot,
+                        colour,
+                        (4, 1),
+                    );
                 }
             }
         }
@@ -1006,6 +1830,9 @@ impl Track {
                 }
             }
         }
+        if layout == Layout::HelterSkelter {
+            crate::helter::scenery(&mut b);
+        }
         b.build()
     }
 }
@@ -1023,13 +1850,13 @@ mod tests {
         for layout in Layout::ALL {
             let t = Track::built(layout);
             let n = t.n();
-            let longest = if layout == Layout::Gauntlet {
-                3500.0
-            } else {
-                1400.0
+            let (shortest, longest) = match layout {
+                Layout::Gauntlet => (900.0, 3500.0),
+                Layout::HelterSkelter => (4100.0, 4400.0),
+                _ => (900.0, 1400.0),
             };
             assert!(
-                t.length > 900.0 && t.length < longest,
+                t.length > shortest && t.length < longest,
                 "{layout:?} length {}",
                 t.length
             );
@@ -1124,6 +1951,259 @@ mod tests {
         }
         let sharpest = |t: &Track| t.curv.iter().copied().fold(0.0, f32::max);
         assert!(sharpest(&t) > 1.0 / 20.0 && sharpest(&t) > sharpest(&Track::new()));
+    }
+
+    #[test]
+    fn the_helter_skelter_ends_where_it_begins() {
+        // Drawn on past its last leg, it is back at the origin and going along x.
+        let mut twice: Vec<Leg> = Vec::new();
+        for leg in HELTER.iter().chain(&HELTER[..1]) {
+            twice.push(match *leg {
+                Straight(length, rise) => Straight(length, rise),
+                Turn(degrees, radius, rise) => Turn(degrees, radius, rise),
+            });
+        }
+        let (once, twice) = (drawn(HELTER), drawn(&twice));
+        let (end, next) = (
+            Vec3::from(twice[once.len()]),
+            Vec3::from(twice[once.len() + 1]),
+        );
+        assert!(end.length() < 0.1, "{end}");
+        assert!((next - end).normalize().dot(Vec3::X) > 0.9999);
+        // Its points are near enough evenly spaced.
+        for (a, b) in once.iter().zip(&once[1..]) {
+            let apart = xz_dist2(Vec3::from(*a), Vec3::from(*b)).sqrt();
+            assert!(apart > 5.0 && apart < DRAWN_STEP + 0.1, "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn the_helter_skelter_has_a_spiral_two_tunnels_and_a_jump() {
+        let t = Track::built(Layout::HelterSkelter);
+        let n = t.n();
+        // A whole turn of the road has another over it with room to drive under, and
+        // where the spiral begins and ends the road is three deep.
+        let over = |i: usize| {
+            let mut above: Vec<f32> = (0..n)
+                .filter(|&k| k.abs_diff(i) > 30 && t.pts[k].y > t.pts[i].y + 1.0)
+                .filter(|&k| xz_dist2(t.pts[i], t.pts[k]) < 6.0)
+                .map(|k| t.pts[k].y - t.pts[i].y)
+                .collect();
+            above.sort_by(f32::total_cmp);
+            above.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+            above
+        };
+        let stacked: Vec<usize> = (0..n).filter(|&i| !over(i).is_empty()).collect();
+        assert!(
+            stacked.len() as f32 * t.spacing > 250.0,
+            "{}",
+            stacked.len()
+        );
+        assert!(stacked.iter().any(|&i| over(i).len() == 2));
+        assert!(SPIRAL_RISE > TUNNEL_HEIGHT);
+        for &i in &stacked {
+            for (level, rise) in over(i).into_iter().enumerate() {
+                assert!(
+                    (rise - SPIRAL_RISE * (level + 1) as f32).abs() < 2.5,
+                    "{i} {rise}"
+                );
+            }
+        }
+        // Each level of it is the road found from that level.
+        for &i in &stacked {
+            let s = i as f32 * t.spacing;
+            assert!((t.surface_point(s, 0.0).y - t.pts[i].y).abs() < 0.3, "{i}");
+            assert_eq!(t.nearest(t.pts[i]), i);
+        }
+        // The tunnels are on level road with nothing over it.
+        assert_eq!(t.tunnels.len(), 2);
+        let bridged = t.bridged();
+        for &(from, to) in &t.tunnels {
+            assert!((to - from) as f32 * t.spacing > 100.0, "{from}..{to}");
+            assert!((from..to).all(|i| t.pts[i].y < 0.1 && !bridged[i]));
+        }
+        // The jump is cut into a straight, level but for itself, with a run up to it
+        // and no gate across it for a car in the air to miss.
+        let &[(from, to)] = &t.jumps[..] else {
+            panic!("{:?}", t.jumps);
+        };
+        let lip = (from..to)
+            .max_by(|&a, &b| t.pts[a].y.total_cmp(&t.pts[b].y))
+            .unwrap();
+        assert_eq!(t.pts[lip].y, JUMP_LIPS.0);
+        assert!(t.pts[lip + 3].y < 0.01 && t.pts[lip + 5].y < 0.01);
+        assert!(t.pts[from].y < 0.01 && t.pts[to - 1].y < 0.3 && t.pts[to].y < 0.01);
+        assert!(
+            (from - 50..to + 10)
+                .all(|i| t.curv[i] < 1e-3 && t.tunnels.iter().all(|t| !(t.0..t.1).contains(&i)))
+        );
+        assert!((from - 50..from).all(|i| t.pts[i].y < 0.1));
+        for gate in &t.course.checkpoints {
+            assert!(!(from..to).contains(&t.nearest(gate.position)));
+        }
+        // No side of the dip is too steep to be driven up.
+        for i in from..to {
+            let step = t.pts[i + 1] - t.pts[i];
+            assert!(step.y.abs() < step.with_y(0.0).length() * 1.1, "{i}");
+        }
+        // Turned round, the same road is the jump.
+        let mut back = Track::built(Layout::HelterSkelter);
+        back.reverse();
+        let (back_from, back_to) = back.jumps[0];
+        assert_eq!(
+            (back.pts[back_from], back.pts[back_to - 1]),
+            (t.pts[to - 1], t.pts[from])
+        );
+    }
+
+    #[test]
+    fn byways_leave_the_road_and_come_back_to_it() {
+        for layout in Layout::ALL {
+            let t = Track::built(layout);
+            let (n, lift) = (t.n(), Vec3::Y * 0.6);
+            let byways = if layout == Layout::HelterSkelter {
+                2
+            } else {
+                1
+            };
+            assert_eq!(t.branches.len(), byways, "{layout:?}");
+            for branch in &t.branches {
+                // Each runs between two places on the line, and is the shorter way.
+                let (first, last) = (branch.pts[0], branch.pts[branch.pts.len() - 1]);
+                let [from, to] = branch.ends;
+                assert_eq!([t.nearest(first), t.nearest(last)], [from, to]);
+                assert!(t.pts[from].distance(first) < 0.01 && t.pts[to].distance(last) < 0.01);
+                let round = (to - from) as f32 * t.spacing;
+                assert!(
+                    to > from && branch.length() < round - 10.0,
+                    "{layout:?} {round}"
+                );
+                // Nothing stands in it from end to end, there is ground under all of
+                // it, and it has a barrier either side where it is clear of the road.
+                for step in branch.pts.windows(2) {
+                    assert!(t.collision.wall(step[0] + lift, step[1] + lift).is_none());
+                    let ground = t.collision.ground(step[0] + Vec3::Y * 2.0, 4.0).unwrap();
+                    let over = ground.point.y - step[0].y;
+                    assert!((-0.02..1.5).contains(&over), "{layout:?} {over}");
+                }
+                let middle = branch.pts[branch.pts.len() / 2];
+                for side in [-1.0, 1.0] {
+                    let out = middle + branch.right * side * (branch.wall + 1.0);
+                    assert!(t.collision.wall(middle + lift, out + lift).is_some());
+                }
+                // It keeps clear of the rest of the road, tunnels and jumps too.
+                assert!(!t.on_road(middle, WALL + branch.wall), "{layout:?}");
+                for stretch in t.tunnels.iter().chain(&t.jumps) {
+                    assert!(!(stretch.0..stretch.1).contains(&from));
+                    assert!(!(stretch.0..stretch.1).contains(&to));
+                }
+            }
+            // The road's own barriers stand everywhere but across the byways' ends
+            // and before the infields.
+            let mut open = 0;
+            for i in 0..n {
+                for side in [-1.0, 1.0] {
+                    let (mid, out) = (t.edge(i, 0.0), t.edge(i, side * (WALL + 1.0)));
+                    if t.collision.wall(mid + Vec3::Y, out + Vec3::Y).is_none() {
+                        open += 1;
+                        let gap = t.edge(i, side * WALL);
+                        assert!(
+                            t.branches.iter().any(|b| b.holds(gap))
+                                || t.infields.iter().any(|f| f.opens(i, side)),
+                            "{layout:?} {i} {side}"
+                        );
+                    }
+                }
+            }
+            assert!(open > 8 && open < 200, "{layout:?} {open}");
+            // Neither lap zone is on road that can be gone round, or near its ends.
+            let stretches = t
+                .branches
+                .iter()
+                .map(|b| (b.ends[0], b.ends[1]))
+                .chain(t.infields.iter().map(|f| (f.from, f.to)));
+            for (from, to) in stretches {
+                for &(centre, ..) in &t.course.zones {
+                    let at = t.nearest(centre);
+                    assert!(at + 10 < from || at > to + 10, "{layout:?} zone at {at}");
+                }
+            }
+            // Turned round, each byway is the same road from its other end.
+            let mut back = Track::built(layout);
+            back.reverse();
+            for (branch, turned) in t.branches.iter().zip(&back.branches) {
+                assert_eq!(turned.pts[0], branch.pts[branch.pts.len() - 1]);
+                assert_eq!(back.nearest(turned.pts[0]), turned.ends[0]);
+                assert!(turned.ends[0] < turned.ends[1]);
+                assert!(turned.along.dot(branch.along) < -0.999);
+            }
+        }
+    }
+
+    #[test]
+    fn infields_pads_and_banks_are_where_the_road_can_take_them() {
+        for layout in Layout::ALL {
+            let t = Track::built(layout);
+            let (n, lift) = (t.n(), Vec3::Y * 0.6);
+            let mut back = Track::built(layout);
+            back.reverse();
+            assert!(!t.infields.is_empty() && t.pads.len() >= 2, "{layout:?}");
+            for (infield, turned) in t.infields.iter().zip(&back.infields) {
+                // The grass is slow going, inside the corner, clear of the road, and
+                // nothing stands between it and the road.
+                let grass = t.grass(infield);
+                let middle = (infield.from + infield.to) / 2;
+                for &[a, _, _, d] in &grass {
+                    let on = (a + d) / 2.0;
+                    let ground = t.collision.ground(on + Vec3::Y * 2.0, 4.0).unwrap();
+                    assert!(ground.surface.rolling_resistance >= LAWN_DRAG, "{layout:?}");
+                    assert!(
+                        a.distance(d) < 2.0 || !t.on_road(on, WALL - 1.0),
+                        "{layout:?}"
+                    );
+                    assert!(t.collision.wall(t.pts[middle] + lift, on + lift).is_none());
+                }
+                let inside = t.edge(middle, infield.side * (WALL + 2.0));
+                let outside = t.edge(middle, -infield.side * (WALL + 2.0));
+                assert!(
+                    t.collision
+                        .wall(t.pts[middle] + lift, inside + lift)
+                        .is_none()
+                );
+                assert!(
+                    t.collision
+                        .wall(t.pts[middle] + lift, outside + lift)
+                        .is_some()
+                );
+                // Turned round it is the same grass.
+                assert_eq!(
+                    back.edge(turned.from, turned.side * WALL),
+                    t.edge(infield.to, infield.side * WALL)
+                );
+                for stretch in t.tunnels.iter().chain(&t.jumps) {
+                    assert!(stretch.1 < infield.from || stretch.0 > infield.to);
+                }
+            }
+            // A pad lies on the road, the same place either way round.
+            for (pad, turned) in t.pads.iter().zip(&back.pads) {
+                assert!(pad.lat.abs() + PAD_WIDTH / 2.0 <= ROAD_HW);
+                let (here, there) = (t.edge(pad.at, pad.lat), back.edge(turned.at, turned.lat));
+                assert!(here.distance(there) < 0.01);
+            }
+            // A bank's high side is the outside of its corner, and a car's wheels
+            // find it.
+            let banked: Vec<usize> = (0..n).filter(|&i| t.bank[i] != 0.0).collect();
+            assert!(banked.len() > 30, "{layout:?}");
+            for &i in &banked {
+                let turn = t.flat[i].cross(t.flat[(i + 1) % n]).y;
+                assert!(turn * t.bank[i] >= 0.0, "{layout:?} {i}");
+                let high = t.bank[i].signum() * (ROAD_HW - 1.0);
+                let s = i as f32 * t.spacing;
+                let (up, down) = (t.surface_point(s, high), t.surface_point(s, -high));
+                assert!((up.y - t.edge(i, high).y).abs() < 0.1, "{layout:?} {i}");
+                assert!(up.y >= down.y && back.bank[n - i] == -t.bank[i]);
+            }
+        }
     }
 
     #[test]

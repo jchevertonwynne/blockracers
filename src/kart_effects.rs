@@ -19,10 +19,14 @@ const SMOKE_PUFFS: u32 = 4;
 const SMOKE_HEIGHT: f32 = 2.0 * UNIT;
 /// A landing counts once the car has been off the ground this long.
 const AIRBORNE: f32 = 0.4;
-/// Skid marks are this wide, laid in pieces at least this long, and last this long.
+/// Skid marks are this wide and laid in pieces at least this long. A wheel's trail
+/// of them is as long as a second of its skid, a quarter of that in a powerslide, and
+/// all of it goes the moment the wheel stops skidding (`CarVisuals`, with
+/// `RaceDecalManager::Trail`, which keeps only its last few segments).
 const MARK_WIDTH: f32 = 0.28;
 const MARK_STEP: f32 = 0.25;
-const MARK_LIFE: f32 = 6.0;
+const MARK_LIFE: f32 = 1.0;
+const MARK_LIFE_SLIDING: f32 = 0.25;
 /// They and the shadows sit this far off the road, to be seen.
 const MARK_LIFT: f32 = 0.03;
 
@@ -42,9 +46,10 @@ pub struct Effects {
     marks: [Option<Vec3>; 2],
 }
 
-/// A piece of skid mark, and how long it has lain.
+/// A piece of skid mark: how long it has lain, how long it stays, and which back wheel
+/// it is of.
 #[derive(Component)]
-pub struct Mark(f32);
+pub struct Mark(f32, f32, usize);
 
 /// What marks and shadows are drawn with.
 pub struct Looks {
@@ -76,7 +81,7 @@ pub fn kart_effects(
 ) {
     for (entity, mut mark) in &mut marks {
         mark.0 += time.delta_secs();
-        if mark.0 > MARK_LIFE {
+        if mark.0 > mark.1 {
             commands.entity(entity).despawn();
         }
     }
@@ -192,7 +197,15 @@ pub fn kart_effects(
     // Marks on the road behind the back wheels for as long as they skid.
     for (side, wheel_index) in [2, 3].into_iter().enumerate() {
         if !skidding {
-            fx.marks[side] = None;
+            // The whole trail goes at once.
+            if fx.marks[side].take().is_some() {
+                for (entity, mark) in &marks {
+                    // Those that have lasted their time are gone already.
+                    if mark.2 == side && mark.0 <= mark.1 {
+                        commands.entity(entity).despawn();
+                    }
+                }
+            }
             continue;
         }
         let up = k.rot * Vec3::Y;
@@ -211,7 +224,15 @@ pub fn kart_effects(
             .looking_to(along, up)
             .with_scale(Vec3::new(MARK_WIDTH, 1.0, along.length()));
         commands.spawn((
-            Mark(0.0),
+            Mark(
+                0.0,
+                if k.sliding {
+                    MARK_LIFE_SLIDING
+                } else {
+                    MARK_LIFE
+                },
+                side,
+            ),
             Mesh3d(looks.square.clone()),
             MeshMaterial3d(material.clone()),
             piece,

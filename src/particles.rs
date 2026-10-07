@@ -226,6 +226,11 @@ impl Emitters {
         })
     }
 
+    /// Whether the emitter of the named kind goes on until it is stopped.
+    pub fn persistent(&self, name: &str) -> bool {
+        self.kinds.get(name).is_some_and(|kind| kind.def.duration.is_none())
+    }
+
     /// Starts an emitter of the named kind at a place; those with a duration end themselves.
     pub fn spawn(&self, commands: &mut Commands, name: &str, at: Transform) -> Option<Entity> {
         Some(commands.spawn((self.emitter(name)?, at)).id())
