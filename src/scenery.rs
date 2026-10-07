@@ -307,6 +307,9 @@ pub struct Animated {
     /// The part to go on to, and whether to loop it, once this one has played out
     /// (or at once, if this one loops).
     pub queued: Option<(usize, bool)>,
+    /// A pose it is easing out of into its part (`transition`): where each bone was
+    /// within its parent, how many milliseconds ago, and how long the easing takes.
+    pub easing: Option<(Vec<(Quat, Vec3)>, f32, f32)>,
 }
 
 impl Animated {
@@ -314,6 +317,16 @@ impl Animated {
         (self.part, self.time, self.playing, self.looping, self.rate) =
             (part, 0.0, true, looping, 1.0);
         self.queued = None;
+        self.easing = None;
+    }
+
+    /// `GolAnimatedEntity::TransitionToPart`: goes on to a part, round and round it,
+    /// easing into it from however it stands now over so many milliseconds.
+    pub fn transition(&mut self, part: usize, ms: f32) {
+        let frame = self.frame();
+        let from = (0..self.rig.bones.len()).map(|bone| self.local(bone, frame)).collect();
+        self.play(part, true);
+        self.easing = Some((from, 0.0, ms));
     }
 
     /// Holds the first frame of a part.
@@ -375,10 +388,20 @@ impl Animated {
     fn local(&self, bone: usize, frame: f32) -> (Quat, Vec3) {
         let rest = &self.rig.bones[bone];
         let (position, rotation) = self.rig.animation.sample(self.part, bone, frame);
-        (
+        let now = (
             rotation.unwrap_or(turn(rest.rotation)),
             position.unwrap_or(Vec3::from(rest.position)),
-        )
+        );
+        match &self.easing {
+            Some((from, gone, over)) if bone < from.len() && *over > 0.0 => {
+                let through = (gone / over).clamp(0.0, 1.0);
+                (
+                    from[bone].0.slerp(now.0, through),
+                    from[bone].1.lerp(now.1, through),
+                )
+            }
+            _ => now,
+        }
     }
 
     /// A bone's rotation and position in the model's own space, `frame` frames in.
@@ -715,6 +738,7 @@ impl Template {
             looping: true,
             rate: 1.0,
             queued: None,
+            easing: None,
         }
     }
 }
@@ -728,6 +752,9 @@ pub enum Motion {
     Then(usize),
     /// Held at the start of a part, shifted so that this bone sits where the model is put.
     Held(usize, usize),
+    /// Through one of its parts, this one or the one that comes to when its parts
+    /// are counted round, and no further (`Animated::done`).
+    Once(usize),
 }
 
 /// The models power-ups are made of, by name.
@@ -772,6 +799,9 @@ impl Models {
                 Motion::Loop => {}
                 Motion::Then(part) => {
                     (animated.looping, animated.queued) = (false, Some((part, true)))
+                }
+                Motion::Once(part) => {
+                    animated.play(part % rig.animation.parts.len().max(1), false)
                 }
                 Motion::Held(part, bone) => {
                     animated.freeze(part);
@@ -1070,6 +1100,12 @@ pub fn animate(
 ) {
     let ms = time.delta_secs().min(0.05) * 1000.0;
     for mut animated in &mut props {
+        if let Some((_, gone, over)) = &mut animated.easing {
+            *gone += ms;
+            if *gone >= *over {
+                animated.easing = None;
+            }
+        }
         if let (Some((part, looping)), true) =
             (animated.queued, animated.looping || !animated.playing)
         {

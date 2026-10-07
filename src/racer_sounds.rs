@@ -72,6 +72,10 @@ pub struct Cues {
     pub reaction: Option<bool>,
     pub shield_hit: bool,
     pub horn: bool,
+    /// Struck by something its driver starts at (`CarVisuals::c_reactionHit`): no
+    /// sound of its own.
+    #[serde(default)]
+    pub hit: bool,
 }
 
 #[derive(Component, Default)]
@@ -263,6 +267,7 @@ pub fn racer_sounds(
             }
         }
         let cues = std::mem::take(&mut k.cues);
+        k.struck |= cues.hit;
         if cues.horn {
             k.honked = true;
             let place = places

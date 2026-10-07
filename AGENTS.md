@@ -88,7 +88,9 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   for. That circuit has no recorded route, so `world::load_in` gives it a ring
   for a road, a stand-in: the car starts on the circuit's one grid place and is
   driven where the player likes, but the computer (a demo's driver too) follows
-  the ring and not the road, and nothing ends the drive but leaving it.
+  the ring and not the road, and nothing ends the drive but leaving it. A warp
+  there takes the car nowhere, as the original's does without checkpoints
+  (`Track::unrouted`).
 - **Loading:** `src/loading.rs` shows the race's `LOADSCRN.LSB` picture and its
   ticks (`LoadingScreen`) while a race is loaded behind it, a step to a frame
   (`loading::Step`, `STEPS`), the ticks filling in as the steps are done. A race
@@ -105,10 +107,23 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   streaks behind missiles and cannon balls (`BeamMesh`, `RaceTrailManager`) from
   the `Action`s in the world; `hazards::hazard_looks` draws the crane's shadow,
   laid on the road as the original's decals are (`Collision::decal`), and the
-  ghost's after-images. A hook that lets go winds its rope in (the puff the
-  original shows where it let go is not drawn). Skid marks are `kart_effects`':
-  from whichever wheels the original marks with, laid flat on the road under
-  them and not cut to its shape as the crane's shadow is.
+  ghost's after-images. A hook that lets go winds its rope in, and leaves a
+  puff where it let go: a picture that faces the camera and plays a track of
+  the power-ups' material animation (`world::hook_puff`, an emitter of the one
+  particle; `particles::EmitterDef::billboard`). Skid marks are `kart_effects`':
+  from whichever wheels the original marks with, each piece cut to the road as
+  the crane's shadow is. A car's shadow is the same kind of thing
+  (`kart_effects::shadows`): the car's own outline seen from above
+  (`world::KartModel::silhouette`), laid on the road under it. An explosion on
+  the road leaves a scar that grows with it and fades, and a shot that strikes a
+  car throws bricks off it (`item_models::aftermath`, from what
+  `Action::Explosion` says of itself).
+- **The driver:** `src/driver.rs` has each car's driver lean with the steering,
+  look at cars alongside and behind, look back to reverse, start at a knock and
+  end the race glad or not, on the skeleton and the animation every driver
+  shares (`PELVIS`). `kart::spawn_karts` seats the rigged figure
+  (`world::KartModel::figure`); ghosts and the cars of the films and the build
+  menu keep the figure at rest.
 - **Online play:** `src/net/` (the port's own). The host's game runs the race; players'
   games drive their own car ahead of the host's word and are shown the rest. Online
   the race is stepped in `FixedUpdate` at 60 Hz by `net::plugin`, not per frame, and

@@ -6,6 +6,7 @@ mod camera;
 mod cheats;
 mod championship;
 mod collision;
+mod driver;
 mod events;
 mod film;
 mod frontend;
@@ -519,8 +520,11 @@ fn main() {
                 (beams::beams, beams::trails, hazards::hazards, hazards::hazard_looks, hazards::code_lights, sky::change).chain(),
                 (
                     item_models::dress_actions,
+                    item_models::hook_puffs,
+                    item_models::aftermath,
                     item_models::dress_karts,
                     scenery::animate,
+                    driver::drivers,
                     scenery::cycle,
                     scenery::scroll,
                     scenery::fade,

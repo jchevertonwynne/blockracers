@@ -579,6 +579,8 @@ fn a_replay_puts_power_ups_back_as_they_were() {
                 age: 0.0,
                 radius: 1.0,
                 owner: None,
+                scar: false,
+                debris: None,
             },
             Transform::default(),
         ))

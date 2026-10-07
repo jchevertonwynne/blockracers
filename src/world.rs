@@ -86,10 +86,85 @@ pub struct KartModel {
     pub wheel_scale: f32,
     pub driver: Vec<Surface>,
     pub driver_scale: f32,
+    /// The minifigure again on its skeleton, with the animation every driver shares
+    /// (`DriverCosmeticTable::LoadEntry`), for a car whose driver is to move.
+    pub figure: Option<scenery::PropDef>,
     pub chassis: Chassis,
     /// Half-width, and how far the car reaches ahead of and behind its origin, in
     /// game units.
     pub outline: [f32; 3],
+}
+
+/// `g_carShadowScale`: a car's shadow is drawn of this many times its footprint, and
+/// laid over the footprint itself.
+const SHADOW_SCALE: f32 = 1.15;
+/// How many pixels a side the picture of a car's shadow is.
+pub const SHADOW_PIXELS: usize = 64;
+
+impl KartModel {
+    /// The picture of the car's shadow, as `CarVisuals::RenderShadowSilhouette` and
+    /// `CarShadowRenderState` make it: the chassis and the wheels seen from straight
+    /// above with the car level, every part of them one dark colour and the rest
+    /// clear. Across it is the car's left, and down it the way it points.
+    pub fn silhouette(&self) -> image::Pixels {
+        let n = SHADOW_PIXELS;
+        let span = self.chassis.footprint * SHADOW_SCALE;
+        let mut rgba = vec![0u8; n * n * 4];
+        let mut fill = |corners: [Vec3; 3]| {
+            // Where a point of the car (X forward, Y left) is in the picture.
+            let at = corners.map(|p| (Vec2::new(p.y / span.x, p.x / span.y) + 0.5) * n as f32);
+            let edge = |a: Vec2, b: Vec2, p: Vec2| (b - a).perp_dot(p - a);
+            let area = edge(at[0], at[1], at[2]);
+            if area == 0.0 {
+                return;
+            }
+            let (lo, hi) = (at[0].min(at[1]).min(at[2]), at[0].max(at[1]).max(at[2]));
+            let reach = |v: f32| v.clamp(0.0, n as f32 - 1.0) as usize;
+            for y in reach(lo.y)..=reach(hi.y) {
+                for x in reach(lo.x)..=reach(hi.x) {
+                    let p = Vec2::new(x as f32, y as f32) + 0.5;
+                    let inside = [(0, 1), (1, 2), (2, 0)]
+                        .iter()
+                        .all(|&(a, b)| edge(at[a], at[b], p) * area >= 0.0);
+                    if inside {
+                        rgba[(y * n + x) * 4..][..4].copy_from_slice(&[8, 8, 8, 255]);
+                    }
+                }
+            }
+        };
+        let mut drawn = |surfaces: &[Surface], place: &dyn Fn(Vec3) -> Vec3| {
+            for surface in surfaces {
+                let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) =
+                    surface.mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                else {
+                    continue;
+                };
+                let corner = |i: usize| place(Vec3::from(points[i]));
+                match surface.mesh.indices() {
+                    Some(indices) => {
+                        let indices: Vec<usize> = indices.iter().collect();
+                        for triangle in indices.chunks_exact(3) {
+                            fill([corner(triangle[0]), corner(triangle[1]), corner(triangle[2])]);
+                        }
+                    }
+                    None => {
+                        for first in (0..points.len().saturating_sub(2)).step_by(3) {
+                            fill([corner(first), corner(first + 1), corner(first + 2)]);
+                        }
+                    }
+                }
+            }
+        };
+        drawn(&self.body, &|p| p * self.body_scale);
+        for axle in &self.axles {
+            drawn(&axle.surfaces, &|p| (axle.position + axle.rotation * p) * self.wheel_scale);
+        }
+        image::Pixels {
+            width: n as u32,
+            height: n as u32,
+            rgba,
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -466,6 +541,7 @@ fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
     let (figure, library) = part(&driver.figure)?;
     let skeleton = parse_skeleton(jam.get(&format!("{COMMON}/PELVIS.SDB"))?)?;
     let driver_surfaces = posed(&figure, &library, &skeleton);
+    let rigged = rigged(jam, &figure, &library, skeleton);
 
     // A champion's car weighs what the champion's entry says, wherever its chassis
     // would have the weight.
@@ -480,6 +556,7 @@ fn load_kart(jam: &Jam, driver: &Driver) -> Option<KartModel> {
         wheel_scale,
         driver: driver_surfaces,
         driver_scale: figure.scale,
+        figure: rigged,
         chassis,
     })
 }
@@ -592,7 +669,7 @@ pub fn load_built(jam: &Jam, racer: &Racer, detailed: bool) -> Option<KartModel>
         expression: if detailed { racer.cosmetics.expression } else { 0 },
         ..racer.cosmetics
     };
-    let (driver, driver_scale) = built_figure(jam, cosmetics)?;
+    let (driver, driver_scale, figure) = built_figure(jam, cosmetics)?;
     Some(KartModel {
         outline: outline(&body, &axles, wheel_scale, reach),
         body: body_surfaces,
@@ -601,18 +678,50 @@ pub fn load_built(jam: &Jam, racer: &Racer, detailed: bool) -> Option<KartModel>
         wheel_scale,
         driver,
         driver_scale,
+        figure,
         chassis,
     })
 }
 
 /// A minifigure made of the parts given, sitting as it does in a car, and its scale.
-fn built_figure(jam: &Jam, cosmetics: Cosmetics) -> Option<(Vec<Surface>, f32)> {
+fn built_figure(
+    jam: &Jam,
+    cosmetics: Cosmetics,
+) -> Option<(Vec<Surface>, f32, Option<scenery::PropDef>)> {
     let catalogue = build::Catalogue::open(jam)?;
     let figure = build::figure(jam, &catalogue, cosmetics, false)?;
     let (files, folders) = build::Catalogue::files();
     let library = Library::new(jam, files.iter().map(String::as_str), &folders);
     let skeleton = parse_skeleton(build::skeleton(jam, &catalogue, cosmetics, false)?)?;
-    Some((posed(&figure, &library, &skeleton), figure.scale))
+    let surfaces = posed(&figure, &library, &skeleton);
+    Some((surfaces, figure.scale, rigged(jam, &figure, &library, skeleton)))
+}
+
+/// The skeleton and the animation every driver of the game's own has.
+#[cfg(test)]
+pub fn driver_rig(jam: &Jam) -> Option<scenery::Rig> {
+    Some(scenery::Rig {
+        bones: std::sync::Arc::new(parse_skeleton(jam.get(&format!("{COMMON}/PELVIS.SDB"))?)?),
+        animation: std::sync::Arc::new(crate::assets::adb::Animation::parse(
+            jam.get(&format!("{COMMON}/PELVIS.ADB"))?,
+        )?),
+    })
+}
+
+/// A driver on its skeleton, to play the parts of the animation every driver has
+/// (`pelvis`, the scene node and the model parts `DriverCosmeticTable` loads).
+fn rigged(
+    jam: &Jam,
+    figure: &Model,
+    library: &Library,
+    skeleton: Vec<Bone>,
+) -> Option<scenery::PropDef> {
+    let moves = jam.get(&format!("{COMMON}/PELVIS.ADB"))?;
+    let rig = scenery::Rig {
+        bones: std::sync::Arc::new(skeleton),
+        animation: std::sync::Arc::new(crate::assets::adb::Animation::parse(moves)?),
+    };
+    Some(scenery::PropDef::made("driver", figure, Some(rig), library))
 }
 
 /// One part of a minifigure of these cosmetics, posed as it sits in a car: 0 the
@@ -649,8 +758,8 @@ pub fn figure_part(jam: &Jam, cosmetics: Cosmetics, part: usize) -> Option<Vec<S
 /// The port's own, for showing who is in a session.
 pub fn load_figure(jam: &Jam, ride: &Ride) -> Option<(Vec<Surface>, f32)> {
     match ride {
-        Ride::Built(racer) => built_figure(jam, racer.cosmetics),
-        Ride::Slot => built_figure(jam, Cosmetics::default()),
+        Ride::Built(racer) => built_figure(jam, racer.cosmetics).map(|made| (made.0, made.1)),
+        Ride::Slot => built_figure(jam, Cosmetics::default()).map(|made| (made.0, made.1)),
         Ride::Driver(code) => {
             let name = roster::driver(jam, code)?.figure;
             let file = |ext: &str| format!("{COMMON}/{name}.{ext}");
@@ -895,6 +1004,7 @@ pub fn load_in(race: &str, circuit: Option<&str>, time_race: bool) -> Option<(Tr
         }
     };
     let mut track = Track::from_loop(&line, LANE);
+    track.unrouted = route_file.is_none();
 
     // The solid world, minus trigger surfaces (checkpoints and the like).
     let mut surface_table = HashMap::new();
@@ -1178,6 +1288,41 @@ pub(crate) fn add_emitters(
     }
 }
 
+/// The puff where a grappling hook lets go (`GrapplingHookAction::Activate` and
+/// `ReleaseHook`): a picture `g_hookBillboardSize` across that plays the first track
+/// of the power-ups' material animation, made here as an emitter of the one picture
+/// (`item_models::HOOK_PUFF`). It is shown for as long as the rope is being wound
+/// in, which is half a second at the most (`item_models::hook_puffs` takes it away
+/// with the hook), or for the track's length if that is less.
+fn hook_puff(
+    jam: &Jam,
+    powerups: &Library,
+) -> Option<(String, particles::EmitterDef, particles::Look)> {
+    const SIZE: f32 = 15.0;
+    const SHOWN: f32 = 0.5;
+    let animation = jam
+        .get(&format!("{COMMON}/POWERUP.MAB"))
+        .and_then(mab::MaterialAnimation::parse)?;
+    let track = *animation.tracks.first()?;
+    let frames: Vec<(u32, image::Pixels)> = animation
+        .materials(0)
+        .iter()
+        .filter_map(|(material, frame)| Some((*frame, powerups.tinted(material)?)))
+        .collect();
+    let look = particles::Look {
+        additive: animation
+            .materials(0)
+            .first()
+            .is_some_and(|m| powerups.additive(&m.0)),
+        frames,
+        track: Some(track),
+    };
+    (!look.frames.is_empty()).then(|| {
+        let def = particles::EmitterDef::billboard(SIZE, track.duration().min(SHOWN), 0);
+        (crate::item_models::HOOK_PUFF.to_string(), def, look)
+    })
+}
+
 /// What a race has whatever its circuit: the field of `circuit` and its cars, the
 /// power-ups' models and pictures, and the emitters every circuit shares, after the
 /// ones given.
@@ -1232,6 +1377,7 @@ fn shared(
         |_| true,
         &mut emitters,
     );
+    emitters.extend(hook_puff(jam, &powerups));
     let swatches = crate::item_models::PICTURES
         .iter()
         .filter_map(|material| picture(&powerups, material))
@@ -1473,4 +1619,25 @@ fn every_chassis_has_the_widths_of_its_skid_marks() {
             assert!(wide > 0.0 && wide < across, "{code}: {:?} of {across}", chassis.skid);
         }
     }
+}
+
+/// The power-ups' material animation has a track for the hook's puff, and the
+/// power-ups' own pictures are the ones it plays.
+#[cfg(test)]
+#[test]
+fn a_hook_s_puff_has_its_pictures() {
+    let Some(jam) = open_jam() else { return };
+    let files: Vec<String> = ["POWERUP", "GRAPPLE"]
+        .iter()
+        .flat_map(|n| [format!("{COMMON}/{n}.MDB"), format!("{COMMON}/{n}.TDB")])
+        .collect();
+    let powerups = Library::new(&jam, files.iter().map(String::as_str), &[COMMON]);
+    let animation = jam
+        .get(&format!("{COMMON}/POWERUP.MAB"))
+        .and_then(mab::MaterialAnimation::parse)
+        .expect("the power-ups' material animation");
+    let (name, _, look) = hook_puff(&jam, &powerups).expect("a puff");
+    assert_eq!(name, crate::item_models::HOOK_PUFF);
+    assert_eq!(look.frames.len(), animation.materials(0).len());
+    assert!(look.frames.len() > 1 && look.track.is_some());
 }

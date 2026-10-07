@@ -1342,7 +1342,7 @@ pub fn hazards(
 /// Shows the code puzzle's answer on its three lights.
 /// The mesh of a picture laid on the road (`Collision::decal`'s triangles), a little
 /// off it so as to be seen.
-fn laid(corners: &[(Vec3, Vec2)], up: Vec3) -> Mesh {
+pub fn laid(corners: &[(Vec3, Vec2)], up: Vec3) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::PrimitiveTopology;
     let places: Vec<[f32; 3]> = corners.iter().map(|c| (c.0 + up * 0.03).into()).collect();

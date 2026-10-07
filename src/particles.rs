@@ -39,6 +39,28 @@ pub struct EmitterDef {
     pub track: Option<usize>,
 }
 
+impl EmitterDef {
+    /// A picture that faces the camera where it is put and plays a track of a
+    /// material animation through, as the original's `GolBillboard` with a
+    /// `MabMaterialTrack` does: an emitter of particles `size` across that neither
+    /// move nor grow and last `life` seconds. Whoever sets one going stops it once
+    /// it has thrown out its one.
+    pub fn billboard(size: f32, life: f32, track: usize) -> Self {
+        EmitterDef {
+            interval: 0.0,
+            skip: 0.0,
+            size: Vec2::splat(size),
+            growth: Vec2::ZERO,
+            life,
+            duration: None,
+            acceleration: Vec3::ZERO,
+            velocities: vec![Vec3::ZERO],
+            material: None,
+            track: Some(track),
+        }
+    }
+}
+
 /// What an emitter's particles look like: one picture, or several with the frames they
 /// show from and the track that times them.
 #[derive(Default)]
@@ -259,6 +281,10 @@ impl Emitter {
     }
 }
 
+/// The emitter a particle came from.
+#[derive(Component)]
+pub struct From(pub Entity);
+
 #[derive(Component)]
 pub struct Particle {
     kind: Arc<Kind>,
@@ -305,6 +331,7 @@ pub fn emit(
                 age: 0.0,
                 life: kind.def.life,
             },
+            From(entity),
             Mesh3d(emitters.quad.clone()),
             MeshMaterial3d(kind.material(0.0)),
             Transform::from_translation(transform.translation).with_scale(Vec3::splat(MIN_SIZE)),

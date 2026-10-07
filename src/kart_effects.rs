@@ -33,8 +33,6 @@ const MARK_FADE: f32 = 1.0;
 /// far above the wheel and is this deep.
 const MARK_ABOVE: f32 = 6.0 * UNIT;
 const MARK_DEPTH: f32 = 15.0 * UNIT;
-/// They and the shadows sit this far off the road, to be seen.
-const MARK_LIFT: f32 = 0.03;
 
 #[derive(Component, Default)]
 pub struct Effects {
@@ -79,7 +77,6 @@ fn marking(spinning: bool, turbo: bool, leftward: bool) -> [bool; 4] {
 
 /// What marks and shadows are drawn with.
 pub struct Looks {
-    square: Handle<Mesh>,
     skid: Handle<StandardMaterial>,
     burn: Handle<StandardMaterial>,
 }
@@ -130,7 +127,6 @@ pub fn kart_effects(
             })
         };
         Looks {
-            square: meshes.add(Plane3d::default().mesh().size(1.0, 1.0)),
             skid: flat(Color::srgba(0.0, 0.0, 0.0, 0.45), AlphaMode::Blend),
             // A turbo's marks burn.
             burn: flat(Color::srgba(1.0, 0.45, 0.05, 0.6), AlphaMode::Add),
@@ -293,7 +289,6 @@ pub fn kart_effects(
             }
         }
         let side = wheel_index;
-        let up = k.rot * Vec3::Y;
         // `RaceDecalManager::Trail::AddSample`: a mark is laid on whatever of the
         // road is under the wheel, from a little above it to well below, so that a
         // car riding over the road, or floating over it, still marks it.
@@ -306,7 +301,7 @@ pub fn kart_effects(
             fx.marks[wheel_index] = None;
             continue;
         };
-        let at = under.point + under.normal * MARK_LIFT;
+        let at = under.point;
         let Some(from) = fx.marks[side] else {
             fx.marks[side] = Some(at);
             continue;
@@ -317,14 +312,25 @@ pub fn kart_effects(
         }
         fx.marks[side] = Some(at);
         let material = if boosting { &looks.burn } else { &looks.skid };
-        let piece = Transform::from_translation(from + along / 2.0)
-            .looking_to(along, up)
-            .with_scale(Vec3::new(k.skid[wheel_index / 2], 1.0, along.length()));
+        // `Trail::AddSample` and `Decal::Project`: the piece is cut to the road it
+        // lies on, from the middle of its length.
+        let lies = track.as_ref().map_or(Vec::new(), |track| {
+            track.collision.decal(
+                from + along / 2.0 + Vec3::Y * MARK_ABOVE,
+                Vec3::NEG_Y,
+                along,
+                [k.skid[wheel_index / 2], along.length(), MARK_DEPTH],
+            )
+        });
+        if lies.is_empty() {
+            continue;
+        }
         commands.spawn((
             Mark(0.0, life, side, boosting),
-            Mesh3d(looks.square.clone()),
+            Mesh3d(meshes.add(crate::hazards::laid(&lies, Vec3::Y))),
             MeshMaterial3d(material.clone()),
-            piece,
+            Transform::default(),
+            bevy::camera::visibility::NoFrustumCulling,
         ));
     }
 
@@ -377,64 +383,105 @@ pub fn tints(
     }
 }
 
-/// The dark patch under a car.
+/// The shadow under a car: whose it is.
 #[derive(Component)]
-pub struct Shadow;
+pub struct Shadow(Entity);
 
-/// Gives every car its shadow, sized to the car, and keeps each on the road under it.
+/// What a car's shadow is the shape of: the picture of it seen from above, across
+/// which is its left and down which the way it points, and how wide and long that
+/// is on the road. A car without one has a plain patch its own size.
+#[derive(Component)]
+pub struct Silhouette {
+    pub picture: Handle<Image>,
+    pub size: Vec2,
+}
+
+/// `CarVisuals::UpdateShadow` and `DrawTransparent`: the shadow's box begins this far
+/// above the car and is this deep (`g_shadowProbeHeight`, `g_unk0x004b0af0`); it is
+/// drawn at `c_fadeAlphaMax` and fades away between these distances from the camera.
+const SHADOW_ABOVE: f32 = 6.0 * UNIT;
+const SHADOW_DEPTH: f32 = 15.0 * UNIT;
+const SHADOW_ALPHA: f32 = 191.0 / 255.0;
+const SHADOW_FADE: (f32, f32) = (50.0 * UNIT, 100.0 * UNIT);
+
+/// Gives every car its shadow and lays it on the road under the car, on whatever
+/// of the road is there, as the original's decal is.
 pub fn shadows(
     mut commands: Commands,
     track: Res<crate::track::Track>,
-    bare: Query<(Entity, &Kart), Added<Kart>>,
-    karts: Query<&Kart>,
-    mut shadows: Query<(&ChildOf, &mut Transform, &mut Visibility), With<Shadow>>,
+    bare: Query<(Entity, &Kart, Option<&Silhouette>), Added<Kart>>,
+    karts: Query<(&Kart, Option<&Silhouette>)>,
+    camera: Query<&Transform, (With<Camera3d>, Without<bevy::camera::visibility::RenderLayers>)>,
+    mut shadows: Query<(
+        Entity,
+        &Shadow,
+        &Mesh3d,
+        &MeshMaterial3d<StandardMaterial>,
+        &mut Visibility,
+    )>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut look: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
 ) {
-    let (blot, material) = look.get_or_insert_with(|| {
+    // The renderer can't hold a mesh of nothing.
+    let nothing = [(Vec3::ZERO, Vec2::ZERO); 3];
+    for (entity, _, silhouette) in &bare {
         let material = StandardMaterial {
-            base_color: Color::srgba(0.0, 0.0, 0.0, 0.4),
+            base_color: match silhouette {
+                Some(_) => Color::WHITE.with_alpha(SHADOW_ALPHA),
+                None => Color::srgba(0.03, 0.03, 0.03, SHADOW_ALPHA),
+            },
+            base_color_texture: silhouette.map(|silhouette| silhouette.picture.clone()),
             unlit: true,
             alpha_mode: AlphaMode::Blend,
             cull_mode: None,
             ..default()
         };
-        // A round blot, lying flat.
-        let blot = Mesh::from(Circle::new(0.5))
-            .rotated_by(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
-        (meshes.add(blot), materials.add(material))
-    });
-    for (entity, kart) in &bare {
-        let [width, front, rear] = kart.outline;
-        let size = Vec3::new(width * 2.6, 1.0, (rear - front) * 1.25);
-        let place = Transform::from_xyz(0.0, MARK_LIFT, (front + rear) / 2.0).with_scale(size);
-        commands.entity(entity).with_child((
-            Shadow,
-            Mesh3d(blot.clone()),
-            MeshMaterial3d(material.clone()),
-            place,
+        commands.spawn((
+            Shadow(entity),
+            Mesh3d(meshes.add(crate::hazards::laid(&nothing, Vec3::Y))),
+            MeshMaterial3d(materials.add(material)),
+            Transform::default(),
+            Visibility::Hidden,
+            bevy::camera::visibility::NoFrustumCulling,
         ));
     }
-    for (child_of, mut transform, mut visibility) in &mut shadows {
-        let Ok(kart) = karts.get(child_of.parent()) else {
+    let eye = camera.iter().next().map(|camera| camera.translation);
+    for (entity, shadow, mesh, material, mut visibility) in &mut shadows {
+        let Ok((kart, silhouette)) = karts.get(shadow.0) else {
+            commands.entity(entity).despawn();
             continue;
         };
-        // In the air the shadow stays on the road below, while there is one near.
-        let down = kart.rot.inverse() * Vec3::NEG_Y;
-        let ground = track
-            .collision
-            .ground(kart.pos + Vec3::Y, 12.0)
-            .map(|hit| kart.pos.y - hit.point.y);
-        match ground.filter(|_| kart.warp <= 0.0) {
-            Some(drop) => {
-                transform.translation.y = MARK_LIFT - drop * down.y.abs();
-                visibility.set_if_neq(Visibility::Inherited);
-            }
-            None => {
-                visibility.set_if_neq(Visibility::Hidden);
+        let [width, front, rear] = kart.outline;
+        let size = silhouette.map_or(Vec2::new(width * 2.0, rear - front), |s| s.size);
+        let forward = kart.rot * Vec3::NEG_Z;
+        let centre = kart.pos + kart.rot * Vec3::Z * (front + rear) / 2.0;
+        let far = eye.map_or(0.0, |eye| eye.distance_squared(centre));
+        let (near2, far2) = (SHADOW_FADE.0 * SHADOW_FADE.0, SHADOW_FADE.1 * SHADOW_FADE.1);
+        let seen = 1.0 - ((far - near2) / (far2 - near2)).clamp(0.0, 1.0);
+        let lies = if kart.warp > 0.0 || seen <= 0.0 {
+            Vec::new()
+        } else {
+            track.collision.decal(
+                centre + Vec3::Y * SHADOW_ABOVE,
+                Vec3::NEG_Y,
+                forward,
+                [size.x, size.y, SHADOW_DEPTH],
+            )
+        };
+        if lies.is_empty() {
+            visibility.set_if_neq(Visibility::Hidden);
+            continue;
+        }
+        if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
+            *mesh = crate::hazards::laid(&lies, Vec3::Y);
+        }
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            let alpha = SHADOW_ALPHA * seen;
+            if material.base_color.alpha() != alpha {
+                material.base_color.set_alpha(alpha);
             }
         }
+        visibility.set_if_neq(Visibility::Inherited);
     }
 }
 

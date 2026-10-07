@@ -253,6 +253,9 @@ pub struct Kart {
     pub engine_pitch: f32,
     /// Sounds owed for things that have just happened to this kart.
     pub cues: Cues,
+    /// Its driver has a start to give for something that struck the car
+    /// (`Cues::hit`, once the cues have been taken).
+    pub struck: bool,
     /// The event of a pass-through surface the kart has just driven through.
     pub touched: Option<i32>,
     /// The car has touched a surface that ends its race.
@@ -396,6 +399,7 @@ impl Kart {
             rigid: physics::Rigid::default(),
             engine_pitch: 1.0,
             cues: Cues::default(),
+            struck: false,
             touched: None,
             ended: false,
             honked: false,
@@ -527,6 +531,7 @@ impl Kart {
     /// `Racer::AttachCurse`: cursed for so long, which ends any turbo.
     pub fn curse(&mut self, time: f32) {
         (self.cursed, self.boost) = (time, 0.0);
+        self.cues.hit = true;
     }
 
     /// `Racer::ApplyShove`: pushed for a while, unless being pushed already.
@@ -1064,6 +1069,7 @@ pub fn spawn_karts(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut binds: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
 ) {
     let plastic = materials.add(StandardMaterial {
         perceptual_roughness: 0.35,
@@ -1175,7 +1181,7 @@ pub fn spawn_karts(
             Visibility::Hidden,
         ));
 
-        let Some(model) = model else {
+        let Some(mut model) = model else {
             // Brick-built stand-in.
             kart.insert((
                 Mesh3d(meshes.add(kart_mesh(driver.body, driver.accent))),
@@ -1199,6 +1205,28 @@ pub fn spawn_karts(
             continue;
         };
 
+        // Its shadow is the shape of the car itself (`CarVisuals::RenderShadowSilhouette`).
+        let mut picture = Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: crate::world::SHADOW_PIXELS as u32,
+                height: crate::world::SHADOW_PIXELS as u32,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            model.silhouette().rgba,
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        picture.sampler = bevy::image::ImageSampler::linear();
+        commands.entity(id).insert(crate::kart_effects::Silhouette {
+            picture: images.add(picture),
+            size: model.chassis.footprint * UNIT,
+        });
+        // The driver is on its skeleton, to move (`driver`), where there is one.
+        let figure = model.figure.take().zip(binds.as_mut()).map(|(figure, binds)| {
+            model.driver.clear();
+            (figure, binds, model.chassis.mount, model.driver_scale)
+        });
         crate::time_race::dress(
             &mut commands,
             id,
@@ -1208,6 +1236,28 @@ pub fn spawn_karts(
             &mut images,
             None,
         );
+        if let Some((figure, binds, mount, scale)) = figure {
+            let seated = crate::scenery::spawn(
+                figure,
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &mut images,
+                binds,
+            );
+            // The game's models have X forward, Y left and Z up; the car faces -Z.
+            let basis = Quat::from_mat3(&Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y));
+            commands.entity(seated).insert((
+                Transform {
+                    translation: basis * mount * UNIT,
+                    rotation: basis,
+                    scale: Vec3::splat(scale * UNIT),
+                },
+                crate::time_race::Part::Driver,
+                crate::driver::Driver::of(id, slot),
+            ));
+            commands.entity(id).add_child(seated);
+        }
     }
 }
 
@@ -1611,6 +1661,14 @@ impl Kart {
             if k.warp <= 0.0 {
                 k.warp_to = None;
             }
+        } else if warping && track.unrouted {
+            // `WarpAction::Update`: with no checkpoints to be carried along, the car
+            // is taken nowhere, and comes out where it went in, facing the game's X.
+            k.facing = crate::scenery::to_world(Vec3::X).with_y(0.0).normalize_or(k.facing);
+            k.rot = Transform::IDENTITY.looking_to(k.facing, Vec3::Y).rotation;
+            k.rigid = physics::Rigid::default();
+            k.vel = k.facing * WARP_EXIT_SPEED;
+            k.contacts = 4;
         } else if warping {
             // Carried along the racing line, drifting to its middle.
             let (s, lat) = (k.s + WARP_SPEED * dt, k.lat * (1.0 - 2.0 * dt).max(0.0));

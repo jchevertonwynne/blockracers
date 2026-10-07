@@ -781,6 +781,9 @@ pub struct Track {
     pub jumps: Vec<(usize, usize)>,
     /// The ways off the road and back onto it.
     pub branches: Vec<Branch>,
+    /// The road is a stand-in: the circuit has no route of its own (the test
+    /// track, `world::load_in`), and nothing of the game's is to follow this one.
+    pub unrouted: bool,
     /// How steeply each sample's road is banked: how much higher it is for each unit
     /// to the right of its middle.
     pub bank: Vec<f32>,
@@ -1305,6 +1308,7 @@ impl Track {
             tunnels: Vec::new(),
             jumps: Vec::new(),
             branches: Vec::new(),
+            unrouted: false,
             bank: vec![0.0; n],
             infields: Vec::new(),
             pads: Vec::new(),

@@ -133,6 +133,7 @@ pub fn tell(
                 .filter(|_| kart.cues.reaction != before.reaction),
             shield_hit: kart.cues.shield_hit && !before.shield_hit,
             horn: kart.cues.horn && !before.horn,
+            hit: kart.cues.hit && !before.hit,
         };
         *before = kart.cues;
         if new != Cues::default() {
@@ -253,6 +254,7 @@ pub fn take(
                     reaction: cues.reaction.or(kart.cues.reaction),
                     shield_hit: cues.shield_hit || kart.cues.shield_hit,
                     horn: cues.horn || kart.cues.horn,
+                    hit: cues.hit || kart.cues.hit,
                 };
             }
         }

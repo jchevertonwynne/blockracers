@@ -195,7 +195,10 @@ const DROP_PROBE: f32 = 50.0 * UNIT;
 const KART_RADIUS: f32 = 1.5;
 /// An explosion lasts this long, growing from this part of its size, and from a ball
 /// this big.
-const EXPLOSION_TIME: f32 = 1.0;
+pub const EXPLOSION_TIME: f32 = 1.0;
+/// `g_scarNormalThreshold`, and how near the ground a burst must be to be on it.
+const SCAR_NORMAL: f32 = 0.7071;
+const SCAR_REACH: f32 = 1.0 * UNIT;
 const BLAST_START: f32 = 0.05;
 const BLAST_CORE: f32 = 0.1 * UNIT;
 
@@ -424,11 +427,17 @@ pub enum Action {
         owner: Entity,
         age: f32,
     },
-    /// `owner` is whose weapon it was; it does them no harm.
+    /// `owner` is whose weapon it was; it does them no harm. One on the road leaves
+    /// a `scar` there, and one that was a shot striking a car throws bricks off it,
+    /// back the way the shot came (`debris`); `item_models` shows both.
     Explosion {
         age: f32,
         radius: f32,
         owner: Option<Entity>,
+        #[serde(default)]
+        scar: bool,
+        #[serde(default)]
+        debris: Option<Vec3>,
     },
 }
 
@@ -1652,7 +1661,7 @@ fn flight_sound(at: Vec3, vel: Vec3) -> Emitter {
 
 /// How far an explosion has grown, of 1, this long into its life
 /// (`PowerupExplosion::UpdateFlash`).
-fn blast_growth(age: f32) -> f32 {
+pub fn blast_growth(age: f32) -> f32 {
     let rate = 1.0 / EXPLOSION_TIME;
     let slowing = 2.0 * (1.0 - BLAST_START - 2.0 * rate) * rate * rate;
     BLAST_START + 2.0 * rate * age + 0.5 * slowing * age * age
@@ -1672,7 +1681,11 @@ pub fn actions(
 ) {
     let dt = time.delta_secs();
     // Explosions are collected and set off once every action has had its turn.
-    let mut blasts: Vec<(Vec3, f32, Entity)> = Vec::new();
+    // Where each blast is, how big and whose; and for one that struck a car, the
+    // bricks it throws off it, if any.
+    let mut blasts: Vec<(Vec3, f32, Entity, Option<Option<Vec3>>)> = Vec::new();
+    // `CannonballAction::Update`: the bricks fly back the way the shot came, level.
+    let thrown_back = |velocity: Vec3| Some((-velocity).with_y(0.0).normalize_or(Vec3::X));
     let touching = |k: &Kart, at: Vec3, radius: f32| {
         (k.pos + Vec3::Y * 0.6).distance_squared(at) < radius * radius
     };
@@ -1706,7 +1719,7 @@ pub fn actions(
                 let mut deflected = false;
                 if let (Flight::Flying, Some((victim, mut k))) = (&flight, struck) {
                     done = true;
-                    let hit = k.pos;
+                    let (hit, shielded) = (k.pos, k.shielded());
                     if k.shielded() {
                         k.cues.reaction = Some(true);
                         k.cues.shield_hit = true;
@@ -1717,6 +1730,7 @@ pub fn actions(
                         }
                     } else {
                         k.cues.reaction = Some(false);
+                        k.cues.hit = true;
                         k.drop_white();
                         sfx.emit(id::EXPLOSION, Emitter::at(hit).far());
                         if let Ok((_, mut shooter)) = karts.get_mut(*owner) {
@@ -1724,7 +1738,8 @@ pub fn actions(
                         }
                     }
                     if !deflected {
-                        blasts.push((hit, CANNONBALL_BLAST, *owner));
+                        let debris = thrown_back(shot.velocity()).filter(|_| !shielded);
+                        blasts.push((hit, CANNONBALL_BLAST, *owner, Some(debris)));
                     }
                 } else if launched && matches!(flight, Flight::Expired) {
                     commands.entity(entity).despawn();
@@ -1737,7 +1752,7 @@ pub fn actions(
                         events.fire(*event, Some(*point), &mut sfx);
                     }
                     sfx.emit(id::EXPLOSION, Emitter::at(at).far());
-                    blasts.push((at, CANNONBALL_BLAST, *owner));
+                    blasts.push((at, CANNONBALL_BLAST, *owner, None));
                     done = true;
                 }
                 if let (true, Some(event), Some(events)) = (done, *on_hit, &mut events) {
@@ -1912,6 +1927,7 @@ pub fn actions(
                     } else if k.spin_out <= 0.0 && k.launch(1.0) {
                         sfx.play_at(id::LIGHTNING_ZAP, k.pos);
                         k.cues.reaction = Some(false);
+                        k.cues.hit = true;
                         k.drop_white();
                         (*shocked, struck) = (Some((victim.entity, 0.0)), true);
                     }
@@ -2038,7 +2054,7 @@ pub fn actions(
                     .iter_mut()
                     .find(|(e, k)| e != owner && k.warp <= 0.0 && touching(k, shown, KART_RADIUS));
                 if let Some((victim, mut k)) = struck {
-                    let hit = k.pos;
+                    let (hit, shielded) = (k.pos, k.shielded());
                     done = true;
                     if k.shielded() {
                         k.cues.reaction = Some(true);
@@ -2051,6 +2067,7 @@ pub fn actions(
                         }
                     } else {
                         k.cues.reaction = Some(false);
+                        k.cues.hit = true;
                         k.drop_white();
                         k.spin_round(MISSILE_SPIN_TURNS);
                         sfx.emit(id::MISSILE_EXPLODE, Emitter::at(hit).far());
@@ -2059,7 +2076,8 @@ pub fn actions(
                         }
                     }
                     if done {
-                        blasts.push((hit, CANNONBALL_BLAST, *owner));
+                        let debris = thrown_back(shown - pos).filter(|_| !shielded);
+                        blasts.push((hit, CANNONBALL_BLAST, *owner, Some(debris)));
                     }
                 } else if *time <= 0.0 || reached || track.collision.shot(pos, shown).is_some() {
                     let burst = track
@@ -2067,7 +2085,7 @@ pub fn actions(
                         .shot(pos, shown)
                         .map_or(shown, |hit| hit.point);
                     sfx.emit(id::MISSILE_EXPLODE, Emitter::at(burst).far());
-                    blasts.push((burst, CANNONBALL_BLAST, *owner));
+                    blasts.push((burst, CANNONBALL_BLAST, *owner, None));
                     done = true;
                 }
             }
@@ -2088,6 +2106,7 @@ pub fn actions(
                         continue;
                     } else {
                         k.spin_round(OIL_SPIN_TURNS);
+                        k.cues.hit = true;
                         sfx.emit(id::OIL_SLIP, Emitter::at(k.pos).far());
                     }
                     done = true;
@@ -2132,7 +2151,7 @@ pub fn actions(
                         at += Vec3::new(wander(), 0.0, wander());
                         tf.translation = at;
                     }
-                    blasts.push((at, BIG_BLAST, *owner));
+                    blasts.push((at, BIG_BLAST, *owner, None));
                     (*shot, *left, *wait) = (None, *left - 1, DYNAMITE_BLAST_INTERVAL);
                     done = *left == 0;
                 }
@@ -2224,7 +2243,9 @@ pub fn actions(
             }
             // `PowerupExplosion`: it throws whoever its growing ball reaches, hardest
             // in the first half of its life.
-            Action::Explosion { age, radius, owner } => {
+            Action::Explosion {
+                age, radius, owner, ..
+            } => {
                 *age += dt;
                 done = *age > EXPLOSION_TIME;
                 let growth = blast_growth(age.min(EXPLOSION_TIME));
@@ -2249,12 +2270,21 @@ pub fn actions(
         }
     }
 
-    for (at, radius, owner) in blasts {
+    for (at, radius, owner, struck) in blasts {
+        // `CannonballAction` and `HomingMissileAction`: a shot that bursts on ground
+        // that faces up enough (`g_scarNormalThreshold`) scars it; dynamite always
+        // does (`DynamiteAction`).
+        let floor = track
+            .collision
+            .ground(at + Vec3::Y * SCAR_REACH, 2.0 * SCAR_REACH)
+            .is_some_and(|hit| hit.normal.y.abs() > SCAR_NORMAL);
         commands.spawn((
             Action::Explosion {
                 age: 0.0,
                 radius,
                 owner: Some(owner),
+                scar: struck.is_none() && (floor || radius > CANNONBALL_BLAST),
+                debris: struck.flatten(),
             },
             Mesh3d(assets.sphere.clone()),
             MeshMaterial3d(assets.fire.clone()),

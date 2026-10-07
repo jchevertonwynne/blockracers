@@ -1113,6 +1113,7 @@ fn open(
             looping: true,
             rate: 1.0,
             queued: None,
+            easing: None,
         };
         let prop = Prop {
             position,
