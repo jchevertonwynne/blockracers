@@ -10,14 +10,13 @@ function audit: a feature that is ported but differs in detail won't have been c
 
 ## Not ported
 
-- **The set the car is built in.** The car page and the page bricks are placed on
-  show the car alone, by the screen's own camera, with nothing round it
-  (`workshop::show`). The original shows it in a frame (`bluebox`) in the world
-  `garage`, through the camera its layout gives: the `garage` entry of
-  `EDITCAR.MIB` (251,125 to 588,394) and the scene of `CARBUILD.MIB` (207,115 to
-  627,469), both seen from (-12, -19, 28) looking at (0, 0, 10) at 45 degrees
-  (`EditCarScreen`, `CarBuildScreen`, `CarModelScreenBase`). The garage, the racer
-  page and the driver page are as the original has them (`frontend/stage.rs`).
+- **The other views of a car being built.** Where bricks are placed the car is seen
+  from one height and is at once as it is turned to. The original has two higher
+  views of it (`CarPartPlacement::PitchViewStep`, the second and third of
+  `g_carPartCameraMinPositions`) and turns smoothly from one view to the next
+  (`UpdateViewRotation`, `UpdateViewPitch`).
+- **The held brick's movements.** It does not bob over the car or drop onto it as
+  it is put on (`UpdatePieceBob`, `UpdateCommitFeedback`).
 - **The rest of the build page's help.** Help is shown for the things the port's
   page has. The original has help too for its pad of arrows that move the brick,
   for the camera and for two more things (strings 2, 6, 7 and 8 of `CARBUILD.SRF`),
@@ -43,6 +42,9 @@ function audit: a feature that is ported but differs in detail won't have been c
   original stands it has not been read.
 - **The mascot in the circuit's view** is not lit by the frame's lights, though the
   scene is; nor is the racer of a film.
+- **How far the camera stands back from a car being built** is by the car's length
+  and width (`KartModel::outline`); the original's is by the radius of the whole
+  car (`GetViewPosition`, `GetBoundsRadius`).
 - **The build page's help** names the original's keys (the numeric keypad and the
   rest), which are not the port's; the port's own are in the lines the page has
   beside it.
@@ -88,4 +90,4 @@ time races; the cheats, the mouse in the menus and force feedback; the idle demo
 race, the language page, the mascot and lights of the circuit's view, the row of
 bricks and the garage's racer and car; drivers' names in each language, the build
 page's help, the frames of the garage and the driver page, the row of bricks
-sliding and the driver on its platform.
+sliding, the driver on its platform and the set a car is built in.

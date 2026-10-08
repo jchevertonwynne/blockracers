@@ -1,19 +1,26 @@
-//! The racer the garage shows: the minifigure standing on its pad, going through
-//! its moves one after another, and beside it the racer's car on its own, in the
-//! set the original has them in. After `RacerModelScreenBase` (`CreateModelSlots`:
+//! The sets of the build menu, each seen through its own camera in a frame: the
+//! garage's showcase, where the minifigure stands on its pad going through its
+//! moves with the racer's car beside it; the platform a driver is dressed on; and
+//! the set a car is built in. After `RacerModelScreenBase` (`CreateModelSlots`:
 //! where each is put; `RefreshSlotModel`: what each is made of; `AlignDriverSlots`
 //! and `AlignCarSlots`: which way each faces; `PlayRandomAnimation` and `Update`:
 //! which move the figure makes next, a different one each time the last has
 //! played out), `RacerModelSlot` (the slots, neither of which turns, and the figure
-//! of which moves) and `MenuFramedSceneView` over `MenuSceneView` (the showcase of
-//! `GARAGE.MIB`, with the world `RS_SET/RACER.WDB` and its camera). The set's own
-//! models (the ground, the pools of light, the pad and the shadows) are loaded as any
+//! of which moves), `EditDriverScreen` (`CreateDriverScene`, `PickNextAnimation`,
+//! `OnWidgetValueChanged`: the driver on its platform and the moves it makes),
+//! `CarModelScreenBase` and `EditCarScreen` (the set a car is built in) and
+//! `MenuFramedSceneView` over `MenuSceneView` (each page's scene in its layout:
+//! the world it names, that world's camera, and the frame round it). A set's own
+//! models (the ground, the pools of light, the pad and the rest) are loaded as any
 //! world file's are.
 //!
-//! The original draws it straight onto the screen. The port's menus are drawn over
-//! everything else, so here it has a camera of its own that draws it onto a picture,
-//! which the menu shows where the original's showcase is, as the main menu's figure is
-//! (`mascot`), inside the showcase's frame.
+//! The car of the set a car is built in is `workshop::show`'s, which stands it there
+//! and moves the set's camera where bricks are placed (`CarPartPlacement`).
+//!
+//! The original draws a set straight onto the screen. The port's menus are drawn
+//! over everything else, so here a set has a camera that draws it onto a picture,
+//! which the menu shows where the original's scene is, as the main menu's figure is
+//! (`mascot`), inside the scene's frame.
 
 use std::sync::Arc;
 
@@ -37,11 +44,16 @@ use bevy::{
 };
 
 /// One of the build menu's sets: the garage's showcase, where a racer stands
-/// beside its car, or the platform a driver is dressed on.
+/// beside its car, the platform a driver is dressed on, or the set a car is built in.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Set {
     Showcase,
     Platform,
+    /// The set a car is built in, as the car's page shows it and as the page
+    /// bricks are placed on does (`EditCarScreen`, `CarBuildScreen`): the same
+    /// set, each in a frame of its own. The car in it is `workshop::show`'s.
+    Bay,
+    Bench,
 }
 
 /// `RacerModelScreenBase::CreateModelSlots`: where the car is put in the showcase.
@@ -62,23 +74,31 @@ impl Set {
         match self {
             Set::Showcase => "/MENUDATA/RS_SET",
             Set::Platform => "/MENUDATA/CB_SET",
+            Set::Bay | Set::Bench => "/MENUDATA/GARAGE",
         }
     }
 
-    /// Its world files: the one with its camera first.
-    fn scenes(self) -> [String; 2] {
-        let scene = match self {
-            Set::Showcase => "RACER",
-            Set::Platform => "CBSET",
+    /// Its world files: the one with its camera first, and for the sets that have
+    /// one the world of what is drawn over the rest.
+    fn scenes(self) -> Vec<String> {
+        let (scene, blended) = match self {
+            Set::Showcase => ("RACER", true),
+            Set::Platform => ("CBSET", true),
+            Set::Bay | Set::Bench => ("GARAGE", false),
         };
-        [format!("{}/{scene}.WDB", self.dir()), format!("{}/BLENDED.WDB", self.dir())]
+        let mut scenes = vec![format!("{}/{scene}.WDB", self.dir())];
+        if blended {
+            scenes.push(format!("{}/BLENDED.WDB", self.dir()));
+        }
+        scenes
     }
 
-    /// The animation its figure moves by.
+    /// The animation its figure moves by, on the sets that have a figure.
     fn moves(self) -> &'static str {
         match self {
             Set::Showcase => "/MENUDATA/RSANIM.ADB",
             Set::Platform => "/MENUDATA/CBANIM.ADB",
+            Set::Bay | Set::Bench => "",
         }
     }
 
@@ -89,6 +109,7 @@ impl Set {
         match self {
             Set::Showcase => (Vec3::new(-0.938, -0.898, 1.487), (-0.267_238f32).atan2(0.963_631)),
             Set::Platform => (Vec3::new(-5.359, -3.15, 0.026), 0.0),
+            Set::Bay | Set::Bench => (Vec3::ZERO, 0.0),
         }
     }
 
@@ -98,6 +119,7 @@ impl Set {
         match self {
             Set::Showcase => &[0x74, 0x75, 0x77, 0x78, 0x79, 0x7a, 0x7b],
             Set::Platform => &[0x74, 0x75, 0x76, 0xd3, 0x81, 0x82, 0x78, 0x79],
+            Set::Bay | Set::Bench => &[],
         }
     }
 
@@ -107,11 +129,13 @@ impl Set {
     }
 
     /// The frame it is shown in (`showcase` of `GARAGE.MIB`, `platform` of
-    /// `EDITDRVR.MIB`).
+    /// `EDITDRVR.MIB`, `garage` of `EDITCAR.MIB` and of `CARBUILD.MIB`).
     pub fn frame(self, art: &Art) -> Rect {
         match self {
             Set::Showcase => art.place("garage", "showcase"),
             Set::Platform => art.place("editdrvr", "platform"),
+            Set::Bay => art.place("editcar", "garage"),
+            Set::Bench => art.place("carbuild", "garage"),
         }
     }
 }
@@ -130,8 +154,8 @@ const LAYER: usize = 13;
 #[derive(Resource, Default)]
 pub struct Stage {
     pub picture: Option<Handle<Image>>,
-    /// Whose it is and which set they are on, which is what it is remade for.
-    shown: Option<(Racer, Set)>,
+    /// Which set it is and whose racer stands on it, which is what it is remade for.
+    shown: Option<(Option<Racer>, Set)>,
     entities: Vec<Entity>,
     /// Which parts of the moves are the idle ones.
     idle: Vec<usize>,
@@ -153,6 +177,10 @@ pub struct Staged;
 /// The minifigure.
 #[derive(Component)]
 pub struct Figure;
+
+/// The set's camera.
+#[derive(Component)]
+pub struct Lens;
 
 /// The names of a `.ADB` file's parts, in order.
 fn parts(data: &[u8]) -> Vec<String> {
@@ -213,18 +241,16 @@ pub fn keep(
         ResMut<Assets<SkinnedMeshInverseBindposes>>,
     ),
 ) {
-    let Some((racer, platform)) = workshop::showcased(menu.page, &bench, &garage, &settings)
-    else {
+    let Some(wanted) = workshop::staged(menu.page, &bench, &garage, &settings) else {
         if !stage.entities.is_empty() {
             clear(&mut commands, &mut stage);
         }
         return;
     };
-    let set = if platform { Set::Platform } else { Set::Showcase };
-    let wanted = (racer, set);
     if stage.shown.as_ref() == Some(&wanted) {
         return;
     }
+    let (racer, set) = wanted.clone();
     // `EditDriverScreen::OnWidgetValueChanged`: a driver whose part is changed
     // where it stands makes a move about it.
     let names = names(&art);
@@ -233,9 +259,11 @@ pub fn keep(
         let name = names.get(string)?.to_lowercase();
         moves.iter().position(|m| *m == name)
     };
-    let before = stage.shown.as_ref().filter(|shown| shown.1 == Set::Platform && platform);
-    let first = before.and_then(|(was, _)| {
-        let (was, now) = (was.cosmetics, wanted.0.cosmetics);
+    let dressed = |shown: &(Option<Racer>, Set)| {
+        shown.0.as_ref().filter(|_| shown.1 == Set::Platform).map(|racer| racer.cosmetics)
+    };
+    let before = stage.shown.as_ref().and_then(dressed);
+    let first = before.zip(dressed(&wanted)).and_then(|(was, now)| {
         if (was.hat, was.face) != (now.hat, now.face) {
             part(HEAD_MOVE)
         } else if was.torso != now.torso {
@@ -246,17 +274,16 @@ pub fn keep(
             None
         }
     });
-    let (racer, _) = wanted.clone();
     clear(&mut commands, &mut stage);
     let jam = art.jam();
     // A race run mirrored leaves the world mirrored; the menu's is as it was made.
     scenery::set_mirror(false);
     let scenes = set.scenes();
     let scene = tokenize(jam.get(&scenes[0]).unwrap_or_default());
-    let (Some(figure), Some((eye, forward, up, fov))) = (figure(&art, &racer, set), camera(&scene))
-    else {
+    let Some((eye, forward, up, fov)) = camera(&scene) else {
         return;
     };
+    let figure = racer.as_ref().and_then(|racer| figure(&art, racer, set));
     let mut entities = Vec::new();
     // The set: the ground, the pools of light, the pad and the shadows.
     let mut own: Vec<&str> = jam
@@ -265,19 +292,22 @@ pub fn keep(
         .collect();
     own.sort();
     let library = Library::new(jam, own.iter().copied(), &[set.dir()]);
-    let files = [scenes[0].as_str(), scenes[1].as_str()];
+    let files: Vec<&str> = scenes.iter().map(String::as_str).collect();
     for def in scenery::load_files(jam, set.dir(), &files, &library, |_, _| true) {
         let prop = scenery::spawn(def, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
         commands.entity(prop).insert(Staged);
         entities.push(prop);
     }
     // The figure, which begins on a move of its own.
-    let figure = scenery::spawn(figure, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
-    commands.entity(figure).insert((Staged, Figure));
-    entities.push(figure);
-    // The car, on the ground and facing as `AlignCarSlots` has it. The platform has none.
-    let car = (set == Set::Showcase).then(|| crate::world::load_built(jam, &racer, true));
-    if let Some(mut model) = car.flatten() {
+    if let Some(figure) = figure {
+        let figure =
+            scenery::spawn(figure, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
+        commands.entity(figure).insert((Staged, Figure));
+        entities.push(figure);
+    }
+    // The car, on the ground and facing as `AlignCarSlots` has it, in the showcase.
+    let car = racer.as_ref().filter(|_| set == Set::Showcase);
+    if let Some(mut model) = car.and_then(|racer| crate::world::load_built(jam, racer, true)) {
         // The driver stands beside it.
         model.driver.clear();
         let way = scenery::to_world(CAR_FACING).normalize_or_zero();
@@ -306,6 +336,7 @@ pub fn keep(
     };
     let camera = commands
         .spawn((
+            Lens,
             Camera3d::default(),
             Camera {
                 order: -6,
@@ -401,6 +432,11 @@ fn each_set_has_its_figure_s_moves_and_a_camera() {
         assert_eq!(fov.round(), if set == Set::Showcase { 32.0 } else { 36.0 });
         assert!(figure(&art, &racer, set).is_some());
     }
+    // The set a car is built in is the one world, which has a camera of its own.
+    assert_eq!(Set::Bay.scenes(), Set::Bench.scenes());
+    let scene = tokenize(art.jam().get(&Set::Bay.scenes()[0]).unwrap());
+    assert_eq!(camera(&scene).map(|seen| seen.3.round()), Some(48.0));
+    assert!(Set::Bench.frame(&art).width() > Set::Bay.frame(&art).width());
     // The driver being dressed has a move for each part that is changed.
     let moves = parts(art.jam().get(Set::Platform.moves()).unwrap());
     for string in [HEAD_MOVE, TORSO_MOVE, LEG_MOVES[0], LEG_MOVES[1]] {

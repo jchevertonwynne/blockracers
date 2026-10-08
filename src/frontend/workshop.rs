@@ -16,6 +16,12 @@
 //!   the arrows move the brick, `R` turns it, `Enter` puts it on, `Backspace` takes
 //!   the last off, `Tab` and `T` go on to the next brick and the next part set
 //!   (back with `Shift`), and `,` and `.` turn the car round.
+//! - Where bricks are placed the car is seen from the one height, and is at once as
+//!   it is turned to: the original has two higher views (`PitchViewStep`) and
+//!   turns from one to the next (`UpdateViewRotation`). The held brick does not
+//!   bob or drop as it is put on (`UpdatePieceBob`, `UpdateCommitFeedback`).
+//! - How far the camera stands back there is by the car's length and width
+//!   (`KartModel::outline`), not by the radius of the whole of it.
 
 use super::{Action, Art, Item, LABEL, Menu, Page, Typed, Widget};
 use crate::assets::{
@@ -24,6 +30,7 @@ use crate::assets::{
 };
 use crate::audio::{Sfx, id};
 use crate::build::{Car, Catalogue, Cursor, Palette, Refusal};
+use super::stage::{self, Set};
 use crate::garage::{self, Garage};
 use crate::menu::Settings;
 use crate::physics::UNIT;
@@ -77,8 +84,26 @@ pub const EXPRESSIONS: u8 = 6;
 const HOVER: f32 = 1.2;
 /// A plate's height against a stud's width.
 const PLATE: f32 = 0.4;
-/// How fast a racer on show turns, in turns a second.
-const SPIN: f32 = 0.1;
+/// How fast the car turns on the car's page, in radians a second
+/// (`EditCarScreen::CreateWidgets`, `m_spinSpeed`, which is to a millisecond).
+const SPIN: f32 = 1.0;
+/// Where the car stands in the set it is built in, in the game's units
+/// (`m_position`, `m_piecePosition`).
+const CAR_AT: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+/// Which way the car points when the view of it has not been turned, in radians
+/// round from the game's X, and how far each turn of the view is
+/// (`CarPartPlacement::CarPartPlacement`, `g_viewAngleStep`).
+const VIEW_FROM: f32 = 1.57;
+const VIEW_STEP: f32 = std::f32::consts::FRAC_PI_4;
+/// The view a car is first seen from as bricks are placed (`SetViewSlot`).
+const FIRST_VIEW: i32 = 1;
+/// Where the camera is as bricks are placed, for the smallest car and the largest
+/// (`g_carPartCameraMinPositions`, `g_carPartCameraMaxPositions`), how far across
+/// those cars are (`g_carPartCameraMinDistance`, `g_carPartCameraMaxDistance`), and
+/// how far over the car it looks (`ResetCamera`).
+const EYES: [Vec3; 2] = [Vec3::new(0.0, -14.0, 9.0), Vec3::new(0.0, -18.0, 10.0)];
+const REACHES: [f32; 2] = [5.9, 8.5];
+const LOOK_OVER: f32 = 4.0;
 /// What is behind a racer on show.
 const WALL: Color = Color::srgb_u8(6, 6, 70);
 
@@ -176,6 +201,9 @@ pub struct Bench {
     code: Option<String>,
     /// The help the bricks page shows for what the pointer rests on.
     pub tip: Tip,
+    /// How far across the car on show is, from its middle to a corner, in the
+    /// game's units.
+    reach: f32,
 }
 
 /// How long the pointer rests on something before its help is shown, how soon after
@@ -424,24 +452,22 @@ pub fn bricks(bench: &Bench) -> Option<(&Library, &[(u16, u8)], usize)> {
     Some((&kit.library, &set.choices, bench.brick))
 }
 
-/// The racer one of the build menu's sets has on show, on the pages that have one,
-/// and whether the set is the platform a driver is dressed on and not the
-/// garage's showcase.
-pub fn showcased(
+/// The set a page of the build menu shows, and the racer `stage` stands on it:
+/// the garage's showcase and the driver's platform have theirs put there, and the
+/// set a car is built in has the car `show` makes.
+pub fn staged(
     page: Page,
     bench: &Bench,
     garage: &Garage,
     settings: &Settings,
-) -> Option<(Racer, bool)> {
-    match page {
-        Page::Garage => Some((garage.racing(settings)?.clone(), false)),
-        Page::Scrap if bench.ask == Ask::Delete => Some((garage.racing(settings)?.clone(), false)),
-        Page::Racer => Some((bench.shown(), false)),
-        Page::Driver => Some((bench.shown(), true)),
-        Page::Scrap if matches!(bench.from, Page::Garage | Page::Racer) => {
-            Some((bench.shown(), false))
-        }
-        Page::Scrap if bench.from == Page::Driver => Some((bench.shown(), true)),
+) -> Option<(Option<Racer>, Set)> {
+    let from = if page == Page::Scrap && bench.ask != Ask::Delete { bench.from } else { page };
+    match from {
+        Page::Garage | Page::Scrap => Some((Some(garage.racing(settings)?.clone()), Set::Showcase)),
+        Page::Racer => Some((Some(bench.shown()), Set::Showcase)),
+        Page::Driver => Some((Some(bench.shown()), Set::Platform)),
+        Page::Car => Some((None, Set::Bay)),
+        Page::Bricks => Some((None, Set::Bench)),
         _ => None,
     }
 }
@@ -833,15 +859,14 @@ pub fn notes(
                     false,
                 )
             };
-            // Which brick of the set is held, under the row of them.
+            // Which brick of the set is held, over the lines about the keys.
             let held = bench.kit.as_ref().and_then(|kit| {
                 let set = kit.sets.get(bench.set)?;
                 Some(format!("BRICK {} OF {}", bench.brick + 1, set.choices.len()))
             });
-            let row = art.place("carbuild", "pieces");
             vec![
                 (
-                    Rect::new(row.min.x + 32.0, row.max.y, row.max.x - 32.0, row.max.y + 24.0),
+                    Rect::new(8.0, 124.0, 200.0, 148.0),
                     held.unwrap_or_default(),
                     "font_ths",
                     LABEL,
@@ -967,6 +992,7 @@ pub fn arrive(page: Page, art: &Art, bench: &mut Bench, garage: &Garage, setting
     }
     if page == Page::Bricks {
         bench.hold();
+        bench.view = FIRST_VIEW;
     }
 }
 
@@ -1320,6 +1346,10 @@ pub fn show(
         ),
     >,
     mut tables: Query<&mut Transform, With<Turntable>>,
+    mut lenses: Query<
+        &mut Transform,
+        (With<stage::Lens>, With<bevy::camera::visibility::RenderLayers>, Without<Turntable>),
+    >,
     exhibits: Query<Entity, With<Exhibit>>,
     (mut meshes, mut materials, mut images): (
         ResMut<Assets<Mesh>>,
@@ -1354,20 +1384,37 @@ pub fn show(
         lens.fov = PerspectiveProjection::default().fov;
     }
     clear.0 = WALL;
-    // The garage's pages have their racer in the showcase (`stage`).
-    if showcased(page, &bench, &garage, &settings).is_some() {
+    // The garage's pages and the driver's have their racer put on its set by `stage`.
+    let set = staged(page, &bench, &garage, &settings).map(|staged| staged.1);
+    if matches!(set, Some(Set::Showcase | Set::Platform)) {
         for exhibit in &exhibits {
             commands.entity(exhibit).despawn();
         }
         return;
     }
-    let building = page == Page::Bricks;
+    // The car stands in the set it is built in, turning by itself on the car's
+    // page and as the view of it is turned where bricks are placed
+    // (`CarPartPlacement::ApplyViewAngle`).
+    let building = set == Some(Set::Bench);
+    let angle = if building {
+        VIEW_FROM + bench.view as f32 * VIEW_STEP
+    } else {
+        time.elapsed_secs() * SPIN
+    };
+    // The car points along the game's X turned that far round.
+    let way = crate::scenery::to_world(Vec3::new(angle.cos(), angle.sin(), 0.0));
+    let stood = Transform::from_translation(crate::scenery::to_world(CAR_AT))
+        .looking_to(way.normalize_or(Vec3::NEG_Z), Vec3::Y);
     for mut table in &mut tables {
-        table.rotation = if building {
-            Quat::from_rotation_y(bench.view as f32 * std::f32::consts::FRAC_PI_4)
-        } else {
-            Quat::from_rotation_y(time.elapsed_secs() * SPIN * std::f32::consts::TAU)
-        };
+        *table = stood;
+    }
+    // `CarPartPlacement::ResetCamera`, `GetViewPosition`: where bricks are placed
+    // the camera stands back by how large the car is, and looks over it.
+    if let (true, Ok(mut lens)) = (building, lenses.single_mut()) {
+        let share = ((bench.reach - REACHES[0]) / (REACHES[1] - REACHES[0])).clamp(0.0, 1.0);
+        let eye = crate::scenery::to_world(EYES[0].lerp(EYES[1], share));
+        let over = crate::scenery::to_world(CAR_AT + Vec3::Z * LOOK_OVER);
+        *lens = Transform::from_translation(eye).looking_at(over, Vec3::Y);
     }
     if !std::mem::take(&mut bench.stale) {
         return;
@@ -1389,14 +1436,21 @@ pub fn show(
     else {
         return;
     };
+    // How far across the car is, from its middle to a corner.
+    let [side, ahead, behind] = model.outline;
+    bench.reach = side.hypot((ahead + behind) / 2.0);
     let table = commands
         .spawn((
             Exhibit,
             Turntable,
-            Transform::default(),
+            stood,
             Visibility::default(),
         ))
         .id();
+    // In its set, it is the set's camera that draws it.
+    if set.is_some() {
+        commands.entity(table).insert(stage::Staged);
+    }
     crate::time_race::dress(
         &mut commands,
         table,

@@ -78,8 +78,10 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   `parts.rs` (10, the driver page's parts), `licence.rs` (11, the licence's
   photograph), `carousel.rs` (12, the bricks page's row of bricks, which slides from one
   brick to the next) and `stage.rs` (13, the build menu's sets, each in its frame:
-  the racer and car of the garage and the racer page in `RS_SET`, and the driver
-  being dressed on the driver page in `CB_SET`), all in `src/frontend/`. The page
+  the racer and car of the garage and the racer page in `RS_SET`, the driver
+  being dressed on the driver page in `CB_SET`, and the car of the car page and
+  of the page bricks are placed on in `GARAGE`, which `workshop::show` stands
+  there and turns), all in `src/frontend/`. The page
   bricks are placed on shows the original's help for what the pointer rests on
   (`workshop::Tip`). A query for the screen's own
   `Camera3d` must leave out those with `RenderLayers`, or it stops matching one
