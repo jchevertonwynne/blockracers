@@ -242,7 +242,10 @@ pub fn dress_actions(
     emitters: Option<Res<Emitters>>,
     new: Query<(Entity, &Action, &Transform), Added<Action>>,
     actions: Query<(&Transform, &Action), Without<Dressing>>,
-    mut dressings: Query<(Entity, &mut Dressing, &mut Transform, &mut Visibility), Without<Action>>,
+    mut dressings: Query<
+        (Entity, &mut Dressing, &mut Transform, Option<&mut Visibility>),
+        Without<Action>,
+    >,
 ) {
     let (Some(models), Some(emitters)) = (models, emitters) else {
         return;
@@ -318,7 +321,7 @@ pub fn dress_actions(
         }
     }
 
-    for (entity, mut dressing, mut transform, mut seen) in &mut dressings {
+    for (entity, mut dressing, mut transform, seen) in &mut dressings {
         let Ok((target, action)) = actions.get(dressing.of) else {
             commands.entity(entity).despawn();
             continue;
@@ -326,7 +329,16 @@ pub fn dress_actions(
         // `GrapplingHookAction::Draw`: a hook that has let go is its rope, and the
         // puff where it let go (`hook_puffs`).
         if matches!(action, Action::Hook { released: true, .. }) {
-            seen.set_if_neq(Visibility::Hidden);
+            // Its model is hidden; its smoke, which has nothing to hide, stops.
+            match seen {
+                Some(mut seen) => {
+                    seen.set_if_neq(Visibility::Hidden);
+                }
+                None => {
+                    commands.entity(entity).despawn();
+                    continue;
+                }
+            }
         }
         let moved = target.translation - dressing.last;
         if dressing.aimed && moved.length_squared() > 1e-6 {
@@ -509,4 +521,29 @@ pub fn dress_karts(
             (false, None) => {}
         }
     }
+}
+
+/// An emitter has no `Visibility`, and must still go when its power-up does.
+#[cfg(test)]
+#[test]
+fn an_emitter_goes_with_its_power_up() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut world = World::new();
+    world.init_resource::<Models>();
+    world.init_resource::<Emitters>();
+    let of = world.spawn_empty().id();
+    world.despawn(of);
+    let dressing = || Dressing {
+        of,
+        offset: Vec3::ZERO,
+        last: Vec3::ZERO,
+        aimed: false,
+        sized: None,
+    };
+    let emitter = world.spawn((dressing(), Transform::default())).id();
+    let model = world
+        .spawn((dressing(), Transform::default(), Visibility::default()))
+        .id();
+    world.run_system_once(dress_actions).unwrap();
+    assert!(world.get_entity(emitter).is_err() && world.get_entity(model).is_err());
 }
