@@ -1,6 +1,9 @@
 //! The original game's race display (`RaceHud`), drawn with its own fonts, pictures
 //! and words: place and lap times along the top, the held power-up bottom left, a map
 //! of the circuit or a speedometer bottom right, and the countdown and finish banners.
+//!
+//! The circuits of the port's own have no picture for a map, so one is drawn of the
+//! road they are laid out with (`sketch`), which is the port's own.
 
 use crate::assets::{
     Jam,
@@ -156,6 +159,8 @@ pub fn load(
     settings: Res<Settings>,
     mut images: ResMut<Assets<Image>>,
     mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+    track: Option<Res<crate::track::Track>>,
+    variant: Res<crate::variant::Variant>,
 ) {
     commands.insert_resource(State::default());
     commands.remove_resource::<Art>();
@@ -239,6 +244,11 @@ pub fn load(
                 pixels,
                 [number(0), number(1), number(2), number(3)],
             ))
+        })
+        .or_else(|| {
+            // One of the port's own circuits: a map drawn of its road.
+            let built = circuits.0[settings.circuit].race.is_none();
+            track.as_deref().filter(|_| built).map(|track| sketch(track, variant.mirror))
         });
     let turning = map.as_ref().map(|(pixels, _)| {
         let pane = Pixels {
@@ -273,6 +283,69 @@ pub fn load(
         white,
         arrow,
     });
+}
+
+/// How many pixels the longer side of a map drawn by `sketch` is, how much ground is
+/// left round the road, in the game's units, and how wide the road and the dark edge
+/// on either side of it are drawn, in pixels.
+const SKETCH: f32 = 128.0;
+const SKETCH_MARGIN: f32 = 12.0;
+const SKETCH_ROAD: f32 = 1.6;
+const SKETCH_EDGE: f32 = 1.2;
+
+/// A map of a circuit that has no picture for one: its road and byways as a white
+/// line edged in grey, as the original's maps are, with a bar across the start, and
+/// the bounds of the ground it shows as a race's definition gives them (west, north,
+/// east, south). `mirror` is whether the race is, which turns the display's map over.
+fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
+    // East and north of a place, in the game's units.
+    let flat = |p: &Vec3| Vec2::new(p.x, if mirror { p.z } else { -p.z }) / UNIT;
+    let mut lines: Vec<Vec<Vec2>> = vec![track.pts.iter().map(flat).collect()];
+    // The road comes back to where it began.
+    let first = lines[0][0];
+    lines[0].push(first);
+    lines.extend(track.branches.iter().map(|b| b.pts.iter().map(flat).collect()));
+    let every = || lines.iter().flatten().copied();
+    let low = every().fold(Vec2::MAX, Vec2::min) - SKETCH_MARGIN;
+    let high = every().fold(Vec2::MIN, Vec2::max) + SKETCH_MARGIN;
+    let range = high - low;
+    let per_unit = SKETCH / range.max_element();
+    let size = (range * per_unit).ceil().max(Vec2::ONE).as_uvec2();
+    // A pixel's place for a place on the ground: north is the top of the picture.
+    let pixel = |g: Vec2| Vec2::new(g.x - low.x, high.y - g.y) * per_unit;
+    let lines: Vec<Vec<Vec2>> = lines
+        .iter()
+        .map(|line| line.iter().map(|g| pixel(*g)).collect())
+        .collect();
+    let away = |p: Vec2, a: Vec2, b: Vec2| {
+        let along = ((p - a).dot(b - a) / (b - a).length_squared().max(1e-6)).clamp(0.0, 1.0);
+        p.distance(a + (b - a) * along)
+    };
+    // The bar across the start, square to the road there.
+    let across = (lines[0][1] - lines[0][0]).normalize_or(Vec2::X).perp() * (SKETCH_ROAD + 2.5);
+    let bar = (lines[0][0] - across, lines[0][0] + across);
+    let mut rgba = vec![0; (size.x * size.y * 4) as usize];
+    for (at, colour) in rgba.chunks_exact_mut(4).enumerate() {
+        let p = Vec2::new((at as u32 % size.x) as f32, (at as u32 / size.x) as f32) + 0.5;
+        let road = lines
+            .iter()
+            .flat_map(|line| line.windows(2))
+            .map(|ends| away(p, ends[0], ends[1]))
+            .fold(f32::MAX, f32::min);
+        if away(p, bar.0, bar.1) < 1.0 {
+            colour.copy_from_slice(&[0, 0, 160, 255]);
+        } else if road < SKETCH_ROAD {
+            colour.copy_from_slice(&[255; 4]);
+        } else if road < SKETCH_ROAD + SKETCH_EDGE {
+            colour.copy_from_slice(&[96, 96, 96, 255]);
+        }
+    }
+    let pixels = Pixels {
+        width: size.x,
+        height: size.y,
+        rgba,
+    };
+    (pixels, [low.x, high.y, high.x, low.y])
 }
 
 /// How many pixels across the picture of the turning map's window is.
@@ -1139,4 +1212,27 @@ pub fn draw(
             root.spawn(node);
         }
     });
+}
+
+#[cfg(test)]
+#[test]
+fn a_built_circuit_has_a_map_of_its_road() {
+    use crate::track::{Layout, Track};
+    for layout in [Layout::Brick, Layout::FigureEight, Layout::Gauntlet, Layout::HelterSkelter] {
+        let track = Track::built(layout);
+        let (map, [west, north, east, south]) = sketch(&track, false);
+        assert_eq!(map.width.max(map.height), SKETCH as u32);
+        let range = Vec2::new(east - west, north - south);
+        let lines = std::iter::once(&track.pts).chain(track.branches.iter().map(|b| &b.pts));
+        for p in lines.flatten() {
+            // Where the display puts a car that is here: so far from the map's
+            // bottom right corner, as a share of the map.
+            let from_corner = Vec2::new(p.x / UNIT - east, south + p.z / UNIT) / range;
+            let at = (Vec2::ONE + from_corner) * Vec2::new(map.width as f32, map.height as f32);
+            let (x, y) = (at.x as u32, at.y as u32);
+            assert!(x < map.width && y < map.height, "{layout:?} {p}");
+            let alpha = map.rgba[((y * map.width + x) * 4 + 3) as usize];
+            assert_eq!(alpha, 255, "{layout:?}: no road drawn under {p}");
+        }
+    }
 }

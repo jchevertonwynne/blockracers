@@ -23,7 +23,8 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   corners, each so far round the lap). The computer's cars take the byways
   (`kart::Ai::byway`), `items::laid` puts the bricks where those features are,
   `src/gauntlet.rs` stands hazards of the game's round each, and `src/helter.rs` is the
-  helter skelter's scenery.
+  helter skelter's scenery. They have no picture for the race display's map, so one
+  is drawn of the road (`hud::original::sketch`).
 - **Built cars:** `src/build.rs` has the rules of putting bricks on a chassis, the
   bytes a car is saved as and the model made of one, and a racer's minifigure;
   `src/assets/leb.rs`, `gcb.rs` and `lrs.rs` read the bricks, the minifigure's heads
