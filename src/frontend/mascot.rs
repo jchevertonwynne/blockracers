@@ -72,7 +72,7 @@ pub struct Standing;
 
 /// The scene's camera: where it is, the way it looks, what is up to it and how
 /// wide it sees, in the game's own terms.
-fn camera(tokens: &[Token]) -> Option<(Vec3, Vec3, Vec3, f32)> {
+pub(super) fn camera(tokens: &[Token]) -> Option<(Vec3, Vec3, Vec3, f32)> {
     let number = |key: u16, n: usize| {
         let at = tokens.iter().position(|t| *t == Token::Key(key))?;
         match tokens.get(at + 1 + n)? {

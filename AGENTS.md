@@ -13,6 +13,9 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
 - **Reference source:** the isledecomp/racers decompilation, checked out at
   `target/ref/racers` (`LEGORacers/src`, `common/`, `GolDP/`). It lives under `target/`,
   so **`cargo clean` deletes it** — don't run it without re-cloning afterwards.
+- **What is left:** `REMAINING.md` lists what of the original is not ported yet, the
+  stand-ins and what is left out on purpose. Read it instead of surveying again, and
+  keep it up to date as things are ported or gaps are found.
 - **Code:** `src/assets/` holds the file-format readers; everything else in `src/` is
   the game. Each module's header comment says which part of the original it follows.
 - **Our own circuits:** `src/track.rs` lays out the four built here (`track::Layout`) and
@@ -69,12 +72,26 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   camera of its own, as the room's portraits are.
 - **Models on the menus:** each is drawn onto a picture by a camera of its own, on
   a render layer of its own: `portraits.rs` (7), `mascot.rs` (8), `circuit.rs` (9,
-  the race pages' view of the circuit), `parts.rs` (10, the driver page's parts)
-  and `licence.rs` (11, the licence's photograph), all in `src/frontend/`. A query
-  for the screen's own `Camera3d` must leave out those with `RenderLayers`, or it
-  stops matching one camera once a second is there. Not drawn: the bricks page's
-  carousel of bricks, the garage's own racer and car slots, and the race's mascot
-  in the circuit's view.
+  the race pages' view of the circuit, with the race's mascot stood in it and the
+  frame's lights on it; the time race page's mascot is Veronica Voltage),
+  `parts.rs` (10, the driver page's parts), `licence.rs` (11, the licence's
+  photograph), `carousel.rs` (12, the bricks page's row of bricks) and `stage.rs`
+  (13, the racer and car of the garage and the racer page, in the set of
+  `RS_SET/RACER.WDB`), all in `src/frontend/`. A query for the screen's own
+  `Camera3d` must leave out those with `RenderLayers`, or it stops matching one
+  camera once a second is there.
+- **The idle demo:** `src/frontend/idle.rs`. The main menu left for sixty seconds
+  goes to a race of the first circuit with the computer driving every car and
+  "DEMO" flashing over it (`Idle::running` makes `Race::demo`); any key ends it.
+  Keys on the menu don't put the wait back, as they don't in the original; leaving
+  the page does. The settings are put back as they were afterwards.
+- **Language:** `Settings::language` (an index into `assets::font::LANGUAGES`,
+  picked on the options' language page) is the folder words come from:
+  `/MENUDATA/<lang>` for the menus, `/GAMEDATA/COMMON/<lang>` for the race display
+  and the loading screen, `<film>/<LANG>.SRF` for a film's words
+  (`Film::load_in`). Nine are offered; Finnish is in the archive and not offered,
+  as in the original. The token reader takes strings as Latin-1. Drivers' names
+  and the port's own pages are English whatever is chosen.
 - **The build menu's other pages:** the licence picks the face its driver pulls
   (`Cosmetics::expression`, worn in the menus and not in a race) and takes the
   original's cheat codes as its name (`src/cheats.rs`: they last the session, a
@@ -189,12 +206,13 @@ menu instead. These combine with it:
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |
 | `BRICK_TIME=1` | time race |
-| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|controls\|award\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks` | menu page to open on; the last five are of the build menu, with the racer `BRICK_RACER` names on the bench; `award` is a circuit won, as it is the first time the first is: its film (eleven and a half seconds), then the page that says what was won |
+| `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|controls\|award\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks\|language` | menu page to open on; `language` is the options' page, where `Right` and `Left` change it (a demo reads no settings, so that is how one is put in another language); the five before it are of the build menu, with the racer `BRICK_RACER` names on the bench; `award` is a circuit won, as it is the first time the first is: its film (eleven and a half seconds), then the page that says what was won |
 | `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brick_racers_garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
 | `BRICK_FILM=C_AWARD1` | a film to show as the menu opens, by its folder in `/MENUDATA` (`C_AWARD1` to `C_AWARD4` are the circuit's places, `WINCAR` a champion's car set won, `WINCAR:c3` being the fourth circuit's, `WINRRCAR` Rocket Racer's, which is thirty-seven seconds, `WINVVCAR` Veronica Voltage's, `CIRCUIT1` to `CIRCUIT7` those before each circuit, `LEGAL` the opening notice and `CREDITS` the credits, which are two minutes; a key ends it after a second) |
 | `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brick_racers_progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
 | `BRICK_CHEATS=FSTFRWRD,NWHLS` | the licence's cheat codes, as if each were typed as its name (`NSLWJ`, `FLYSKYHGH`, `PGLLRD`, `PGLLYLL`, `PGLLGRN`, `LNFRRRM`, `RPCRNLY`, `MXPMX`, `FSTFRWRD`, `NWHLS`, `NCHSSS`, `NDRVR`; `NMRCHTS` clears them) |
 | `BRICK_LOADING=4` | begin on the loading screen and hold it that many seconds of the real clock, its ticks filling in (demos otherwise skip it); `0` shows the load itself, as long as it takes |
+| `BRICK_IDLE=2` | how many seconds the main menu waits before its demo race (sixty without it), and lets a demo run go to one, which it otherwise never does |
 | `BRICK_RACER=4` | which of the garage's racers the player races as, counted from one |
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |

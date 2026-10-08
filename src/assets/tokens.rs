@@ -49,7 +49,8 @@ impl Lexer<'_> {
         let token = match code {
             0x02 => {
                 let len = self.d[self.at..].iter().position(|&b| b == 0)?;
-                let s = String::from_utf8_lossy(&self.d[self.at..self.at + len]).into_owned();
+                // The files are Latin-1: a font names its accented glyphs by their bytes.
+                let s: String = self.d[self.at..self.at + len].iter().map(|&b| b as char).collect();
                 self.at += len + 1;
                 Token::Str(s)
             }

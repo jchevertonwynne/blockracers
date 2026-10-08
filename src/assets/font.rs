@@ -253,3 +253,52 @@ fn menu_fonts_and_strings_load() {
         println!("{image}: {}x{}", pixels.width, pixels.height);
     }
 }
+
+/// The folders the game's words are kept in, one to a language, in the order the
+/// language page lists them (`g_menuLanguageDirectories`). The menu's are in
+/// `/MENUDATA/<folder>`, the race's in `/GAMEDATA/COMMON/<folder>`, and a film's
+/// words in `<film>/<folder>.SRF`.
+pub const LANGUAGES: [&str; 9] = [
+    "english", "spanish", "french", "german", "italian", "danish", "swedish", "norwegi", "dutch",
+];
+
+/// The upper-case folder of a language, as the archive spells it.
+pub fn language_folder(language: usize) -> String {
+    LANGUAGES[language.min(LANGUAGES.len() - 1)].to_uppercase()
+}
+
+#[cfg(test)]
+#[test]
+fn every_language_has_its_words() {
+    let Some(jam) = Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
+    let english = load_strings(jam.get("/MENUDATA/ENGLISH/MENUTEXT.SRF").unwrap());
+    let game = load_strings(jam.get("/GAMEDATA/COMMON/ENGLISH/GAME.SRF").unwrap());
+    let circuits = load_strings(jam.get("/MENUDATA/ENGLISH/CIRCUIT.SRF").unwrap());
+    for n in 0..LANGUAGES.len() {
+        let folder = language_folder(n);
+        let menu = format!("/MENUDATA/{folder}");
+        let strings = load_strings(jam.get(&format!("{menu}/MENUTEXT.SRF")).unwrap());
+        assert_eq!(strings.len(), english.len(), "{folder}");
+        assert_eq!(
+            load_strings(jam.get(&format!("{menu}/CIRCUIT.SRF")).unwrap()).len(),
+            circuits.len(),
+            "{folder}"
+        );
+        assert_eq!(load_fonts(&jam, &menu, "GFONTS.FDB").len(), 4, "{folder}");
+        let race = format!("/GAMEDATA/COMMON/{folder}");
+        let words = load_strings(jam.get(&format!("{race}/GAME.SRF")).unwrap());
+        assert_eq!(words.len(), game.len(), "{folder}");
+        assert!(!load_fonts(&jam, &race, "LEGOFNTS.FDB").is_empty(), "{folder}");
+        // The language page's own labels name each language in itself.
+        assert!(!strings[157 + n].is_empty(), "{folder}");
+    }
+    assert_eq!(english[157], "ENGLISH");
+    let spanish = load_strings(jam.get("/MENUDATA/SPANISH/MENUTEXT.SRF").unwrap());
+    assert_eq!(spanish[158], "ESPAÑOL");
+    assert_ne!(spanish[34], english[34]);
+    // The accented letters the words use have glyphs, as the fonts name them.
+    let fonts = load_fonts(&jam, "/MENUDATA/SPANISH", "GFONTS.FDB");
+    assert!(fonts["font_ths"].glyph('Ñ').is_some());
+}

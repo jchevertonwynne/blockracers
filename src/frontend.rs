@@ -16,7 +16,7 @@
 
 use crate::assets::{
     Jam,
-    font::{Font, load_fonts, load_strings},
+    font::{Font, language_folder, load_fonts, load_strings},
     image::decode_bmp,
     lrs::Cosmetics,
     tokens::{Token, tokenize},
@@ -48,16 +48,21 @@ use bevy::{
 };
 use std::collections::HashMap;
 
+mod carousel;
 mod circuit;
+pub mod idle;
 mod licence;
 mod mascot;
 mod parts;
 mod portraits;
+mod stage;
 mod workshop;
 use circuit::Preview;
 use mascot::Mascot;
 use parts::Parts;
 use portraits::Portraits;
+use stage::Stage;
+use carousel::Bricks;
 pub(crate) use workshop::Bench;
 
 /// The original lays its menus out on a screen this size.
@@ -100,6 +105,8 @@ mod text {
     pub const TIME_TRIAL_WON: usize = 73;
     pub const NEW_CIRCUIT: usize = 124;
     pub const LANGUAGE: usize = 156;
+    /// The first of the nine names of languages, each in itself.
+    pub const LANGUAGES: usize = 157;
 }
 
 /// The pictures on the circuit selector, by which of the game's circuits a race is
@@ -122,6 +129,8 @@ enum Page {
     GameOptions,
     VideoOptions,
     AudioOptions,
+    /// The original's `PickLanguageScreen`: which language the game's words are in.
+    Language,
     /// The original's `ControlConfigScreen`: what the keys and a pad's buttons do.
     Controls,
     /// What a circuit raced to the end, or the last record beaten, has won, said
@@ -361,6 +370,8 @@ enum Action {
     Collect,
     /// Seeing who made the game.
     Credits,
+    /// On the language page: which language the words are in.
+    Language,
 }
 
 enum Widget {
@@ -400,6 +411,10 @@ pub struct Art {
     layouts: HashMap<&'static str, HashMap<String, [f32; 4]>>,
     pictures: HashMap<String, (Handle<Image>, Vec2)>,
     written: HashMap<(String, String, bool), (Handle<Image>, Vec2)>,
+    /// Which of the languages the fonts and strings are in.
+    language: usize,
+    /// `CIRCUIT.SRF` in that language: the names of the circuits.
+    circuit_names: Vec<String>,
 }
 
 #[derive(Resource, Default)]
@@ -427,8 +442,17 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Mascot>()
         .init_resource::<Preview>()
         .init_resource::<Parts>()
+        .init_resource::<Bricks>()
+        .init_resource::<Stage>()
         .init_resource::<licence::Photo>()
-        .add_systems(OnEnter(Screen::Menu), enter)
+        .insert_resource(idle::Idle::from_env())
+        .add_systems(OnEnter(Screen::Menu), (idle::restore, enter).chain())
+        .add_systems(
+            Update,
+            idle::watch
+                .run_if(in_state(Screen::Menu))
+                .run_if(resource_exists::<Art>),
+        )
         .add_systems(
             OnExit(Screen::Menu),
             (
@@ -438,12 +462,15 @@ pub fn plugin(app: &mut App) {
                 mascot::put_away,
                 circuit::put_away,
                 parts::put_away,
+                carousel::put_away,
+                stage::put_away,
                 licence::put_away,
             ),
         )
         .add_systems(
             Update,
             (
+                localise,
                 input,
                 arrive,
                 ride,
@@ -452,6 +479,11 @@ pub fn plugin(app: &mut App) {
                 mascot::dress,
                 circuit::keep,
                 parts::keep,
+                carousel::keep,
+                carousel::spin,
+                stage::keep,
+                stage::idle,
+                stage::dress,
                 circuit::dress,
                 licence::keep,
                 licence::dress,
@@ -462,6 +494,14 @@ pub fn plugin(app: &mut App) {
                 .run_if(in_state(Screen::Menu))
                 .run_if(resource_exists::<Art>),
         );
+}
+
+/// Keeps the menus' words in the language the settings name.
+fn localise(mut art: ResMut<Art>, settings: Res<Settings>, mut menu: ResMut<Menu>) {
+    if art.language != settings.language {
+        art.speak(settings.language);
+        menu.drawn = false;
+    }
 }
 
 /// The rectangles a layout file gives its widgets: `key "name" { 0x36 { 0x2f l t r b`.
@@ -496,11 +536,7 @@ fn load_art() -> Option<Art> {
     let path =
         std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
     let jam = Jam::open(path)?;
-    let fonts = load_fonts(&jam, &format!("{DIR}/ENGLISH"), "GFONTS.FDB");
-    let strings = jam
-        .get(&format!("{DIR}/ENGLISH/MENUTEXT.SRF"))
-        .map(load_strings)
-        .unwrap_or_default();
+    let (fonts, strings, circuit_names) = words(&jam, 0);
     let mut layouts = HashMap::new();
     for (screen, file) in [
         ("main", "MAINMENU"),
@@ -512,6 +548,7 @@ fn load_art() -> Option<Art> {
         ("drvrlice", "DRVRLICE"),
         ("editcar", "EDITCAR"),
         ("carbuild", "CARBUILD"),
+        ("picklang", "PICKLANG"),
     ] {
         layouts.insert(
             screen,
@@ -550,7 +587,25 @@ fn load_art() -> Option<Art> {
         layouts,
         pictures: HashMap::new(),
         written: HashMap::new(),
+        language: 0,
+        circuit_names,
     })
+}
+
+/// The fonts, strings and circuit names a language has in `/MENUDATA`
+/// (`MenuManager::LoadLocalizedMenuResources`: `GFonts`, `menutext.srf`, `circuit.srf`).
+fn words(jam: &Jam, language: usize) -> (HashMap<String, Font>, Vec<String>, Vec<String>) {
+    let dir = format!("{DIR}/{}", language_folder(language));
+    let table = |file: &str| {
+        jam.get(&format!("{dir}/{file}"))
+            .map(load_strings)
+            .unwrap_or_default()
+    };
+    (
+        load_fonts(jam, &dir, "GFONTS.FDB"),
+        table("MENUTEXT.SRF"),
+        table("CIRCUIT.SRF"),
+    )
 }
 
 fn image(
@@ -609,6 +664,37 @@ impl Art {
 
     fn string(&self, index: usize) -> String {
         self.strings.get(index).cloned().unwrap_or_default()
+    }
+
+    /// The language the menus are in.
+    pub fn language(&self) -> usize {
+        self.language
+    }
+
+    /// Puts the menus' words in a language, as the original does when the language
+    /// page has changed it. A language whose files are missing leaves the words as they are.
+    fn speak(&mut self, language: usize) {
+        let (fonts, strings, circuit_names) = words(&self.jam, language);
+        if !fonts.is_empty() && !strings.is_empty() {
+            (self.fonts, self.strings, self.circuit_names) = (fonts, strings, circuit_names);
+            self.written.clear();
+        }
+        self.language = language;
+    }
+
+    /// What circuit `index` of the menu's is called, in the language of the menus.
+    fn circuit_name(&self, circuits: &Circuits, index: usize) -> String {
+        let circuit = &circuits.0[index];
+        self.circuit(&circuit.race)
+            .unwrap_or_else(|| circuit.name.clone())
+    }
+
+    /// What a circuit of the game's is called, in the language of the menus: the game's
+    /// 12 races in turn from the fifth of `CIRCUIT.SRF`, then Rocket Racer's.
+    fn circuit(&self, race: &Option<String>) -> Option<String> {
+        let at = crate::world::circuit_index(race.as_deref()?)?;
+        let at = if at < 12 { 4 + at } else { 28 };
+        self.circuit_names.get(at).map(|name| name.trim().to_string())
     }
 
     /// A widget's rectangle on a screen.
@@ -727,7 +813,7 @@ fn items(
                 Action::Race
             };
             let icon = CIRCUIT_ICONS[group(circuits, settings.circuit)].to_string();
-            let name = circuits.0[settings.circuit].name.clone();
+            let name = art.circuit_name(circuits, settings.circuit);
             vec![
                 selector(
                     art.place("race", "selector"),
@@ -819,7 +905,13 @@ fn items(
                 Action::Nothing,
                 None,
             ),
-            button("options", "language", text::LANGUAGE, Action::Nothing, None),
+            button(
+                "options",
+                "language",
+                text::LANGUAGE,
+                Action::Go(Page::Language),
+                None,
+            ),
             button("options", "credits", text::CREDITS, Action::Credits, None),
             back("options", Page::Main),
         ],
@@ -909,6 +1001,25 @@ fn items(
                 .chain(std::iter::once(out))
                 .collect()
         }
+        Page::Language => vec![
+            // `PickLanguageScreen::CreateWidgets`: the carousel of the nine languages'
+            // names in a selector, and the way back to the options.
+            selector(
+                art.place("picklang", "langcont"),
+                None,
+                art.string(text::LANGUAGES + settings.language),
+                Action::Language,
+            ),
+            Item {
+                widget: Widget::Button {
+                    at: art.place("picklang", "goback").min,
+                    label: art.string(text::OPTIONS_BANNER),
+                    icon: Some("txtarol"),
+                },
+                action: Action::Go(Page::Options),
+                enabled: true,
+            },
+        ],
         Page::Award => vec![Item {
             widget: Widget::Button {
                 at: art.place("options", "goback").min,
@@ -1808,6 +1919,7 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
         }
         // What each binding is for is in `notes`, which can write from the left.
         Page::Controls => vec![banner(text::CONTROLS[0])],
+        Page::Language => vec![banner(text::LANGUAGE)],
         Page::AudioOptions => vec![
             banner(text::AUDIO_OPTIONS),
             beside("mvoltext", art.string(text::MUSIC_VOLUME)),
@@ -1898,6 +2010,7 @@ fn enter(
         Ok("video") => Page::VideoOptions,
         Ok("extras") => Page::Extras,
         Ok("controls") => Page::Controls,
+        Ok("language") => Page::Language,
         Ok("online") => Page::Online,
         Ok("host") => Page::Host,
         Ok("join") => Page::Join,
@@ -2340,6 +2453,7 @@ fn input(
             | Page::VideoOptions
             | Page::AudioOptions
             | Page::Extras
+            | Page::Language
             | Page::Controls => Some(Page::Options),
             Page::Award => {
                 progress.award = None;
@@ -2458,6 +2572,9 @@ fn input(
             }
             Action::Extra(extra) => settings.turn(extra, change),
             Action::Device => devices.turn(change),
+            Action::Language => {
+                settings.language = turn(settings.language, crate::assets::font::LANGUAGES.len())
+            }
             // Fewer than are here already puts nobody out, and lets nobody else in.
             Action::Limit => {
                 session.limit = Some(
@@ -2744,7 +2861,7 @@ fn draw(
         showing,
         mascot,
         preview,
-        parts,
+        (parts, bricks, stage),
         photo,
     ): (
         Res<Role>,
@@ -2760,7 +2877,7 @@ fn draw(
         Res<Showing>,
         Res<Mascot>,
         Res<Preview>,
-        Res<Parts>,
+        (Res<Parts>, Res<Bricks>, Res<Stage>),
         Res<licence::Photo>,
     ),
 ) {
@@ -2858,6 +2975,16 @@ fn draw(
         for (picture, area) in parts.pictures(&art) {
             pieces.push((picture, area, Color::WHITE, false));
         }
+    }
+    if menu.page == Page::Bricks {
+        // `CarBuildScreen::CreateWidgets`: the bricks on offer, in a row.
+        if let Some((picture, area)) = bricks.picture(&art) {
+            pieces.push((picture, area, Color::WHITE, false));
+        }
+    }
+    if let (Some(picture), true) = (&stage.picture, matches!(menu.page, Page::Garage | Page::Racer | Page::Scrap)) {
+        // `RacerModelScreenBase::CreateWidgets`: the racer in the showcase.
+        pieces.push((picture.clone(), art.place("garage", "showcase"), Color::WHITE, false));
     }
     if menu.page == Page::Licence {
         // `DriverLicenseScreen::CreateWidgets`: the trophy the racer has for each
@@ -2969,8 +3096,8 @@ fn draw(
                 circuits
                     .0
                     .iter()
-                    .find(|c| c.race.as_ref() == Some(folder))
-                    .map_or(folder.clone(), |c| c.name.clone())
+                    .position(|c| c.race.as_ref() == Some(folder))
+                    .map_or(folder.clone(), |n| art.circuit_name(&circuits, n))
             };
             let rounds = championship
                 .series
@@ -2980,7 +3107,7 @@ fn draw(
         } else if menu.page == Page::TimeRace {
             format!(
                 "{}\n\nLAPS {}",
-                circuits.0[settings.circuit].name,
+                art.circuit_name(&circuits, settings.circuit),
                 crate::time_race::LAPS
             )
         } else {
@@ -3008,7 +3135,7 @@ fn draw(
                 extras.push(format!("SPEED {}", settings.shown(Extra::Speed)));
             }
             let mut lines = vec![
-                circuits.0[settings.circuit].name.clone(),
+                art.circuit_name(&circuits, settings.circuit),
                 format!("LAPS {}", settings.laps()),
                 format!("OPPONENTS {}", settings.opponents),
                 DIFFICULTIES[settings.difficulty].0.to_string(),

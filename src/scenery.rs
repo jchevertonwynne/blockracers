@@ -130,6 +130,11 @@ impl PropDef {
         (self.position, self.rotation) = (other.position, other.rotation);
     }
 
+    /// Stands it at `position`, turned by `rotation`, in the game's axes.
+    pub fn place(&mut self, position: Vec3, rotation: Quat) {
+        (self.position, self.rotation) = (position, rotation);
+    }
+
     /// Has one of its materials ready to play through a material animation's
     /// tracks, which `Recast` sets going.
     pub fn reel(&mut self, material: usize, reels: Arc<Vec<ReelDef>>) {

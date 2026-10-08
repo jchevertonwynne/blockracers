@@ -421,7 +421,10 @@ fn main() {
             Update,
             (
                 video::apply,
-                menu::keep.run_if(move || keeping).run_if(not(net::online)),
+                menu::keep
+                    .run_if(move || keeping)
+                    .run_if(not(net::online))
+                    .run_if(not(frontend::idle::running)),
             ),
         )
         .init_resource::<time_race::TimeRace>()
@@ -490,6 +493,8 @@ fn main() {
             (
                 // Online the host's `net::host::flow` runs the race, and the race is
                 // stepped by `net::plugin` at its own rate.
+                // The main menu's demo race ends at a key.
+                frontend::idle::end_demo,
                 race_flow.run_if(not(net::online)),
                 // A replay shows the race again rather than running it on.
                 (
@@ -590,6 +595,7 @@ fn load_race(
     circuits: Res<Circuits>,
     settings: Res<Settings>,
     demo: Option<Res<DemoShot>>,
+    idle: Res<frontend::idle::Idle>,
     championship: Res<championship::Championship>,
     mut rig: ResMut<camera::Rig>,
     role: Res<net::Role>,
@@ -693,8 +699,9 @@ fn load_race(
         countdown: countdown(&settings),
         time: 0.0,
         // Online the cars are driven by whoever is at them, a demo's too.
-        demo: demo.is_some() && *role == net::Role::Offline,
-        quick: demo.is_some() && std::env::var("BRICK_START").is_err(),
+        // The main menu's demo race is the computer's all the way, from the drop-in.
+        demo: (demo.is_some() || idle.running) && *role == net::Role::Offline,
+        quick: demo.is_some() && !idle.running && std::env::var("BRICK_START").is_err(),
     });
 }
 
@@ -867,16 +874,21 @@ fn race_flow(
     mut championship: ResMut<championship::Championship>,
     circuits: Res<Circuits>,
     mut settings: ResMut<Settings>,
-    (mut replay, photo, mut progress, mut garage, mut showing): (
+    (mut replay, photo, mut progress, mut garage, mut showing, idle): (
         ResMut<replay::Replay>,
         Res<replay::Photo>,
         ResMut<progress::Progress>,
         ResMut<garage::Garage>,
         ResMut<film::Showing>,
+        Res<frontend::idle::Idle>,
     ),
 ) {
     // In photo mode the keys are the camera's.
     if photo.0.is_some() {
+        return;
+    }
+    // A key has ended the main menu's demo race: it is not to pause or anything else.
+    if idle.running && keys.get_just_pressed().next().is_some() {
         return;
     }
     let mut restart = false;
@@ -960,7 +972,7 @@ fn race_flow(
         FINISH_WAIT
     };
     let over = race.phase == Phase::Finished
-        && !race.demo
+        && (!race.demo || idle.running)
         && !settings.time_race
         && !restart
         && since_finish.is_some_and(|since| since >= wait);

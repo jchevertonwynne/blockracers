@@ -152,6 +152,9 @@ pub struct Settings {
     pub racer: usize,
     /// What the keys and a pad's buttons do in a race.
     pub controls: crate::input::Bindings,
+    /// Which of `assets::font::LANGUAGES` the game's words are in
+    /// (`GameState::m_languageIndex`, the original's English to begin with).
+    pub language: usize,
 }
 
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
@@ -251,6 +254,7 @@ impl Settings {
             car: 0,
             racer: 0,
             controls: default(),
+            language: 0,
         }
     }
 
@@ -275,6 +279,7 @@ impl Settings {
             ("smoothing", on(self.smoothing)),
             ("car", self.car),
             ("racer", self.racer),
+            ("language", self.language),
         ];
         let numbers: String = kept
             .iter()
@@ -323,6 +328,9 @@ impl Settings {
                 // Past the game's drivers are the garage's racers, however many it has.
                 "car" => self.car = value,
                 "racer" => self.racer = value,
+                "language" if value < crate::assets::font::LANGUAGES.len() => {
+                    self.language = value
+                }
                 _ => {}
             }
         }
@@ -685,4 +693,18 @@ fn single_races_are_listed_in_their_circuits_order() {
     assert_eq!(listed[12], ("Rocket Racer Run", 3));
     // The built-in circuits come last, in a set of their own.
     assert_eq!((listed.len(), listed[13].1, listed[16].1), (17, 4, 4));
+}
+
+#[cfg(test)]
+#[test]
+fn the_language_is_kept_with_the_settings() {
+    let mut settings = Settings::new(&Circuits(Vec::new()));
+    assert_eq!(settings.language, 0);
+    settings.language = 7;
+    let mut back = Settings::new(&Circuits(Vec::new()));
+    back.read(&settings.write());
+    assert_eq!(back.language, 7);
+    // One past the nine the original lists is left alone.
+    back.read("language=9\n");
+    assert_eq!(back.language, 7);
 }

@@ -28,6 +28,8 @@ const COMMON: &str = "/GAMEDATA/COMMON";
 const HEIGHT: f32 = 480.0;
 /// Text sits this far from the top.
 const TOP: f32 = 7.0;
+/// `RaceSession::c_overlayBottomPadding`.
+const DEMO_PADDING: f32 = 5.0;
 const MAP_SIZE: f32 = 128.0;
 /// `g_hudMapDirectionScale`: how much of the screen one of the game's units is on the
 /// map that turns.
@@ -75,6 +77,7 @@ mod text {
     pub const LAP: usize = 39;
     pub const FINISH: usize = 40;
     pub const GO: usize = 41;
+    pub const DEMO: usize = 46;
     pub const CONTINUE: usize = 14;
     /// Each a pair of lines.
     pub const RECORD_STANDS: usize = 21;
@@ -159,7 +162,10 @@ pub fn load(
     let path =
         std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
     let Some(jam) = Jam::open(path) else { return };
-    let language = format!("{COMMON}/ENGLISH");
+    let language = format!(
+        "{COMMON}/{}",
+        crate::assets::font::language_folder(settings.language)
+    );
     let strings = jam
         .get(&format!("{language}/GAME.SRF"))
         .map(load_strings)
@@ -454,7 +460,7 @@ pub fn draw(
     pause: Res<crate::Pause>,
     championship: Res<crate::championship::Championship>,
     time_race: Res<crate::time_race::TimeRace>,
-    (variant, replay, role, watching, lineup, camera, cars, mut images): (
+    (variant, replay, role, watching, lineup, camera, cars, mut images, idle): (
         Res<crate::variant::Variant>,
         Res<crate::replay::Replay>,
         Res<crate::net::Role>,
@@ -463,6 +469,7 @@ pub fn draw(
         Single<(&Camera, &Transform), With<Camera3d>>,
         Query<(&Kart, &Transform), Without<Camera3d>>,
         ResMut<Assets<Image>>,
+        Res<crate::frontend::idle::Idle>,
     ),
 ) {
     for root in &roots {
@@ -509,6 +516,16 @@ pub fn draw(
         }
         Phase::Finished => frame.banner(&string(text::FINISH), banner_at, 1.0, Color::WHITE),
         _ => {}
+    }
+    // `RaceSession::DrawDemoText`: in the main menu's demo race, string 0x2e flashes
+    // at the foot of the picture, in the first font of the table, five from the edge.
+    if idle.words_shown() {
+        let words = string(text::DEMO);
+        let at = Vec2::new(
+            ((width - frame.width("font_ths", &words, 1.0)) / 2.0).floor(),
+            HEIGHT - line - DEMO_PADDING,
+        );
+        frame.write("font_ths", &words, at, 1.0, Color::WHITE);
     }
     if race.phase == Phase::Intro {
         *state = State {

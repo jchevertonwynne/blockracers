@@ -298,6 +298,30 @@ pub fn trophy(bench: &Bench, circuit: usize) -> usize {
 /// The part sets there are to build with, by their places among the sets: those
 /// every game begins with, those won, and any the car has a piece of already
 /// (`CarModelScreenBase::PopulateCategoryCarousel`).
+/// The bricks of the part set on offer, which of them is held, and the library they are
+/// from: what the carousel of bricks shows (`CarPartCarousel`).
+pub fn bricks(bench: &Bench) -> Option<(&Library, &[(u16, u8)], usize)> {
+    let kit = bench.kit.as_ref()?;
+    let set = kit.sets.get(bench.set)?;
+    Some((&kit.library, &set.choices, bench.brick))
+}
+
+/// The racer the garage's showcase has on show, on the pages that have one.
+pub fn showcased(
+    page: Page,
+    bench: &Bench,
+    garage: &Garage,
+    settings: &Settings,
+) -> Option<Racer> {
+    match page {
+        Page::Garage => garage.racing(settings).cloned(),
+        Page::Scrap if bench.ask == Ask::Delete => garage.racing(settings).cloned(),
+        Page::Racer => Some(bench.shown()),
+        Page::Scrap if matches!(bench.from, Page::Garage | Page::Racer) => Some(bench.shown()),
+        _ => None,
+    }
+}
+
 fn open_sets(bench: &Bench, progress: &Progress) -> Vec<usize> {
     let Some(kit) = &bench.kit else {
         return Vec::new();
@@ -572,14 +596,8 @@ pub fn items(
                 action: Action::Bench(act),
                 enabled: true,
             };
-            let held = bench.kit.as_ref().and_then(|kit| {
-                let set = kit.sets.get(bench.set)?;
-                Some(format!(
-                    "BRICK {} OF {}",
-                    bench.brick + 1,
-                    set.choices.len()
-                ))
-            });
+            // `piecesel`'s arrows are at either end of the row of bricks, `pieces`.
+            let row = art.place("carbuild", "pieces");
             vec![
                 selector(
                     art.place("carbuild", "sets"),
@@ -588,9 +606,9 @@ pub fn items(
                     Act::Set,
                 ),
                 selector(
-                    Rect::new(307.0, 66.0, 525.0, 98.0),
+                    Rect::new(row.min.x, row.min.y + 11.0, row.max.x, row.min.y + 43.0),
                     None,
-                    held.unwrap_or_default(),
+                    String::new(),
                     Act::Brick,
                 ),
                 icon("rotbrik", "rotateu", Act::Turn),
@@ -691,7 +709,20 @@ pub fn notes(
                     false,
                 )
             };
+            // Which brick of the set is held, under the row of them.
+            let held = bench.kit.as_ref().and_then(|kit| {
+                let set = kit.sets.get(bench.set)?;
+                Some(format!("BRICK {} OF {}", bench.brick + 1, set.choices.len()))
+            });
+            let row = art.place("carbuild", "pieces");
             vec![
+                (
+                    Rect::new(row.min.x + 32.0, row.max.y, row.max.x - 32.0, row.max.y + 24.0),
+                    held.unwrap_or_default(),
+                    "font_ths",
+                    LABEL,
+                    true,
+                ),
                 hint(0.0, "ARROWS MOVE"),
                 hint(1.0, "R TURN"),
                 hint(2.0, "ENTER ADD"),
@@ -1199,6 +1230,13 @@ pub fn show(
         lens.fov = PerspectiveProjection::default().fov;
     }
     clear.0 = WALL;
+    // The garage's pages have their racer in the showcase (`stage`).
+    if showcased(page, &bench, &garage, &settings).is_some() {
+        for exhibit in &exhibits {
+            commands.entity(exhibit).despawn();
+        }
+        return;
+    }
     let building = page == Page::Bricks;
     for mut table in &mut tables {
         table.rotation = if building {

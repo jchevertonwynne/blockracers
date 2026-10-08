@@ -212,9 +212,12 @@ fn show(
             key.or(Some([255, 0, 255])),
         )?;
         let (tick, _) = image(tick, &mut images);
-        let language = "/GAMEDATA/COMMON/ENGLISH";
+        let language = format!(
+            "/GAMEDATA/COMMON/{}",
+            crate::assets::font::language_folder(settings.language)
+        );
         let strings = load_strings(jam.get(&format!("{language}/GAME.SRF"))?);
-        let fonts = load_fonts(&jam, language, "LEGOFNTS.FDB");
+        let fonts = load_fonts(&jam, &language, "LEGOFNTS.FDB");
         let words = fonts
             .get("font_ths")?
             .render(strings.get(sheet.string)?, false);

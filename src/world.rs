@@ -919,6 +919,11 @@ const CIRCUIT_NAMES: [(&str, &str); 13] = [
     ("RACEC3R0", "Rocket Racer Run"),
 ];
 
+/// Where a race folder is among the game's circuits, in the order they are named.
+pub fn circuit_index(race: &str) -> Option<usize> {
+    CIRCUIT_NAMES.iter().position(|(folder, _)| *folder == race)
+}
+
 /// The circuits in the original game's archive, as (folder, display name).
 pub fn circuits() -> Vec<(String, String)> {
     let Some(jam) = open_jam() else {

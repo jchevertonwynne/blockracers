@@ -128,7 +128,7 @@ pub(crate) fn vec3(fields: &[Token], key: u16, from: usize) -> Option<Vec3> {
 }
 
 /// The turn of something that faces along `direction` with `up` over it.
-fn facing(direction: Vec3, up: Vec3) -> Quat {
+pub fn facing(direction: Vec3, up: Vec3) -> Quat {
     let x = direction.normalize_or(Vec3::X);
     let y = up.cross(x).normalize_or(Vec3::Y);
     Quat::from_mat3(&Mat3::from_cols(x, y, x.cross(y)))
@@ -345,7 +345,13 @@ const SPRAY: u16 = 0x3c;
 impl Film {
     /// The film in a folder of `/MENUDATA`, with the racer it is about made of
     /// these parts.
+    #[cfg(test)]
     pub fn load(jam: &Jam, request: &Request) -> Option<Film> {
+        Film::load_in(jam, request, 0)
+    }
+
+    /// The same film with its words in a language (`MenuSceneScreen::Initialize`).
+    pub fn load_in(jam: &Jam, request: &Request, language: usize) -> Option<Film> {
         let cosmetics = request.cosmetics;
         let dir = format!("{DIR}/{}", request.folder.to_uppercase());
         let file = jam.list(&dir).find(|f| f.ends_with(".CDB"))?.to_string();
@@ -433,7 +439,7 @@ impl Film {
             film.beams.push(Glow::of(fields));
         }
         film.worlds(jam, &dir, &worlds, (!request.own).then_some(cosmetics));
-        film.effects(jam, &dir);
+        film.effects(jam, &dir, language);
         // `AwardCinematicScreen::CreateWidgets`: of the words that name a champion,
         // only the beaten one's are left.
         let named = request.champion.as_ref().map(|code| format!("text{code}"));
@@ -617,7 +623,7 @@ impl Film {
     }
 
     /// What the film's marks set off, from its `.CEB` file.
-    fn effects(&mut self, jam: &Jam, dir: &str) {
+    fn effects(&mut self, jam: &Jam, dir: &str, language: usize) {
         let Some(file) = jam.list(dir).find(|f| f.ends_with(".CEB")) else {
             return;
         };
@@ -630,6 +636,16 @@ impl Film {
                     .unwrap_or_default()
             })
             .collect();
+        // A language other than the first has the film's words in its own table, which
+        // stands in for the film's (`MenuSceneScreen::Initialize` loads `<language>.srf`
+        // and keeps the film's own if it isn't there).
+        let strings = match language {
+            0 => strings,
+            _ => jam
+                .get(&format!("{dir}/{}.SRF", crate::assets::font::language_folder(language)))
+                .map(load_strings)
+                .map_or(strings, |table| vec![table]),
+        };
         for (name, fields) in entries(&tokens, SOUND) {
             let sound = number(fields, 0x30, 1).unwrap_or(0.0) as usize;
             self.effects.insert((SOUND, name), Effect::Sound(sound));
@@ -1064,7 +1080,7 @@ fn open(
         showing.next.clear();
         return;
     };
-    let Some(mut film) = Film::load(art.jam(), &request) else {
+    let Some(mut film) = Film::load_in(art.jam(), &request, art.language()) else {
         warn!("no film in {}", request.folder);
         return;
     };
