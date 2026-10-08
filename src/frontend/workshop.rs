@@ -174,6 +174,124 @@ pub struct Bench {
     /// The name left on the licence as the page was done with: it may be a cheat code
     /// (`crate::cheats`), which is taken from here.
     code: Option<String>,
+    /// The help the bricks page shows for what the pointer rests on.
+    pub tip: Tip,
+}
+
+/// How long the pointer rests on something before its help is shown, how soon after
+/// one help has gone the next comes, and how long a help stays, in milliseconds
+/// (`CarBuildScreenBase::Update`).
+const TIP_WAIT: f32 = 3000.0;
+const TIP_SOON: f32 = 250.0;
+const TIP_STAYS: f32 = 20000.0;
+/// The font help is written in (`g_carBuildHelpFontName`), and the colours of its
+/// box and of the border four pixels wide round it (`CarBuildScreenBase::Draw`).
+pub const TIP_FONT: &str = "font_hlp";
+pub const TIP_FILL: Color = Color::srgb(0.0, 0.0, 0.22);
+pub const TIP_EDGE: Color = Color::srgb(0.125, 0.11, 0.878);
+pub const TIP_BORDER: f32 = 4.0;
+
+/// The help of the page bricks are placed on: words about whatever the pointer has
+/// rested on for three seconds, shown beside it until the pointer leaves or twenty
+/// seconds are up. After `CarBuildScreenBase` (`ShowTooltip`, `HideTooltip`,
+/// `SuppressTooltip`, `Update`).
+#[derive(Default)]
+pub struct Tip {
+    /// What the pointer is on: which of the help's strings is its, and where it is.
+    over: Option<(usize, Rect)>,
+    rested: f32,
+    /// How long the help has been shown; nothing while it isn't, and less than
+    /// nothing once it has been shown its time and is not to come back.
+    shown: f32,
+    /// How long ago a help that was being read went, while the next would come at once.
+    soon: f32,
+    read: bool,
+}
+
+impl Tip {
+    /// The string of `CARBUILD.SRF` that is the help for one of the page's things
+    /// (the help numbers of `CARBUILD.MIB`, through `g_carBuildTextIds`).
+    pub(super) fn of(action: &Action) -> Option<usize> {
+        match action {
+            Action::Bench(Act::Set) => Some(0),
+            Action::Bench(Act::Brick) => Some(1),
+            Action::Bench(Act::Turn) => Some(3),
+            Action::Bench(Act::Add) => Some(4),
+            Action::Bench(Act::Undo) => Some(5),
+            _ => None,
+        }
+    }
+
+    fn hide(&mut self) {
+        (self.over, self.rested, self.shown) = (None, 0.0, 0.0);
+        self.soon = if self.read { 1.0 } else { 0.0 };
+    }
+
+    /// A frame of `ms` with the pointer on `over`. Whether what is shown changed.
+    pub fn update(&mut self, over: Option<(usize, Rect)>, ms: f32) -> bool {
+        let before = self.showing();
+        if self.soon > 0.0 {
+            self.soon += ms;
+            if self.soon > TIP_SOON {
+                self.soon = 0.0;
+            }
+        }
+        if self.over.map(|over| over.0) != over.map(|over| over.0) {
+            if self.shown != 0.0 || self.over.is_some() {
+                self.hide();
+            }
+            self.over = over;
+        }
+        if self.over.is_some() {
+            if self.shown == 0.0 {
+                self.rested += ms;
+                if self.rested >= TIP_WAIT || self.soon > 0.0 {
+                    (self.rested, self.shown, self.soon, self.read) = (TIP_WAIT, 1.0, 0.0, true);
+                }
+            } else if self.shown > 0.0 {
+                self.shown += ms;
+                if self.shown > TIP_STAYS {
+                    (self.shown, self.rested, self.soon, self.read) = (-1.0, 0.0, 0.0, false);
+                }
+            }
+        }
+        before != self.showing()
+    }
+
+    /// The help to show, and what it is about.
+    pub fn showing(&self) -> Option<(usize, Rect)> {
+        self.over.filter(|_| self.shown > 0.0)
+    }
+
+    /// Where a help of this size goes on a screen, for the thing it is about: to
+    /// the right of it if there is room, or else under it, over it or to the left
+    /// of it, and failing all of those in the middle. `line` is how tall the font is.
+    pub fn place(target: Rect, size: Vec2, line: f32, screen: Rect) -> Vec2 {
+        let beside = |from: f32, to: f32, length: f32, low: f32, high: f32| {
+            ((from + to - length) / 2.0).floor().clamp(low + line, (high - length - line).max(low + line))
+        };
+        let down = |x: f32| Vec2::new(x, beside(target.min.y, target.max.y, size.y, screen.min.y, screen.max.y));
+        let along = |y: f32| Vec2::new(beside(target.min.x, target.max.x, size.x, screen.min.x, screen.max.x), y);
+        if size.x + line * 2.0 < screen.max.x - target.max.x {
+            down(target.max.x + line)
+        } else if size.y + line * 2.0 < screen.max.y - target.max.y {
+            along(target.max.y + line)
+        } else if size.y + line * 2.0 < target.min.y - screen.min.y {
+            along(target.min.y - size.y - line)
+        } else if size.x + line * 2.0 < target.min.x - screen.min.x {
+            down(target.min.x - size.x - line)
+        } else {
+            (screen.min + (screen.size() - size) / 2.0).floor()
+        }
+    }
+
+    /// How wide a help's lines may be: so that it comes out about three times as
+    /// wide as it is tall, and between an eighth of the screen and all of it.
+    /// `long` is how wide the words are on one line.
+    pub fn wrap(long: f32, line: f32, screen: Rect) -> f32 {
+        let most = screen.width() - line * 2.0;
+        ((line + 1.0) * 3.0 * long).sqrt().floor().min(most).max((most / 8.0).floor())
+    }
 }
 
 impl Bench {
@@ -306,18 +424,24 @@ pub fn bricks(bench: &Bench) -> Option<(&Library, &[(u16, u8)], usize)> {
     Some((&kit.library, &set.choices, bench.brick))
 }
 
-/// The racer the garage's showcase has on show, on the pages that have one.
+/// The racer one of the build menu's sets has on show, on the pages that have one,
+/// and whether the set is the platform a driver is dressed on and not the
+/// garage's showcase.
 pub fn showcased(
     page: Page,
     bench: &Bench,
     garage: &Garage,
     settings: &Settings,
-) -> Option<Racer> {
+) -> Option<(Racer, bool)> {
     match page {
-        Page::Garage => garage.racing(settings).cloned(),
-        Page::Scrap if bench.ask == Ask::Delete => garage.racing(settings).cloned(),
-        Page::Racer => Some(bench.shown()),
-        Page::Scrap if matches!(bench.from, Page::Garage | Page::Racer) => Some(bench.shown()),
+        Page::Garage => Some((garage.racing(settings)?.clone(), false)),
+        Page::Scrap if bench.ask == Ask::Delete => Some((garage.racing(settings)?.clone(), false)),
+        Page::Racer => Some((bench.shown(), false)),
+        Page::Driver => Some((bench.shown(), true)),
+        Page::Scrap if matches!(bench.from, Page::Garage | Page::Racer) => {
+            Some((bench.shown(), false))
+        }
+        Page::Scrap if bench.from == Page::Driver => Some((bench.shown(), true)),
         _ => None,
     }
 }
@@ -1355,4 +1479,38 @@ pub fn put_away(
     for exhibit in &exhibits {
         commands.entity(exhibit).despawn();
     }
+}
+
+#[cfg(test)]
+#[test]
+fn help_comes_after_three_seconds_and_goes_with_the_pointer() {
+    let on = |help: usize| Some((help, Rect::new(100.0, 100.0, 132.0, 132.0)));
+    let mut tip = Tip::default();
+    // Nothing until the pointer has rested three seconds.
+    assert!(!tip.update(on(3), 2900.0) && tip.showing().is_none());
+    assert!(tip.update(on(3), 200.0));
+    assert_eq!(tip.showing().map(|shown| shown.0), Some(3));
+    // It goes as the pointer leaves, and the next thing's comes at once if soon.
+    assert!(tip.update(None, 16.0) && tip.showing().is_none());
+    assert!(tip.update(on(4), 100.0));
+    assert_eq!(tip.showing().map(|shown| shown.0), Some(4));
+    // Left a while, the wait is the whole three seconds again.
+    tip.update(None, 16.0);
+    tip.update(None, 300.0);
+    assert!(!tip.update(on(5), 100.0) && tip.showing().is_none());
+    assert!(tip.update(on(5), 3000.0));
+    // After twenty seconds it goes, and stays gone while the pointer stays.
+    assert!(tip.update(on(5), 20000.0) && tip.showing().is_none());
+    assert!(!tip.update(on(5), 5000.0) && tip.showing().is_none());
+
+    // Beside its thing if there is room there, and under it if there isn't.
+    let screen = Rect::new(0.0, 0.0, 640.0, 480.0);
+    let (size, line) = (Vec2::new(200.0, 60.0), 10.0);
+    let left = Rect::new(100.0, 100.0, 132.0, 132.0);
+    assert_eq!(Tip::place(left, size, line, screen), Vec2::new(142.0, 86.0));
+    let right = Rect::new(600.0, 100.0, 632.0, 132.0);
+    assert_eq!(Tip::place(right, size, line, screen), Vec2::new(430.0, 142.0));
+    // About three times as wide as tall, and never wider than the screen.
+    assert_eq!(Tip::wrap(1200.0, 11.0, screen), 207.0);
+    assert_eq!(Tip::wrap(100000.0, 11.0, screen), 618.0);
 }

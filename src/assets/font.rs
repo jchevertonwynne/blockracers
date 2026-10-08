@@ -80,6 +80,22 @@ impl Font {
         (line.chars().map(advance).sum::<i32>() - self.spacing).max(0) as u32
     }
 
+    /// `text` with its lines broken at spaces so that none is wider than `width`,
+    /// but for a word that is wider by itself.
+    pub fn wrapped(&self, text: &str, width: f32) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        for word in text.split_whitespace() {
+            match lines.last_mut() {
+                Some(line) if self.measure(&format!("{line} {word}")) <= width => {
+                    line.push(' ');
+                    line.push_str(word);
+                }
+                _ => lines.push(word.to_string()),
+            }
+        }
+        lines.join("\n")
+    }
+
     /// Draws `text`, one line under another, each centred if asked.
     pub fn render(&self, text: &str, centred: bool) -> Pixels {
         let text = text.to_uppercase();

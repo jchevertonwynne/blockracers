@@ -13,7 +13,8 @@ use crate::assets::{
 pub struct Driver {
     /// The game's short name for the driver, which its figure's files go by.
     pub code: String,
-    pub name: &'static str,
+    /// What the driver is called, in the language chosen.
+    pub name: String,
     /// The model of the driver's figure.
     pub figure: String,
     /// What the files of the car's body go by, less the `cm` they end in.
@@ -54,7 +55,9 @@ pub struct RaceEntry {
     pub mirrored: bool,
 }
 
-/// The drivers' names. The game shows faces, not names, so these are not in its data.
+/// The drivers by the game's short names for them, in the order the port offers them
+/// to race as, each with a name for a game that has none of the original's data. With
+/// it they are called what its own table says (`name`).
 pub const NAMES: [(&str, &str); 24] = [
     ("RR", "Rocket Racer"),
     ("VV", "Veronica Voltage"),
@@ -81,6 +84,46 @@ pub const NAMES: [(&str, &str); 24] = [
     ("GS", "Gail Storm"),
     ("NH", "Nova Hunter"),
 ];
+
+/// Which of the game's languages drivers are named in (`font::LANGUAGES`).
+static LANGUAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Sets the language drivers are named in from here on.
+pub fn set_language(language: usize) {
+    LANGUAGE.store(language, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What a driver is called in one of the game's languages: the string of that
+/// language's `DRIVERS.SRF` that the driver's entry numbers
+/// (`DriverCosmeticTable::GetStringBuffer`, which `RaceState` names a racer with).
+fn name_in(jam: &Jam, code: &str, language: usize) -> Option<String> {
+    let drivers = tokenize(jam.get("/GAMEDATA/COMMON/DRIVERS.DDB")?);
+    let (_, fields) = entries(&drivers)
+        .into_iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(code))?;
+    let folder = crate::assets::font::language_folder(language);
+    let names = jam.get(&format!("/GAMEDATA/COMMON/{folder}/DRIVERS.SRF"))?;
+    let names = crate::assets::font::load_strings(names);
+    names.get(usize::try_from(number(fields, 0x33)?).ok()?).cloned()
+}
+
+/// What a driver is called, in the language chosen.
+pub fn name(jam: &Jam, code: &str) -> String {
+    let language = LANGUAGE.load(std::sync::atomic::Ordering::Relaxed);
+    name_in(jam, code, language).unwrap_or_else(|| {
+        let known = NAMES.iter().find(|n| n.0.eq_ignore_ascii_case(code));
+        known.map_or("Racer", |n| n.1).to_string()
+    })
+}
+
+/// The driver called `name` in any of the game's languages: a name that came from
+/// another game may be in another language than this one's.
+pub fn called(jam: &Jam, name: &str) -> Option<&'static str> {
+    let languages = 0..crate::assets::font::LANGUAGES.len();
+    NAMES.iter().map(|n| n.0).find(|code| {
+        languages.clone().any(|language| name_in(jam, code, language).as_deref() == Some(name))
+    })
+}
 
 /// The player's stand-in in the tables, Veronica Voltage: who they race as until
 /// they have built a racer, and whose voice a built racer has.
@@ -224,7 +267,7 @@ pub fn driver(jam: &Jam, code: &str) -> Option<Driver> {
         .find(|(name, _)| name.eq_ignore_ascii_case(&champion))?;
     let code = code.to_uppercase();
     Some(Driver {
-        name: NAMES.iter().find(|n| n.0 == code).map_or("Racer", |n| n.1),
+        name: name(jam, &code),
         code,
         figure: text(fields, 0x2a)?.to_uppercase(),
         car: text(car, 0x29)?.trim_end_matches("cm").to_uppercase(),
@@ -325,11 +368,11 @@ fn the_first_circuit_is_captain_redbeard_s() {
     );
     assert_eq!(
         (
-            field[0].name,
+            field[0].name.as_str(),
             field[0].car.as_str(),
             field[0].chassis.as_str()
         ),
-        ("Captain Redbeard", "CR", "crchas0")
+        ("CAPTAIN REDBEARD", "CR", "crchas0")
     );
     // Lesser drivers share a car; some cars go by another name than their driver's.
     assert_eq!(
@@ -362,4 +405,23 @@ fn the_menus_know_what_each_champion_is_made_of() {
     for (code, _) in NAMES {
         assert!(cosmetics_of(&jam, code).is_some(), "{code}");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn drivers_are_named_by_the_games_table_in_each_language() {
+    let Some(jam) = Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM") else {
+        return;
+    };
+    assert_eq!(name_in(&jam, "CR", 0).as_deref(), Some("CAPTAIN REDBEARD"));
+    assert_eq!(name_in(&jam, "cr", 3).as_deref(), Some("KAPITÄN ROTBART"));
+    // Every driver has a name in every language, and is known by any of them.
+    for (code, _) in NAMES {
+        for language in 0..crate::assets::font::LANGUAGES.len() {
+            let name = name_in(&jam, code, language).unwrap_or_default();
+            assert!(!name.is_empty(), "{code} in language {language}");
+            assert_eq!(called(&jam, &name), Some(code));
+        }
+    }
+    assert_eq!(called(&jam, "nobody"), None);
 }

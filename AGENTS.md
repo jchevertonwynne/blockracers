@@ -76,9 +76,12 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   the race pages' view of the circuit, with the race's mascot stood in it and the
   frame's lights on it; the time race page's mascot is Veronica Voltage),
   `parts.rs` (10, the driver page's parts), `licence.rs` (11, the licence's
-  photograph), `carousel.rs` (12, the bricks page's row of bricks) and `stage.rs`
-  (13, the racer and car of the garage and the racer page, in the set of
-  `RS_SET/RACER.WDB`), all in `src/frontend/`. A query for the screen's own
+  photograph), `carousel.rs` (12, the bricks page's row of bricks, which slides from one
+  brick to the next) and `stage.rs` (13, the build menu's sets, each in its frame:
+  the racer and car of the garage and the racer page in `RS_SET`, and the driver
+  being dressed on the driver page in `CB_SET`), all in `src/frontend/`. The page
+  bricks are placed on shows the original's help for what the pointer rests on
+  (`workshop::Tip`). A query for the screen's own
   `Camera3d` must leave out those with `RenderLayers`, or it stops matching one
   camera once a second is there.
 - **The idle demo:** `src/frontend/idle.rs`. The main menu left for sixty seconds
@@ -91,8 +94,9 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   `/MENUDATA/<lang>` for the menus, `/GAMEDATA/COMMON/<lang>` for the race display
   and the loading screen, `<film>/<LANG>.SRF` for a film's words
   (`Film::load_in`). Nine are offered; Finnish is in the archive and not offered,
-  as in the original. The token reader takes strings as Latin-1. Drivers' names
-  and the port's own pages are English whatever is chosen.
+  as in the original. The token reader takes strings as Latin-1. Drivers are
+  called what that language's `DRIVERS.SRF` calls them (`roster::name`); the
+  port's own pages are English whatever is chosen.
 - **The build menu's other pages:** the licence picks the face its driver pulls
   (`Cosmetics::expression`, worn in the menus and not in a race) and takes the
   original's cheat codes as its name (`src/cheats.rs`: they last the session, a

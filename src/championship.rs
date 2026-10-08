@@ -18,8 +18,8 @@ const POINTS_TO_GO_ON: u32 = 10;
 pub struct Series {
     /// The game's name for the circuit: `c0` and so on.
     pub code: String,
-    /// Whose circuit it is.
-    pub champion: &'static str,
+    /// Whose circuit it is, by the game's short name for them.
+    pub champion: String,
     /// The folders of its races, in the order they are run.
     pub rounds: Vec<String>,
     /// Which of them are run mirrored.
@@ -74,7 +74,7 @@ impl Championship {
             .into_iter()
             .filter(|(_, rounds)| !rounds.is_empty())
             .map(|(code, rounds)| Series {
-                champion: roster::field(&jam, &code).first().map_or("", |d| d.name),
+                champion: roster::field(&jam, &code).first().map(|d| d.code.clone()).unwrap_or_default(),
                 parts: roster::part_set(&jam, &code),
                 code,
                 mirrored: rounds.iter().map(|r| r.mirrored).collect(),
@@ -190,7 +190,7 @@ impl Championship {
 fn a_circuit_is_scored_race_by_race() {
     let series = |code: &str, rounds: usize| Series {
         code: code.into(),
-        champion: "",
+        champion: String::new(),
         rounds: vec!["RACE".into(); rounds],
         mirrored: vec![code == "c1"; rounds],
         parts: None,

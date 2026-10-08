@@ -10,21 +10,21 @@ function audit: a feature that is ported but differs in detail won't have been c
 
 ## Not ported
 
-- **Drivers' names in other languages.** The menus, the race display, the loading
-  screen, circuits' names and films' words are in the language chosen; the drivers'
-  names are the port's own table (`roster::NAMES`), in English. The original's are
-  in each language's `DRIVERS.SRF`.
-- **The build menu's help.** `CARBUILD.SRF` has words for the bricks page that the
-  port doesn't show; it has its own lines saying what the keys do.
-- **The garage's frame.** The showcase the racer and car stand in has no frame
-  round it (`bluebox` and the corner pictures of `GARAGE.MIB`).
-- **The row of bricks sliding.** The bricks page's row steps from one brick to the
-  next; the original's slides (`MenuModelCarousel`).
-- **The racer shown on the other build pages.** The garage and the racer page show
-  the racer and car in the original's set (`frontend/stage.rs`); the driver,
-  licence, car and bricks pages, and the question asked on leaving them, still
-  show the car alone as before (`workshop::show`). What the original shows on each
-  has not been gone through.
+- **The set the car is built in.** The car page and the page bricks are placed on
+  show the car alone, by the screen's own camera, with nothing round it
+  (`workshop::show`). The original shows it in a frame (`bluebox`) in the world
+  `garage`, through the camera its layout gives: the `garage` entry of
+  `EDITCAR.MIB` (251,125 to 588,394) and the scene of `CARBUILD.MIB` (207,115 to
+  627,469), both seen from (-12, -19, 28) looking at (0, 0, 10) at 45 degrees
+  (`EditCarScreen`, `CarBuildScreen`, `CarModelScreenBase`). The garage, the racer
+  page and the driver page are as the original has them (`frontend/stage.rs`).
+- **The rest of the build page's help.** Help is shown for the things the port's
+  page has. The original has help too for its pad of arrows that move the brick,
+  for the camera and for two more things (strings 2, 6, 7 and 8 of `CARBUILD.SRF`),
+  which the port's page has not got, being worked by the keyboard.
+- **The driver's leaving move.** A driver being dressed makes a move as the page
+  is done with (`EditDriverScreen::PlayExitAnimation`), and the page waits for it;
+  here the page is left at once.
 
 ## Stand-ins
 
@@ -43,6 +43,11 @@ function audit: a feature that is ported but differs in detail won't have been c
   original stands it has not been read.
 - **The mascot in the circuit's view** is not lit by the frame's lights, though the
   scene is; nor is the racer of a film.
+- **The build page's help** names the original's keys (the numeric keypad and the
+  rest), which are not the port's; the port's own are in the lines the page has
+  beside it.
+- **Which move a driver makes when its legs are changed** is by which legs they
+  are; the original picks one of the two with its table of random numbers.
 
 ## Not checked
 
@@ -55,7 +60,11 @@ function audit: a feature that is ported but differs in detail won't have been c
 - Whether the garage's figure plays its idle moves, the mascot in the circuit's view
   its own, and which way the row of bricks spins: stills don't show them, and the
   spin's direction is a guess.
-- The mouse on the language page, the row of bricks and the garage's showcase.
+- The mouse on the language page, the row of bricks and the garage's showcase, and
+  the build page's help coming up under a pointer left on something: its timing is
+  tested and its look was seen by showing it without a pointer.
+- Drivers' names in a race in another language than English: the names are read
+  and tested, and only the circuit page's was looked at, in English.
 - Drift dust and wheel spray can't be seen in a demo, whose driver never drifts or
   leaves the road.
 
@@ -77,4 +86,6 @@ All twenty hazard classes and every power-up action; the car's body, the driver'
 animations, decals, shadows and trails; the films, the race display, circuit and
 time races; the cheats, the mouse in the menus and force feedback; the idle demo
 race, the language page, the mascot and lights of the circuit's view, the row of
-bricks and the garage's racer and car.
+bricks and the garage's racer and car; drivers' names in each language, the build
+page's help, the frames of the garage and the driver page, the row of bricks
+sliding and the driver on its platform.

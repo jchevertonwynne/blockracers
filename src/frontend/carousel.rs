@@ -10,9 +10,7 @@
 //!
 //! The original has a camera of its own for the row, a long way off and seeing very
 //! narrowly (5 degrees); here a camera that looks straight on, with no perspective,
-//! draws it onto a picture, as the driver page's parts are (`parts`). The row does
-//! not slide from one brick to the next as the original's does: it is at once as it
-//! will be.
+//! draws it onto a picture, as the driver page's parts are (`parts`).
 
 use super::{Art, Menu, Page, workshop};
 use crate::assets::leb;
@@ -52,10 +50,41 @@ const STUDIO: Vec3 = Vec3::new(0.0, -3000.0, 0.0);
 /// What is in each slot, by the bricks' pieces and colours.
 type Ring = [Option<(u16, u8)>; 7];
 
+/// How long the row takes to slide from one brick to the next, in milliseconds: the
+/// `picker` carousel style's, in `GSTYLES.MSB`.
+const SLIDE: f32 = 400.0;
+
+/// Where a slot's brick is in the picture and the size it is fitted to: the slot's
+/// middle and its smaller side.
+fn berth(slot: usize) -> (Vec2, f32) {
+    let [left, top, right, bottom] = SLOTS[slot];
+    let middle = Vec2::new(
+        (left + right) / 2.0 - SIZE.x / 2.0,
+        SIZE.y / 2.0 - (top + bottom) / 2.0,
+    );
+    // `MenuModelCarousel::DestroyItems`: it is fitted by the smaller side of its slot.
+    (middle, (right - left).min(bottom - top))
+}
+
+/// How many slots along the row has moved between two rings, if it has moved one
+/// either way: what was in each slot is now in the one before it, or the one after.
+fn shifted(before: &Ring, after: &Ring) -> Option<i32> {
+    [1, -1].into_iter().find(|by| {
+        (0..SLOTS.len() as i32).all(|slot| {
+            let from = slot + by;
+            !(0..SLOTS.len() as i32).contains(&from) || after[slot as usize] == before[from as usize]
+        })
+    })
+}
+
 #[derive(Resource, Default)]
 pub struct Bricks {
     pub picture: Option<Handle<Image>>,
     shown: Option<Ring>,
+    /// Where the brick of each slot is just now, and how long the slide it is on
+    /// has left (`MenuModelCarousel::StartScroll`, `OnEvent`).
+    berths: Option<[(Vec2, f32); 7]>,
+    slide: f32,
     camera: Option<Entity>,
     stage: Vec<Entity>,
 }
@@ -69,12 +98,15 @@ impl Bricks {
     }
 }
 
-/// A brick in a slot: where the middle of the slot is in the picture, how large its
-/// brick is made, and where the middle of the brick is, in the game's units.
+/// A brick in a slot of the row, and where the middle of the brick is, in the game's units.
 #[derive(Component)]
 pub struct Slot {
+    slot: usize,
+    /// Where it is on its way to its slot from, and the size it is fitted to there.
     middle: Vec2,
-    scale: f32,
+    fit: f32,
+    /// How far across the brick is, corner to corner.
+    diameter: f32,
     centre: Vec3,
 }
 
@@ -118,7 +150,7 @@ fn clear(commands: &mut Commands, bricks: &mut Bricks) {
     for entity in bricks.stage.drain(..).chain(bricks.camera.take()) {
         commands.entity(entity).despawn();
     }
-    (bricks.picture, bricks.shown) = (None, None);
+    (bricks.picture, bricks.shown, bricks.berths) = (None, None, None);
 }
 
 /// Keeps the picture of the row of bricks while the page for placing them is shown.
@@ -187,6 +219,12 @@ pub fn keep(
     for entity in bricks.stage.drain(..) {
         commands.entity(entity).despawn();
     }
+    // `ScrollNext`, `ScrollPrevious` and `StartScroll`: the row gone one along has
+    // each brick slide from where it was to the next slot; anything else is at once
+    // as it will be (`SnapToSelection`).
+    let moved = bricks.shown.as_ref().and_then(|before| shifted(before, &wanted));
+    let was = bricks.berths.unwrap_or(std::array::from_fn(berth));
+    bricks.slide = if moved.is_some() { SLIDE } else { 0.0 };
     for (slot, choice) in wanted.iter().enumerate() {
         let Some(&(kind, colour)) = choice.as_ref() else {
             continue;
@@ -210,19 +248,21 @@ pub fn keep(
         if low.x > high.x {
             continue;
         }
-        let [left, top, right, bottom] = SLOTS[slot];
-        // `MenuModelCarousel::DestroyItems`: it is fitted by the smaller side of its slot.
-        let fit = (right - left).min(bottom - top);
         let diameter = (high - low).length().max(1e-3);
-        let middle = Vec2::new(
-            (left + right) / 2.0 - SIZE.x / 2.0,
-            SIZE.y / 2.0 - (top + bottom) / 2.0,
-        );
+        // One that has come in at the end of the row starts in its own slot.
+        let from = moved.map_or(slot as i32, |by| slot as i32 + by);
+        let (middle, fit) = if (0..SLOTS.len() as i32).contains(&from) {
+            was[from as usize]
+        } else {
+            berth(slot)
+        };
         let holder = commands
             .spawn((
                 Slot {
+                    slot,
                     middle,
-                    scale: fit / diameter,
+                    fit,
+                    diameter,
                     centre: (low + high) / 2.0,
                 },
                 Transform::from_translation(STUDIO),
@@ -240,16 +280,33 @@ pub fn keep(
     menu.drawn = false;
 }
 
-/// Turns the bricks, which `CarPartCarousel::OnEvent` does as time goes by.
-pub fn spin(time: Res<Time<Real>>, mut slots: Query<(&Slot, &mut Transform)>) {
+/// Turns the bricks and slides them toward their slots, which
+/// `CarPartCarousel::OnEvent` and `MenuModelCarousel::OnEvent` do as time goes by.
+pub fn spin(
+    time: Res<Time<Real>>,
+    mut bricks: ResMut<Bricks>,
+    mut slots: Query<(&mut Slot, &mut Transform)>,
+) {
     let angle = (time.elapsed_secs() * 1000.0 * SCROLL_STEP).rem_euclid(std::f32::consts::TAU);
     let rotation = basis() * turned(angle);
-    for (slot, mut transform) in &mut slots {
+    // At an even speed, to be in its slot as the slide's time is up.
+    let step = (time.delta_secs() * 1000.0).min(bricks.slide);
+    let share = if bricks.slide > 0.0 { step / bricks.slide } else { 1.0 };
+    bricks.slide -= step;
+    let mut berths: [(Vec2, f32); 7] = std::array::from_fn(berth);
+    for (mut slot, mut transform) in &mut slots {
+        let (middle, fit) = berth(slot.slot);
+        slot.middle = slot.middle.lerp(middle, share);
+        slot.fit += (fit - slot.fit) * share;
+        berths[slot.slot] = (slot.middle, slot.fit);
+        let scale = slot.fit / slot.diameter;
         transform.rotation = rotation;
-        transform.scale = Vec3::splat(slot.scale);
+        transform.scale = Vec3::splat(scale);
         // Turned about the middle of the brick, which is set where its slot's is.
-        transform.translation =
-            STUDIO + slot.middle.extend(0.0) - rotation * slot.centre * slot.scale;
+        transform.translation = STUDIO + slot.middle.extend(0.0) - rotation * slot.centre * scale;
+    }
+    if !slots.is_empty() {
+        bricks.berths = Some(berths);
     }
 }
 
@@ -281,5 +338,18 @@ mod tests {
         assert!((up.x - 0.643).abs() < 0.01 && (up.z - 0.766).abs() < 0.01, "{up}");
         // Turning it leaves its way up as it was.
         assert!((turned(2.0) * Vec3::Z - up).length() < 1e-4);
+    }
+
+    #[test]
+    fn the_row_gone_one_along_is_known_from_a_change_of_set() {
+        let choices: Vec<(u16, u8)> = (0..12).map(|n| (n, 0)).collect();
+        // On to the next brick, what was in each slot is in the one before it.
+        assert_eq!(shifted(&ring(&choices, 4), &ring(&choices, 5)), Some(1));
+        assert_eq!(shifted(&ring(&choices, 4), &ring(&choices, 3)), Some(-1));
+        assert_eq!(shifted(&ring(&choices, 11), &ring(&choices, 0)), Some(1));
+        // Another set's bricks, or two along, is not a slide.
+        let others: Vec<(u16, u8)> = (20..32).map(|n| (n, 0)).collect();
+        assert_eq!(shifted(&ring(&choices, 4), &ring(&others, 4)), None);
+        assert_eq!(shifted(&ring(&choices, 4), &ring(&choices, 6)), None);
     }
 }

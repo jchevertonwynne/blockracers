@@ -79,6 +79,31 @@ const SELECTED: Color = Color::srgb_u8(246, 230, 6);
 const LABEL: Color = Color::srgb_u8(239, 239, 239);
 /// The fill of the `brickbox` frame.
 const BOX_FILL: Color = Color::srgb_u8(8, 8, 115);
+/// The `bluebox` frame of the build menu's layouts: the colour its border's pictures
+/// are drawn in, and its fill.
+const BLUE_EDGE: Color = Color::srgb_u8(25, 26, 221);
+const BLUE_FILL: Color = Color::srgb_u8(0, 0, 55);
+/// How wide a frame's border is: the size of its pictures.
+const BORDER: f32 = 16.0;
+
+/// The eight pictures of a frame's border and where each goes: the corners, and the
+/// sides between them, which their pictures are repeated along (`MenuFrame::SetRect`).
+fn border(frame: Rect) -> [(&'static str, Rect); 8] {
+    let (corner, edge) = (Vec2::splat(BORDER), frame.size() - Vec2::splat(BORDER * 2.0));
+    let inner = frame.inflate(-BORDER);
+    let at = |x: f32, y: f32, size: Vec2| Rect::from_corners(Vec2::new(x, y), Vec2::new(x, y) + size);
+    let (across, down) = (Vec2::new(edge.x, BORDER), Vec2::new(BORDER, edge.y));
+    [
+        ("tul", at(frame.min.x, frame.min.y, corner)),
+        ("tt", at(inner.min.x, frame.min.y, across)),
+        ("tur", at(inner.max.x, frame.min.y, corner)),
+        ("tr", at(inner.max.x, inner.min.y, down)),
+        ("tbr", at(inner.max.x, inner.max.y, corner)),
+        ("tb", at(inner.min.x, inner.max.y, across)),
+        ("tbl", at(frame.min.x, inner.max.y, corner)),
+        ("tl", at(frame.min.x, inner.min.y, down)),
+    ]
+}
 
 // Strings of `MENUTEXT.SRF`.
 mod text {
@@ -415,6 +440,8 @@ pub struct Art {
     language: usize,
     /// `CIRCUIT.SRF` in that language: the names of the circuits.
     circuit_names: Vec<String>,
+    /// `CARBUILD.SRF` in that language: the help of the page bricks are placed on.
+    help: Vec<String>,
 }
 
 #[derive(Resource, Default)]
@@ -500,6 +527,7 @@ pub fn plugin(app: &mut App) {
 fn localise(mut art: ResMut<Art>, settings: Res<Settings>, mut menu: ResMut<Menu>) {
     if art.language != settings.language {
         art.speak(settings.language);
+        crate::roster::set_language(settings.language);
         menu.drawn = false;
     }
 }
@@ -536,7 +564,7 @@ fn load_art() -> Option<Art> {
     let path =
         std::env::var("BRICK_JAM").unwrap_or("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM".into());
     let jam = Jam::open(path)?;
-    let (fonts, strings, circuit_names) = words(&jam, 0);
+    let (fonts, strings, circuit_names, help) = words(&jam, 0);
     let mut layouts = HashMap::new();
     for (screen, file) in [
         ("main", "MAINMENU"),
@@ -589,12 +617,17 @@ fn load_art() -> Option<Art> {
         written: HashMap::new(),
         language: 0,
         circuit_names,
+        help,
     })
 }
 
-/// The fonts, strings and circuit names a language has in `/MENUDATA`
-/// (`MenuManager::LoadLocalizedMenuResources`: `GFonts`, `menutext.srf`, `circuit.srf`).
-fn words(jam: &Jam, language: usize) -> (HashMap<String, Font>, Vec<String>, Vec<String>) {
+/// The fonts, strings, circuit names and build help a language has in `/MENUDATA`
+/// (`MenuManager::LoadLocalizedMenuResources`: `GFonts`, `menutext.srf`, `circuit.srf`;
+/// `CarBuildScreen::Initialize`: `carbuild.srf`).
+fn words(
+    jam: &Jam,
+    language: usize,
+) -> (HashMap<String, Font>, Vec<String>, Vec<String>, Vec<String>) {
     let dir = format!("{DIR}/{}", language_folder(language));
     let table = |file: &str| {
         jam.get(&format!("{dir}/{file}"))
@@ -605,6 +638,7 @@ fn words(jam: &Jam, language: usize) -> (HashMap<String, Font>, Vec<String>, Vec
         load_fonts(jam, &dir, "GFONTS.FDB"),
         table("MENUTEXT.SRF"),
         table("CIRCUIT.SRF"),
+        table("CARBUILD.SRF"),
     )
 }
 
@@ -674,9 +708,10 @@ impl Art {
     /// Puts the menus' words in a language, as the original does when the language
     /// page has changed it. A language whose files are missing leaves the words as they are.
     fn speak(&mut self, language: usize) {
-        let (fonts, strings, circuit_names) = words(&self.jam, language);
+        let (fonts, strings, circuit_names, help) = words(&self.jam, language);
         if !fonts.is_empty() && !strings.is_empty() {
             (self.fonts, self.strings, self.circuit_names) = (fonts, strings, circuit_names);
+            self.help = help;
             self.written.clear();
         }
         self.language = language;
@@ -834,7 +869,8 @@ fn items(
             let icon = SERIES_ICONS[chosen % SERIES_ICONS.len()].to_string();
             let words = match championship.series.get(chosen) {
                 Some(series) if chosen < championship.unlocked => {
-                    format!("{}: {}", chosen + 1, series.champion)
+                    let champion = crate::roster::name(art.jam(), &series.champion);
+                    format!("{}: {champion}", chosen + 1)
                 }
                 Some(_) => format!("{}: LOCKED", chosen + 1),
                 None => String::new(),
@@ -2032,9 +2068,8 @@ fn winner(room: &Room, jam: &Jam) -> Option<Cosmetics> {
     let first = room.results.first().filter(|first| first.time.is_some())?;
     let driver = |code: &str| crate::roster::cosmetics_of(jam, code).unwrap_or_default();
     if !first.player {
-        let names = crate::roster::NAMES.iter();
-        let code = names.clone().find(|name| name.1 == first.name);
-        return Some(code.map_or(Cosmetics::default(), |name| driver(name.0)));
+        let code = crate::roster::called(jam, &first.name);
+        return Some(code.map_or(Cosmetics::default(), driver));
     }
     let voter = room.voters.iter().find(|voter| voter.name == first.name);
     let ride = voter.and_then(|voter| room.rides.iter().find(|ride| ride.0 == voter.peer));
@@ -2129,6 +2164,16 @@ fn hit(item: &Item, art: &Art, at: Vec2) -> Option<i32> {
                     0
                 }
             })
+        }
+    }
+}
+
+/// Where an item is on the screen, less its words.
+fn bounds(item: &Item) -> Rect {
+    match &item.widget {
+        Widget::Button { at, .. } => Rect::from_corners(*at, *at + Vec2::splat(ICON)),
+        Widget::Field { area, .. } | Widget::Selector { area, .. } | Widget::Slider { area, .. } => {
+            *area
         }
     }
 }
@@ -2408,6 +2453,14 @@ fn input(
     let at = pointer(&window);
     let moved = at != *pointed;
     *pointed = at;
+    // What the pointer rests on where bricks are placed has its help shown.
+    let rested = at.filter(|_| building).and_then(|at| {
+        let item = items.iter().find(|item| hit(item, &art, at).is_some())?;
+        Some((workshop::Tip::of(&item.action)?, bounds(item)))
+    });
+    if bench.tip.update(rested, time.delta_secs() * 1000.0) {
+        menu.drawn = false;
+    }
     if let Some(at) = at {
         let over = items
             .iter()
@@ -2982,9 +3035,15 @@ fn draw(
             pieces.push((picture, area, Color::WHITE, false));
         }
     }
-    if let (Some(picture), true) = (&stage.picture, matches!(menu.page, Page::Garage | Page::Racer | Page::Scrap)) {
-        // `RacerModelScreenBase::CreateWidgets`: the racer in the showcase.
-        pieces.push((picture.clone(), art.place("garage", "showcase"), Color::WHITE, false));
+    if let (Some(picture), Some(set), true) = (&stage.picture, stage.set(), workshop::mine(menu.page)) {
+        // `RacerModelScreenBase::CreateWidgets`, `EditDriverScreen::CreateDriverScene`:
+        // the racer on its set, in a frame; the picture has the frame's fill behind it.
+        pieces.push((picture.clone(), set.area(art), Color::WHITE, false));
+        for (name, area) in border(set.frame(art)) {
+            if let Some((handle, _)) = art.picture(name, &mut images) {
+                pieces.push((handle, area, BLUE_EDGE, true));
+            }
+        }
     }
     if menu.page == Page::Licence {
         // `DriverLicenseScreen::CreateWidgets`: the trophy the racer has for each
@@ -3045,49 +3104,9 @@ fn draw(
             let dim = circuit::DIM;
             pieces.push((picture.clone(), area, Color::srgb(dim, dim, dim), false));
         }
-        let (corner, edge) = (16.0, frame.size() - Vec2::splat(32.0));
-        let inner = frame.min + Vec2::splat(corner);
-        for (name, at, size) in [
-            ("tul", frame.min, Vec2::splat(corner)),
-            (
-                "tt",
-                Vec2::new(inner.x, frame.min.y),
-                Vec2::new(edge.x, corner),
-            ),
-            (
-                "tur",
-                Vec2::new(frame.max.x - corner, frame.min.y),
-                Vec2::splat(corner),
-            ),
-            (
-                "tr",
-                Vec2::new(frame.max.x - corner, inner.y),
-                Vec2::new(corner, edge.y),
-            ),
-            ("tbr", frame.max - Vec2::splat(corner), Vec2::splat(corner)),
-            (
-                "tb",
-                Vec2::new(inner.x, frame.max.y - corner),
-                Vec2::new(edge.x, corner),
-            ),
-            (
-                "tbl",
-                Vec2::new(frame.min.x, frame.max.y - corner),
-                Vec2::splat(corner),
-            ),
-            (
-                "tl",
-                Vec2::new(frame.min.x, inner.y),
-                Vec2::new(corner, edge.y),
-            ),
-        ] {
+        for (name, area) in border(frame) {
             if let Some((handle, _)) = art.picture(name, &mut images) {
-                pieces.push((
-                    handle,
-                    Rect::from_corners(at, at + size),
-                    Color::WHITE,
-                    true,
-                ));
+                pieces.push((handle, area, Color::WHITE, true));
             }
         }
         let summary = if menu.page == Page::CircuitRace {
@@ -3270,6 +3289,29 @@ fn draw(
         }
     }
 
+    // The help of the page bricks are placed on, over everything else: its box, the
+    // border round that, and its words (`CarBuildScreenBase::Draw`).
+    let mut tip: Vec<(Rect, Color)> = Vec::new();
+    let mut tip_words = None;
+    if let (Page::Bricks, Some((help, target))) = (menu.page, bench.tip.showing()) {
+        let whole = Rect::from_corners(Vec2::ZERO, SCREEN);
+        let words = art.help.get(help).cloned().unwrap_or_default();
+        let font = art.fonts.get(workshop::TIP_FONT);
+        let wrapped = font.map(|font| {
+            let line = font.height() as f32;
+            (font.wrapped(&words, workshop::Tip::wrap(font.measure(&words), line, whole)), line)
+        });
+        if let Some((wrapped, line)) = wrapped {
+            if let Some((handle, size)) = art.write(workshop::TIP_FONT, &wrapped, false, &mut images) {
+                let at = workshop::Tip::place(target, size, line, whole);
+                let inner = Rect::from_corners(at, at + size).inflate((line / 2.0).floor());
+                tip.push((inner.inflate(workshop::TIP_BORDER), workshop::TIP_EDGE));
+                tip.push((inner, workshop::TIP_FILL));
+                tip_words = Some((handle, Rect::from_corners(at, at + size)));
+            }
+        }
+    }
+
     let side = |length: f32| Val::Px(length);
     let screen = Node {
         position_type: PositionType::Absolute,
@@ -3331,6 +3373,12 @@ fn draw(
                 for (handle, area, colour, tiled) in pieces {
                     canvas.spawn((node(area), picture(handle, colour, tiled)));
                 }
+                for (area, colour) in tip {
+                    canvas.spawn((node(area), BackgroundColor(colour)));
+                }
+                if let Some((handle, area)) = tip_words {
+                    canvas.spawn((node(area), picture(handle, Color::WHITE, false)));
+                }
             });
         });
 }
@@ -3382,7 +3430,7 @@ fn the_winner_of_a_race_online_is_who_celebrates() {
     room.results.swap(0, 1);
     let kahuka = crate::roster::cosmetics_of(&jam, "KK");
     assert!(kahuka.is_some() && winner(&room, &jam) == kahuka);
-    room.results[0] = finish("King Kahuka", false, Some(60.0));
+    room.results[0] = finish("KING KAHUKA", false, Some(60.0));
     assert_eq!(winner(&room, &jam), kahuka);
     // A race nobody finished has nobody to celebrate.
     room.results[0].time = None;

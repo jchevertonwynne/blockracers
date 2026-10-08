@@ -1119,7 +1119,7 @@ pub fn spawn_karts(
                 state.name = if human {
                     driver.name.into()
                 } else {
-                    entry.name.into()
+                    entry.name.clone().into()
                 };
             }
             // There are no recordings of a circuit driven backwards.

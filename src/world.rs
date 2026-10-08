@@ -1603,7 +1603,7 @@ fn every_driver_on_the_roster_can_be_raced_as() {
     assert!(
         recast(&mut loaded, 4, "PH")
             && loaded.field[4].code != before
-            && loaded.field[4].name == "Pharaoh Hotep"
+            && loaded.field[4].name == "PHARAOHS MUMMY"
     );
     assert!(!recast(&mut loaded, 4, "nobody"));
 }
