@@ -243,6 +243,11 @@ fn main() {
                 "Back" => KeyCode::Backspace,
                 "Comma" => KeyCode::Comma,
                 "Period" => KeyCode::Period,
+                "I" => KeyCode::KeyI,
+                "J" => KeyCode::KeyJ,
+                "K" => KeyCode::KeyK,
+                "L" => KeyCode::KeyL,
+                "C" => KeyCode::KeyC,
                 _ => return None,
             };
             let (at, held) = at.split_once('+').unwrap_or((at, "0"));

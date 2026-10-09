@@ -67,6 +67,20 @@ const CAR_FACING: Vec3 = Vec3::new(0.829_038, -0.559_193, 0.0);
 const HEAD_MOVE: usize = 0x83;
 const TORSO_MOVE: usize = 0x84;
 const LEG_MOVES: [usize; 2] = [0xd4, 0x85];
+/// The moves one of which the platform's figure makes as its page is done with
+/// (`g_exitAnimTextIds`), and how long it takes to go into one, in milliseconds
+/// (`EditDriverScreen::PlayExitAnimation`).
+const EXIT_MOVES: [usize; 2] = [0x7c, 0x80];
+const EXIT_EASE: f32 = 200.0;
+
+/// How long one of the two leaving moves takes, easing into it and all.
+pub fn exit_move(art: &Art, which: usize) -> Option<f32> {
+    let name = names(art).get(EXIT_MOVES[which % 2])?.to_lowercase();
+    let data = art.jam().get(Set::Platform.moves())?;
+    let part = parts(data).iter().position(|m| *m == name)?;
+    let part = Animation::parse(data)?.parts.get(part).map(|p| p.frames * p.ms_per_frame)?;
+    Some(part + EXIT_EASE)
+}
 
 impl Set {
     /// The folder the set's files are in.
@@ -161,6 +175,11 @@ pub struct Stage {
     idle: Vec<usize>,
     /// A move to make before the next idle one.
     first: Option<usize>,
+    /// How wide the set's camera sees, top to bottom, in radians.
+    pub fov: f32,
+    /// The leaving moves, and whether one has been begun.
+    exits: [Option<usize>; 2],
+    left: bool,
 }
 
 impl Stage {
@@ -357,6 +376,9 @@ pub fn keep(
         entities,
         idle: set.idle().iter().filter_map(|&string| part(string)).collect(),
         first,
+        exits: EXIT_MOVES.map(part),
+        left: false,
+        fov: fov.to_radians(),
     };
     menu.drawn = false;
 }
@@ -365,6 +387,7 @@ pub fn keep(
 /// another, never the same twice running.
 pub fn idle(
     mut stage: ResMut<Stage>,
+    bench: Res<workshop::Bench>,
     time: Res<Time<Real>>,
     mut figures: Query<&mut Animated, With<Figure>>,
     mut chance: Local<u32>,
@@ -372,6 +395,16 @@ pub fn idle(
     let Ok(mut animated) = figures.single_mut() else {
         return;
     };
+    // `EditDriverScreen::PlayExitAnimation`: the page done with, it makes a move
+    // to go out on, and no more after it.
+    if let Some(which) = bench.parting() {
+        if let (false, Some(part)) = (stage.left, stage.exits[which % 2]) {
+            animated.play(part, false);
+        }
+        stage.left = true;
+        return;
+    }
+    stage.left = false;
     if let Some(part) = stage.first.take() {
         animated.play(part, false);
         return;
@@ -437,6 +470,8 @@ fn each_set_has_its_figure_s_moves_and_a_camera() {
     let scene = tokenize(art.jam().get(&Set::Bay.scenes()[0]).unwrap());
     assert_eq!(camera(&scene).map(|seen| seen.3.round()), Some(48.0));
     assert!(Set::Bench.frame(&art).width() > Set::Bay.frame(&art).width());
+    // The driver has two moves to go out on, each of which takes a while.
+    assert!((0..2).all(|which| exit_move(&art, which).is_some_and(|ms| ms > EXIT_EASE)));
     // The driver being dressed has a move for each part that is changed.
     let moves = parts(art.jam().get(Set::Platform.moves()).unwrap());
     for string in [HEAD_MOVE, TORSO_MOVE, LEG_MOVES[0], LEG_MOVES[1]] {

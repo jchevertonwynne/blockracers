@@ -10,20 +10,8 @@ function audit: a feature that is ported but differs in detail won't have been c
 
 ## Not ported
 
-- **The other views of a car being built.** Where bricks are placed the car is seen
-  from one height and is at once as it is turned to. The original has two higher
-  views of it (`CarPartPlacement::PitchViewStep`, the second and third of
-  `g_carPartCameraMinPositions`) and turns smoothly from one view to the next
-  (`UpdateViewRotation`, `UpdateViewPitch`).
-- **The held brick's movements.** It does not bob over the car or drop onto it as
-  it is put on (`UpdatePieceBob`, `UpdateCommitFeedback`).
-- **The rest of the build page's help.** Help is shown for the things the port's
-  page has. The original has help too for its pad of arrows that move the brick,
-  for the camera and for two more things (strings 2, 6, 7 and 8 of `CARBUILD.SRF`),
-  which the port's page has not got, being worked by the keyboard.
-- **The driver's leaving move.** A driver being dressed makes a move as the page
-  is done with (`EditDriverScreen::PlayExitAnimation`), and the page waits for it;
-  here the page is left at once.
+Nothing is known to be left. What follows is what is done another way, and what
+has not been looked at.
 
 ## Stand-ins
 
@@ -45,9 +33,13 @@ function audit: a feature that is ported but differs in detail won't have been c
 - **How far the camera stands back from a car being built** is by the car's length
   and width (`KartModel::outline`); the original's is by the radius of the whole
   car (`GetViewPosition`, `GetBoundsRadius`).
-- **The build page's help** names the original's keys (the numeric keypad and the
-  rest), which are not the port's; the port's own are in the lines the page has
-  beside it.
+- **The keys bricks are placed with** are the port's own (`workshop::KEYS`), and
+  the help says them where the original's says its own, which are the numeric
+  keypad's.
+- **The car and the brick held are not lit up** while the pointer is on them
+  (`CarPartPlacement::FocusCar`, `FocusPiece`): nothing in the menus' scenes is lit.
+- **Which move a driver goes out on** as its page is done with is by the clock;
+  the original picks one of the two with its table of random numbers.
 - **Which move a driver makes when its legs are changed** is by which legs they
   are; the original picks one of the two with its table of random numbers.
 
@@ -67,6 +59,10 @@ function audit: a feature that is ported but differs in detail won't have been c
   tested and its look was seen by showing it without a pointer.
 - Drivers' names in a race in another language than English: the names are read
   and tested, and only the circuit page's was looked at, in English.
+- **The pointer where bricks are placed.** Taking hold of the car and of the brick
+  held, turning the brick with the other button, putting it on with a second
+  press, a pad's place lit as it is pressed and the help for the car and the brick:
+  a demo has no pointer, so the rules are tested and nothing of it has been seen.
 - Drift dust and wheel spray can't be seen in a demo, whose driver never drifts or
   leaves the road.
 
@@ -90,4 +86,6 @@ time races; the cheats, the mouse in the menus and force feedback; the idle demo
 race, the language page, the mascot and lights of the circuit's view, the row of
 bricks and the garage's racer and car; drivers' names in each language, the build
 page's help, the frames of the garage and the driver page, the row of bricks
-sliding, the driver on its platform and the set a car is built in.
+sliding, the driver on its platform and its leaving move, the set a car is built
+in, the three heights and the turning of the view there, the ghost bricks and the
+brick dropping on, the two pads and the pointer's hold on the car and the brick.

@@ -83,7 +83,8 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   of the page bricks are placed on in `GARAGE`, which `workshop::show` stands
   there and turns), all in `src/frontend/`. The page
   bricks are placed on shows the original's help for what the pointer rests on
-  (`workshop::Tip`). A query for the screen's own
+  (`workshop::Tip`), and what moves there (the view turning and rising, the ghost
+  bricks, a brick dropping on) is `workshop::Motion`, stepped by `workshop::tick`. A query for the screen's own
   `Camera3d` must leave out those with `RenderLayers`, or it stops matching one
   camera once a second is there.
 - **The idle demo:** `src/frontend/idle.rs`. The main menu left for sixty seconds
@@ -207,7 +208,7 @@ menu instead. These combine with it:
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
 | `BRICK_EVENTS=18@3` | circuit events to set off, and when |
-| `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (a demo's keys are bound as a new game's are: `W` or `Up` is the accelerator; `P` is photo mode; `R` at the finish is the replay; where bricks are placed the arrows move the brick, `R` turns it, `Enter` adds it, `Back` takes one off, `Tab` and `T` are the next brick and set, `Comma` and `Period` turn the car) |
+| `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (a demo's keys are bound as a new game's are: `W` or `Up` is the accelerator; `P` is photo mode; `R` at the finish is the replay; where bricks are placed `I`, `J`, `K` and `L` move the brick, `R` turns it, `Enter` adds it, which takes most of a second as it drops onto the car, and only where it fits, which on one of the game's own cars is nowhere until `Back` has taken a brick off, `Tab` and `T` are the next brick and set, `Left` and `Right` turn the car, `Up` and `Down` raise and lower the view and `C` puts it back; on the driver page "done" waits a second or two for the driver's move before the page changes) |
 | `BRICK_SETTINGS=<file>` | where settings are kept (default `~/.brick_racers_settings`; demos neither read nor write it) |
 | `BRICK_START=1` | keep the drop-in and countdown (demos skip them) |
 | `BRICK_LAPS=1` | race length |

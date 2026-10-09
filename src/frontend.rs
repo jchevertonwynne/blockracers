@@ -416,6 +416,16 @@ enum Widget {
     Slider { area: Rect, value: usize },
     /// A box with what has been typed into it.
     Field { area: Rect, words: String },
+    /// A picture with places on it to press, each with a number of its own
+    /// (`MenuHotspotButton`): where it is, how large, and the places.
+    Pad {
+        at: Vec2,
+        size: Vec2,
+        picture: &'static str,
+        /// The picture a place is drawn from while it is pressed.
+        lit: &'static str,
+        spots: &'static [(i32, [f32; 4])],
+    },
 }
 
 struct Item {
@@ -542,19 +552,19 @@ fn layout(data: &[u8]) -> HashMap<String, [f32; 4]> {
     };
     let mut out = HashMap::new();
     for (i, token) in tokens.iter().enumerate() {
-        let (Token::Key(_), Some(Token::Str(name)), Some(Token::LCurly), Some(Token::Key(0x36))) = (
-            token,
-            tokens.get(i + 1),
-            tokens.get(i + 2),
-            tokens.get(i + 3),
-        ) else {
+        let (Token::Key(_), Some(Token::Str(name)), Some(Token::LCurly)) =
+            (token, tokens.get(i + 1), tokens.get(i + 2))
+        else {
             continue;
         };
-        if tokens.get(i + 5) == Some(&Token::Key(0x2f)) {
-            out.insert(
-                name.to_lowercase(),
-                [number(i + 6), number(i + 7), number(i + 8), number(i + 9)],
-            );
+        // A pad with places to press has its rectangle with its picture, one deeper:
+        // `key "name" { key { 0x36 { 0x2f l t r b`.
+        let nested = matches!(tokens.get(i + 3), Some(Token::Key(key)) if *key != 0x36)
+            && tokens.get(i + 4) == Some(&Token::LCurly);
+        let at = if nested { i + 5 } else { i + 3 };
+        if tokens.get(at) == Some(&Token::Key(0x36)) && tokens.get(at + 2) == Some(&Token::Key(0x2f)) {
+            let rect = [number(at + 3), number(at + 4), number(at + 5), number(at + 6)];
+            out.entry(name.to_lowercase()).or_insert(rect);
         }
     }
     out
@@ -673,6 +683,34 @@ impl Art {
                 .insert(name.to_string(), image(pixels, images));
         }
         self.pictures.get(name).cloned()
+    }
+
+    /// A part of one of the game's pictures, as a picture of its own.
+    fn cut(
+        &mut self,
+        name: &str,
+        [left, top, right, bottom]: [f32; 4],
+        images: &mut Assets<Image>,
+    ) -> Option<(Handle<Image>, Vec2)> {
+        let part = format!("{name}#{left},{top},{right},{bottom}");
+        if !self.pictures.contains_key(&part) {
+            let key = self.keys.get(name).copied().flatten();
+            let whole = decode_bmp(self.jam.get(&format!("{DIR}/{name}.BMP"))?, key)?;
+            let (left, top) = (left as u32, top as u32);
+            let (right, bottom) = ((right as u32).min(whole.width), (bottom as u32).min(whole.height));
+            let mut rgba = Vec::new();
+            for row in top..bottom {
+                let from = ((row * whole.width + left) * 4) as usize;
+                rgba.extend_from_slice(whole.rgba.get(from..from + ((right - left) * 4) as usize)?);
+            }
+            let pixels = crate::assets::image::Pixels {
+                width: right - left,
+                height: bottom - top,
+                rgba,
+            };
+            self.pictures.insert(part.clone(), image(pixels, images));
+        }
+        self.pictures.get(&part).cloned()
     }
 
     /// The game's archive.
@@ -2149,6 +2187,13 @@ fn hit(item: &Item, art: &Art, at: Vec2) -> Option<i32> {
                 .then_some(0)
         }
         Widget::Field { area, .. } => area.contains(at).then_some(0),
+        // `MenuHotspotButton::HitTestHotspots`: the place the pointer is on.
+        Widget::Pad { at: corner, spots, .. } => spots
+            .iter()
+            .find(|(_, [left, top, right, bottom])| {
+                Rect::new(*left, *top, *right, *bottom).contains(at - *corner)
+            })
+            .map(|spot| spot.0),
         Widget::Selector { area, .. } | Widget::Slider { area, .. } => {
             let end = if matches!(item.widget, Widget::Slider { .. }) {
                 64.0
@@ -2172,6 +2217,7 @@ fn hit(item: &Item, art: &Art, at: Vec2) -> Option<i32> {
 fn bounds(item: &Item) -> Rect {
     match &item.widget {
         Widget::Button { at, .. } => Rect::from_corners(*at, *at + Vec2::splat(ICON)),
+        Widget::Pad { at, size, .. } => Rect::from_corners(*at, *at + *size),
         Widget::Field { area, .. } | Widget::Selector { area, .. } | Widget::Slider { area, .. } => {
             *area
         }
@@ -2364,7 +2410,19 @@ fn input(
         _ => None,
     };
     // Where bricks are placed the keys are the bricks', but for the way out.
+    // The driver's page done with, nothing is to be done until its driver has
+    // made the move it goes out on.
+    if let Some(to) = workshop::depart(&mut bench, time.delta_secs() * 1000.0) {
+        (menu.page, menu.focus, menu.drawn) = (to, to.first(), false);
+        return;
+    }
+    if bench.parting().is_some() {
+        return;
+    }
     let building = menu.page == Page::Bricks;
+    if building && workshop::tick(&mut bench, time.delta_secs() * 1000.0, &mut sfx) {
+        menu.drawn = false;
+    }
     if building
         && workshop::keys(
             &keys,
@@ -2451,13 +2509,33 @@ fn input(
 
     // The pointer chooses whatever it is moved onto, and a click works it.
     let at = pointer(&window);
+    // Where bricks are placed the pointer takes hold of the car and the brick held.
+    let ms = time.delta_secs() * 1000.0;
+    let gripped = building && workshop::grip(&mut bench, at, *pointed, &mouse, ms, &art, &mut sfx);
     let moved = at != *pointed;
     *pointed = at;
+    // A place of a pad is lit while it is pressed.
+    let pressing = at.filter(|_| building && mouse.pressed(MouseButton::Left));
+    let lit = pressing.and_then(|at| {
+        items.iter().find_map(|item| match (&item.widget, &item.action) {
+            (Widget::Pad { .. }, Action::Bench(act)) => {
+                hit(item, &art, at).map(|spot| (*act == workshop::Act::View, spot))
+            }
+            _ => None,
+        })
+    });
+    if lit != bench.lit {
+        (bench.lit, menu.drawn) = (lit, false);
+    }
     // What the pointer rests on where bricks are placed has its help shown.
     let rested = at.filter(|_| building).and_then(|at| {
-        let item = items.iter().find(|item| hit(item, &art, at).is_some())?;
-        Some((workshop::Tip::of(&item.action)?, bounds(item)))
+        let item = items.iter().find(|item| hit(item, &art, at).is_some());
+        match item {
+            Some(item) => Some((workshop::Tip::of(&item.action)?, bounds(item))),
+            None => workshop::grip_help(&bench, at),
+        }
     });
+    let at = at.filter(|_| !gripped);
     if bench.tip.update(rested, time.delta_secs() * 1000.0) {
         menu.drawn = false;
     }
@@ -3240,6 +3318,20 @@ fn draw(
                     words!("font_ths", words, *area, colour, true);
                 }
             }
+            Widget::Pad { at, picture, lit, spots, .. } => {
+                picture!(*picture, *at, colour);
+                // `MenuHotspotButton::DrawSelf`: the place pressed, from the
+                // picture of the pad lit.
+                let views = matches!(item.action, Action::Bench(workshop::Act::View));
+                let pressed = bench.lit.filter(|lit| lit.0 == views).map(|lit| lit.1);
+                let spot = pressed.and_then(|pressed| spots.iter().find(|spot| spot.0 == pressed));
+                if let Some((_, area)) = spot {
+                    if let Some((handle, size)) = art.cut(lit, *area, &mut images) {
+                        let corner = *at + Vec2::new(area[0], area[1]);
+                        pieces.push((handle, Rect::from_corners(corner, corner + size), Color::WHITE, false));
+                    }
+                }
+            }
             Widget::Field { area, words } => {
                 fills.push((*area, BOX_FILL));
                 // Where the next letter goes is marked while it is being typed into.
@@ -3295,7 +3387,7 @@ fn draw(
     let mut tip_words = None;
     if let (Page::Bricks, Some((help, target))) = (menu.page, bench.tip.showing()) {
         let whole = Rect::from_corners(Vec2::ZERO, SCREEN);
-        let words = art.help.get(help).cloned().unwrap_or_default();
+        let words = art.help.get(help).map_or(String::new(), |words| workshop::help(words, help));
         let font = art.fonts.get(workshop::TIP_FONT);
         let wrapped = font.map(|font| {
             let line = font.height() as f32;
