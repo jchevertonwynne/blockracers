@@ -102,6 +102,13 @@ impl Progress {
         )
     }
 
+    /// Gives up everything that has been won, and keeps that: the port's own, for
+    /// the options' "reset progress".
+    pub fn forget(&mut self) {
+        (self.circuits, self.parts, self.records, self.award) = (1, 0, 0, None);
+        self.keep();
+    }
+
     /// Writes what has been won out, after more is.
     pub fn keep(&self) {
         if let Some(Err(error)) = self
@@ -251,4 +258,27 @@ mod tests {
         assert_eq!(progress.races.len(), RECORDS);
         assert!(progress.races.iter().all(|race| race.starts_with("RACEC")));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn progress_given_up_is_a_new_games_and_is_kept() {
+    let file = std::env::temp_dir().join(format!("brick_progress_{}", std::process::id()));
+    let mut progress = Progress {
+        circuits: 5,
+        parts: 0b1011,
+        records: 0b110,
+        award: Some(Award::default()),
+        file: Some(file.clone()),
+        ..default()
+    };
+    progress.keep();
+    progress.forget();
+    assert_eq!((progress.circuits, progress.parts, progress.records), (1, 0, 0));
+    assert!(progress.award.is_none() && !progress.set_open(FREE_SETS));
+    // What the file says now is what a game with nothing won reads.
+    let mut read = Progress { circuits: 9, parts: 9, records: 9, ..default() };
+    read.read(&std::fs::read_to_string(&file).unwrap());
+    assert_eq!((read.circuits, read.parts, read.records), (1, 0, 0));
+    let _ = std::fs::remove_file(file);
 }

@@ -46,7 +46,10 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   tried on any of this.
 - **What has been won:** `src/progress.rs` keeps the circuits opened, the part sets
   and minifigure parts won and the records beaten; a racer's trophies are in its own
-  record (`assets::lrs`). The build menu offers only what has been won. A circuit
+  record (`assets::lrs`). The build menu offers only what has been won. The options' "reset
+  progress" (the port's own, `Page::Forget`) asks, and on "yes" shuts every circuit
+  but the first, takes back the part sets, the records and every racer's trophies
+  (`Progress::forget`); racers built and best time-race runs are kept. A circuit
   raced to the end has its film, and then a page of the menu says what was won
   (`frontend`'s `Page::Award`, the port's own).
 - **Films:** `src/film.rs` plays the films of `/MENUDATA` (a `.CDB` of what begins

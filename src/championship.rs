@@ -62,6 +62,11 @@ pub struct Championship {
 }
 
 impl Championship {
+    /// Shuts every circuit but the first again, and gives up any being raced.
+    pub fn forget(&mut self) {
+        (self.unlocked, self.chosen, self.run) = (1, 0, None);
+    }
+
     /// The game's circuits, this many of them opened.
     pub fn load(unlocked: usize) -> Self {
         let Some(jam) = Jam::open(

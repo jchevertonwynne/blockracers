@@ -77,6 +77,10 @@ const NORMAL: Color = Color::srgb_u8(118, 107, 15);
 const SELECTED: Color = Color::srgb_u8(246, 230, 6);
 /// Labels and banners.
 const LABEL: Color = Color::srgb_u8(239, 239, 239);
+/// How far to the right of the options' last button the port's own is, and where
+/// the answers are to the question it asks.
+const FORGET_ACROSS: f32 = 330.0;
+const FORGET_ANSWERS: Vec2 = Vec2::new(280.0, 260.0);
 /// The fill of the `brickbox` frame.
 const BOX_FILL: Color = Color::srgb_u8(8, 8, 115);
 /// The `bluebox` frame of the build menu's layouts: the colour its border's pictures
@@ -107,6 +111,9 @@ fn border(frame: Rect) -> [(&'static str, Rect); 8] {
 
 // Strings of `MENUTEXT.SRF`.
 mod text {
+    /// The answers to a question.
+    pub const YES: usize = 115;
+    pub const NO: usize = 116;
     pub const MAIN_MENU: usize = 2;
     pub const OPTIONS_BANNER: usize = 16;
     pub const GAME_OPTIONS: usize = 17;
@@ -158,6 +165,9 @@ enum Page {
     Language,
     /// The original's `ControlConfigScreen`: what the keys and a pad's buttons do.
     Controls,
+    /// Whether to give up everything that has been won. The port's own, as the
+    /// option that asks it is.
+    Forget,
     /// What a circuit raced to the end, or the last record beaten, has won, said
     /// after the circuit's film (`film`). The port's own: the original leaves it to
     /// a notice on the main menu and to the build menu to show.
@@ -397,6 +407,8 @@ enum Action {
     Credits,
     /// On the language page: which language the words are in.
     Language,
+    /// Giving up everything that has been won: the port's own.
+    Forget,
 }
 
 enum Widget {
@@ -987,7 +999,38 @@ fn items(
                 None,
             ),
             button("options", "credits", text::CREDITS, Action::Credits, None),
+            // The port's own, beside the last of the original's: it asks first.
+            Item {
+                widget: Widget::Button {
+                    at: art.place("options", "credits").min + Vec2::X * FORGET_ACROSS,
+                    label: "RESET PROGRESS".into(),
+                    icon: None,
+                },
+                action: Action::Go(Page::Forget),
+                enabled: true,
+            },
             back("options", Page::Main),
+        ],
+        // "No" first, which is what the page opens on.
+        Page::Forget => vec![
+            Item {
+                widget: Widget::Button {
+                    at: FORGET_ANSWERS,
+                    label: art.string(text::NO),
+                    icon: None,
+                },
+                action: Action::Go(Page::Options),
+                enabled: true,
+            },
+            Item {
+                widget: Widget::Button {
+                    at: FORGET_ANSWERS + Vec2::Y * 40.0,
+                    label: art.string(text::YES),
+                    icon: None,
+                },
+                action: Action::Forget,
+                enabled: true,
+            },
         ],
         Page::GameOptions => {
             // The original has two selectors on this page; the port's own settings go
@@ -1994,6 +2037,15 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
         // What each binding is for is in `notes`, which can write from the left.
         Page::Controls => vec![banner(text::CONTROLS[0])],
         Page::Language => vec![banner(text::LANGUAGE)],
+        Page::Forget => vec![
+            banner(text::OPTIONS_BANNER),
+            (Rect::new(320.0, 118.0, 320.0, 150.0), "RESET PROGRESS?".into(), "font_ths"),
+            (
+                Rect::new(320.0, 190.0, 320.0, 222.0),
+                "THE CIRCUITS, PARTS AND TROPHIES\nYOU HAVE WON WILL BE LOST".into(),
+                "font_ths",
+            ),
+        ],
         Page::AudioOptions => vec![
             banner(text::AUDIO_OPTIONS),
             beside("mvoltext", art.string(text::MUSIC_VOLUME)),
@@ -2585,6 +2637,7 @@ fn input(
             | Page::AudioOptions
             | Page::Extras
             | Page::Language
+            | Page::Forget
             | Page::Controls => Some(Page::Options),
             Page::Award => {
                 progress.award = None;
@@ -2768,6 +2821,18 @@ fn input(
             Action::Credits => {
                 sfx.play(id::MENU_CONFIRM);
                 showing.request = Some(Request::credits());
+            }
+            // Nothing is won any more: the first circuit alone is open, and no
+            // racer has a trophy.
+            Action::Forget => {
+                progress.forget();
+                championship.forget();
+                for racer in &mut garage.racers {
+                    racer.trophies = 0;
+                }
+                garage.keep();
+                sfx.play(id::MENU_CONFIRM);
+                go(&mut menu, Page::Options, Page::Options.first());
             }
             Action::Collect => {
                 progress.award = None;
