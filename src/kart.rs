@@ -185,6 +185,10 @@ pub struct Kart {
     /// lives, or the seconds of its clock; and that it is "it".
     pub stake: f32,
     pub it: bool,
+    /// How many times the car has been spun round or thrown into the air, which is
+    /// what a battle counts: a car that drives for itself is over being thrown
+    /// within the step, so the timers don't say.
+    pub hits: u32,
     /// Its laps as the host of a race online has timed them (the port's own; a
     /// game alone times only the player's, in the display).
     pub laps: LapTimes,
@@ -370,6 +374,7 @@ impl Kart {
             out: None,
             stake: 0.0,
             it: false,
+            hits: 0,
             laps: LapTimes::default(),
             held: None,
             whites: 0,
@@ -505,6 +510,7 @@ impl Kart {
     pub fn spin_at(&mut self, turns: f32, rate: f32) {
         if self.vulnerable() && self.spin <= 0.0 {
             (self.spin, self.spin_rate) = (turns * TAU / rate, rate);
+            self.hits += 1;
         }
     }
 
@@ -515,6 +521,7 @@ impl Kart {
         if !self.vulnerable() {
             return false;
         }
+        self.hits += 1;
         // A car on a recording is blown up until it comes back down.
         self.spin_out = if self.route.is_some() {
             ROUTE_SPIN_OUT
@@ -2227,7 +2234,7 @@ mod tests {
 
     #[test]
     fn ai_laps_the_built_in_circuits() {
-        for layout in crate::track::Layout::ALL {
+        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
             let track = Track::built(layout);
             let laps = solo_run(&track, lapping_time(&track));
             assert!(laps.len() >= 3, "{layout:?} {laps:?}");
@@ -2236,7 +2243,7 @@ mod tests {
 
     #[test]
     fn ai_laps_the_built_in_circuits_in_the_fastest_cars() {
-        for layout in crate::track::Layout::ALL {
+        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
             let track = Track::built(layout);
             let laps = paced_run(&track, lapping_time(&track) / 2.0, 2.0);
             assert!(laps.len() >= 3, "{layout:?} {laps:?}");
@@ -2245,7 +2252,7 @@ mod tests {
 
     #[test]
     fn ai_laps_the_built_in_circuits_backwards() {
-        for layout in crate::track::Layout::ALL {
+        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
             let mut track = Track::built(layout);
             track.reverse();
             let laps = solo_run(&track, lapping_time(&track));
@@ -2317,7 +2324,7 @@ mod tests {
 
     #[test]
     fn the_computer_takes_the_byways_when_it_has_a_mind_to_either_way_round() {
-        for layout in crate::track::Layout::ALL {
+        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
             for reverse in [false, true] {
                 let mut track = Track::built(layout);
                 if reverse {

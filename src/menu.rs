@@ -26,6 +26,13 @@ pub struct Circuit {
     pub group: usize,
 }
 
+impl Circuit {
+    /// Whether it is one of the arenas, which are for a battle (`Layout::ARENAS`).
+    pub fn arena(&self) -> bool {
+        self.race.is_none() && self.layout.arena()
+    }
+}
+
 #[derive(Resource)]
 pub struct Circuits(pub Vec<Circuit>);
 
@@ -55,7 +62,9 @@ impl Circuits {
                 }
             })
             .collect();
-        circuits.extend(Layout::ALL.map(|layout| Circuit {
+        // The arenas come last, and are raced on only in a battle online.
+        let built = Layout::ALL.into_iter().chain(Layout::ARENAS);
+        circuits.extend(built.map(|layout| Circuit {
             name: layout.name().into(),
             race: None,
             layout,
@@ -743,8 +752,10 @@ fn single_races_are_listed_in_their_circuits_order() {
         ]
     );
     assert_eq!(listed[12], ("Rocket Racer Run", 3));
-    // The built-in circuits come last, in a set of their own.
-    assert_eq!((listed.len(), listed[13].1, listed[16].1), (17, 4, 4));
+    // The built-in circuits come last, in a set of their own, and the arenas after them.
+    assert_eq!((listed.len(), listed[13].1, listed[16].1), (20, 4, 4));
+    let arenas: Vec<bool> = circuits.0.iter().map(Circuit::arena).collect();
+    assert!(arenas[..17].iter().all(|arena| !arena) && arenas[17..].iter().all(|arena| *arena));
 }
 
 #[cfg(test)]

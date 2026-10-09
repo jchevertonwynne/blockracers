@@ -1194,6 +1194,7 @@ pub fn hazards(
                         // Stopped dead and tossed in the air.
                         k.vel = Vec3::Y * 150.0 * FORCE * k.pace;
                         k.spin_out = physics::SPIN_OUT_TIME;
+                        k.hits += 1;
                         k.contacts = 0;
                         k.cues.reaction = Some(false);
                         sfx.emit(GHOST_HIT, Emitter::at(k.pos).range(200.0, 300.0));

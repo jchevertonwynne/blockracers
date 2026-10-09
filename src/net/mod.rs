@@ -770,6 +770,8 @@ fn session(
             let fallback = Rules::of(&settings, &circuits);
             let mut dice = crate::meshgen::Rng(time.elapsed().subsec_nanos() | 1);
             if let Some(rules) = room.tick(time.delta_secs(), &fallback, &mut dice) {
+                let rules = rules.fitted(&circuits);
+                room.last = Some(rules.clone());
                 // A series that has been run to its end is begun again.
                 if session.series > 0 && room.raced >= session.series {
                     room.reset();

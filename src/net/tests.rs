@@ -1088,6 +1088,38 @@ fn a_battles_lives_are_told_to_the_player() {
     assert!(car(&mut pair.host, HOSTS).finished.is_some());
 }
 
+/// A cannonball takes a life in a battle, as anything that throws a car does, and
+/// one only, though its blast throws the car for as long as it is in reach.
+#[test]
+fn a_cannonball_takes_one_life_in_a_battle() {
+    let mut pair = Pair::new(0, 0.0);
+    for app in [&mut pair.host, &mut pair.guest] {
+        app.world_mut().resource_mut::<Settings>().mode = crate::menu::Mode::Battle;
+    }
+    for _ in 0..30 {
+        pair.step();
+    }
+    let track = Track::new();
+    car_mut(&mut pair.host, GUESTS).place(&track, 30.0, 0.0);
+    car_mut(&mut pair.host, HOSTS).place(&track, 12.0, 0.0);
+    for _ in 0..30 {
+        pair.step();
+    }
+    (
+        car_mut(&mut pair.host, HOSTS).held,
+        car_mut(&mut pair.host, HOSTS).whites,
+    ) = (Some(Power::Red), 0);
+    press(&mut pair.host, KeyCode::Space, true);
+    for _ in 0..240 {
+        pair.step();
+        press(&mut pair.host, KeyCode::Space, false);
+    }
+    for app in [&mut pair.host, &mut pair.guest] {
+        assert_eq!(car(app, GUESTS).stake, modes::LIVES - 1.0);
+        assert_eq!(car(app, HOSTS).stake, modes::LIVES);
+    }
+}
+
 /// Elimination online counts every car, players' and the computer's alike, and the
 /// host's own car going out is not the end of the race for the rest.
 #[test]

@@ -438,6 +438,92 @@ const HELTER_TUNNELS: &[[[f32; 2]; 2]] = &[
 /// Where the lip of the helter skelter's jump is, as (x, z).
 const HELTER_JUMPS: &[[f32; 2]] = &[[216.6, 496.1]];
 
+/// The arenas: short circuits for `net::modes`' battle, where what matters is how
+/// often cars meet and how far along the road a shot can be seen to go, and not how
+/// the lap is to drive. All three are flat but for what each is about.
+///
+/// The bowl's control points as (x, height, z): two short straights and two banked
+/// half circles, the smallest lap that six cars fit round, so that nobody is ever
+/// out of reach. A cut straight across its middle lets a car come out in front of
+/// whoever was behind it.
+const BOWL: &[[f32; 3]] = &[
+    [-40.0, 0.0, 0.0],
+    [40.0, 0.0, 0.0],
+    [85.0, 0.0, -15.0],
+    [100.0, 0.0, -50.0],
+    [85.0, 0.0, -85.0],
+    [40.0, 0.0, -100.0],
+    [-40.0, 0.0, -100.0],
+    [-85.0, 0.0, -85.0],
+    [-100.0, 0.0, -50.0],
+    [-85.0, 0.0, -15.0],
+];
+/// The flyover's: a small figure of eight, the road crossing itself by a bridge.
+/// Each loop is in sight of the other across the crossing, and a car is safe from
+/// those on the other level, which is somewhere to get away to.
+const FLYOVER: &[[f32; 3]] = &[
+    [-35.0, 0.0, -35.0],
+    [0.0, 0.0, 0.0],
+    [35.0, 0.0, 35.0],
+    [70.0, 0.0, 50.0],
+    [110.0, 0.0, 35.0],
+    [122.0, 0.0, 0.0],
+    [110.0, 2.0, -35.0],
+    [70.0, 6.0, -50.0],
+    [35.0, DECK, -35.0],
+    [0.0, DECK, 0.0],
+    [-35.0, DECK, 35.0],
+    [-70.0, 6.0, 50.0],
+    [-110.0, 2.0, 35.0],
+    [-122.0, 0.0, 0.0],
+    [-110.0, 0.0, -35.0],
+    [-70.0, 0.0, -50.0],
+];
+/// The switchback's: four straights side by side, joined by hairpins, and the way
+/// back round the end of them. A shot has the length of a straight to find its
+/// mark in, a car coming the other way is one barrier off, and a gap between the
+/// two middle straights lets one be swapped for the other.
+const SWITCHBACK: &[[f32; 3]] = &[
+    [-70.0, 0.0, 0.0],
+    [-42.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [42.0, 0.0, 0.0],
+    [60.0, 0.0, 0.0],
+    [72.0, 0.0, -3.2],
+    [80.8, 0.0, -12.0],
+    [84.0, 0.0, -24.0],
+    [80.8, 0.0, -36.0],
+    [72.0, 0.0, -44.8],
+    [60.0, 0.0, -48.0],
+    [42.0, 0.0, -48.0],
+    [0.0, 0.0, -48.0],
+    [-42.0, 0.0, -48.0],
+    [-60.0, 0.0, -48.0],
+    [-72.0, 0.0, -51.2],
+    [-80.8, 0.0, -60.0],
+    [-84.0, 0.0, -72.0],
+    [-80.8, 0.0, -84.0],
+    [-72.0, 0.0, -92.8],
+    [-60.0, 0.0, -96.0],
+    [-42.0, 0.0, -96.0],
+    [0.0, 0.0, -96.0],
+    [42.0, 0.0, -96.0],
+    [60.0, 0.0, -96.0],
+    [72.0, 0.0, -99.2],
+    [80.8, 0.0, -108.0],
+    [84.0, 0.0, -120.0],
+    [80.8, 0.0, -132.0],
+    [72.0, 0.0, -140.8],
+    [60.0, 0.0, -144.0],
+    [42.0, 0.0, -144.0],
+    [0.0, 0.0, -144.0],
+    [-42.0, 0.0, -144.0],
+    [-70.0, 0.0, -144.0],
+    [-121.0, 0.0, -123.0],
+    [-142.0, 0.0, -72.0],
+    [-121.0, 0.0, -21.0],
+];
+
 /// A way off a circuit's road and back onto it further round, straight from one place
 /// on the racing line to another, each so far round the lap: how far its tarmac and
 /// its barriers are from its middle, how high the bumps along it are, whether it has
@@ -542,6 +628,45 @@ const HELTER_EXTRAS: Extras = Extras {
     infields: &[(462.0, 557.0), (1516.0, 1594.0)],
     pads: &[(140.0, 0.0), (1200.0, 0.0), (3120.0, 0.0)],
     banks: &[(1690.0, 2190.0, 0.12), (2335.0, 2550.0, 0.15)],
+};
+/// The bowl's: the cut across its middle, a pad on each straight and both ends banked.
+const BOWL_EXTRAS: Extras = Extras {
+    byways: &[Byway {
+        from: 20.0,
+        to: 316.0,
+        road: 5.0,
+        wall: 7.0,
+        bumps: 0.0,
+        covered: false,
+        taken: 0.25,
+    }],
+    infields: &[],
+    pads: &[(60.0, 0.0), (275.0, 0.0)],
+    banks: &[(90.0, 245.0, 0.15), (345.0, 500.0, 0.15)],
+};
+/// The flyover's: a pad on the way into each loop, and the low end of the loop the
+/// bridge is climbed from banked.
+const FLYOVER_EXTRAS: Extras = Extras {
+    byways: &[],
+    infields: &[],
+    pads: &[(120.0, 0.0), (610.0, 0.0)],
+    banks: &[(140.0, 228.0, 0.15)],
+};
+/// The switchback's: the gap between its two middle straights, a pad on the first
+/// straight and the last, and the way back banked.
+const SWITCHBACK_EXTRAS: Extras = Extras {
+    byways: &[Byway {
+        from: 266.0,
+        to: 460.0,
+        road: 7.5,
+        wall: 9.5,
+        bumps: 0.0,
+        covered: false,
+        taken: 0.25,
+    }],
+    infields: &[],
+    pads: &[(70.0, 0.0), (656.0, 0.0)],
+    banks: &[(750.0, 925.0, 0.12)],
 };
 /// How many samples a bank takes to come up to its steepest, and to go down again.
 const BANK_EASE: f32 = 12.0;
@@ -657,9 +782,20 @@ pub enum Layout {
     FigureEight,
     Gauntlet,
     HelterSkelter,
+    /// The arenas, for a battle (`Layout::ARENAS`).
+    Bowl,
+    Flyover,
+    Switchback,
 }
 
 impl Layout {
+    /// The circuits made for a battle and not for racing round.
+    pub const ARENAS: [Layout; 3] = [Layout::Bowl, Layout::Flyover, Layout::Switchback];
+
+    pub fn arena(self) -> bool {
+        Layout::ARENAS.contains(&self)
+    }
+
     pub const ALL: [Layout; 4] = [
         Layout::Brick,
         Layout::FigureEight,
@@ -673,6 +809,9 @@ impl Layout {
             Layout::FigureEight => "Figure Eight",
             Layout::Gauntlet => "Gauntlet",
             Layout::HelterSkelter => "Helter Skelter",
+            Layout::Bowl => "Brick Bowl",
+            Layout::Flyover => "Flyover",
+            Layout::Switchback => "Switchback",
         }
     }
 
@@ -683,6 +822,9 @@ impl Layout {
             Layout::FigureEight => "FIGURE8",
             Layout::Gauntlet => "GAUNTLET",
             Layout::HelterSkelter => "HELTER",
+            Layout::Bowl => "BOWL",
+            Layout::Flyover => "FLYOVER",
+            Layout::Switchback => "SWITCHBACK",
         }
     }
 
@@ -692,6 +834,9 @@ impl Layout {
             Layout::FigureEight => (FIGURE_EIGHT.to_vec(), 1.0),
             Layout::Gauntlet => (GAUNTLET.to_vec(), 1.0),
             Layout::HelterSkelter => (drawn(HELTER), 1.0),
+            Layout::Bowl => (BOWL.to_vec(), 1.0),
+            Layout::Flyover => (FLYOVER.to_vec(), 1.0),
+            Layout::Switchback => (SWITCHBACK.to_vec(), 1.0),
         };
         // Mirrored, the built-in circuits are turned over the same way the game's are.
         let side = if mirror { -1.0 } else { 1.0 };
@@ -717,6 +862,9 @@ impl Layout {
             Layout::FigureEight => &FIGURE_EIGHT_EXTRAS,
             Layout::Gauntlet => &GAUNTLET_EXTRAS,
             Layout::HelterSkelter => &HELTER_EXTRAS,
+            Layout::Bowl => &BOWL_EXTRAS,
+            Layout::Flyover => &FLYOVER_EXTRAS,
+            Layout::Switchback => &SWITCHBACK_EXTRAS,
         }
     }
 
@@ -745,6 +893,9 @@ impl Layout {
             Layout::FigureEight => (Vec2::new(-340.0, -220.0), Vec2::new(330.0, 220.0)),
             Layout::Gauntlet => (Vec2::new(-540.0, -600.0), Vec2::new(650.0, 110.0)),
             Layout::HelterSkelter => (Vec2::new(-260.0, -130.0), Vec2::new(790.0, 920.0)),
+            Layout::Bowl => (Vec2::new(-200.0, -200.0), Vec2::new(200.0, 100.0)),
+            Layout::Flyover => (Vec2::new(-220.0, -150.0), Vec2::new(220.0, 150.0)),
+            Layout::Switchback => (Vec2::new(-220.0, -220.0), Vec2::new(180.0, 100.0)),
         }
     }
 }
@@ -1192,7 +1343,9 @@ impl Track {
                 ));
                 for side in [-1.0, 1.0] {
                     let (a, b) = (p + across * side, q + across * side);
-                    if !track.on_road((a + b) / 2.0, WALL) {
+                    // None of it stands out past the road's own barrier, where a
+                    // car going along that barrier would catch on its end.
+                    if !track.on_road(a, WALL) && !track.on_road(b, WALL) {
                         let (low, high) = (Vec3::Y, Vec3::Y * 3.0);
                         quads.push(([a - low, b - low, b + high, a + high], Surface::default()));
                     }
@@ -1234,13 +1387,20 @@ impl Track {
             .map(|branch| (branch.ends[0], branch.ends[1]))
             .chain(infields.iter().map(|infield| (infield.from, infield.to)))
             .collect();
+        let mut last = 0;
         for (zone, mut at) in [(2, n / 3), (0, 2 * n / 3)] {
+            // Where a byway goes round more than half the lap (the bowl's), the
+            // second is half way from the first to the line.
+            if at <= last {
+                at = last + (n - last) / 2;
+            }
             while let Some(&(_, to)) = stretches.iter().find(|&&(from, to)| {
                 (from.saturating_sub(ZONE_CLEAR)..to + ZONE_CLEAR).contains(&at)
             }) {
                 at = to + ZONE_CLEAR;
             }
             track.course.zones.push((track.pts[at], WALL + 3.0, zone));
+            last = at;
         }
         track
     }
@@ -1851,12 +2011,14 @@ mod tests {
 
     #[test]
     fn barriers_never_fold_and_track_never_touches_itself() {
-        for layout in Layout::ALL {
+        for layout in Layout::ALL.into_iter().chain(Layout::ARENAS) {
             let t = Track::built(layout);
             let n = t.n();
             let (shortest, longest) = match layout {
                 Layout::Gauntlet => (900.0, 3500.0),
                 Layout::HelterSkelter => (4100.0, 4400.0),
+                // An arena is a short way round, so that its cars keep meeting.
+                Layout::Bowl | Layout::Flyover | Layout::Switchback => (450.0, 1000.0),
                 _ => (900.0, 1400.0),
             };
             assert!(

@@ -2545,7 +2545,7 @@ mod tests {
 #[test]
 fn bricks_are_laid_where_a_circuit_s_features_are() {
     use crate::track::{Layout, WALL};
-    for layout in Layout::ALL {
+    for layout in Layout::ALL.into_iter().chain(Layout::ARENAS) {
         let track = Track::built(layout);
         let bricks = laid(&track);
         let near = |p: Vec3, reach: f32| bricks.iter().any(|b| b.1.distance(p) < reach);

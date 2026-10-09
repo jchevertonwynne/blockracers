@@ -165,6 +165,20 @@ impl Rules {
         }
     }
 
+    pub fn mode(&self) -> Mode {
+        Mode::ALL[(self.mode as usize).min(Mode::ALL.len() - 1)]
+    }
+
+    /// These, on a circuit they can be raced on: an arena is for a battle, and
+    /// anything else voted onto one is run on the first circuit there is.
+    pub fn fitted(mut self, circuits: &Circuits) -> Self {
+        let arena = circuits.0.iter().any(|c| key(c) == self.circuit && c.arena());
+        if arena && self.mode() != Mode::Battle {
+            self.circuit = circuits.0.first().map(key).unwrap_or_default().to_string();
+        }
+        self
+    }
+
     /// Sets a game up to race by these. False if it hasn't the circuit.
     pub fn apply(&self, settings: &mut Settings, circuits: &Circuits) -> bool {
         let Some(circuit) = circuits.0.iter().position(|c| key(c) == self.circuit) else {
@@ -175,7 +189,7 @@ impl Rules {
         (settings.championship, settings.time_race) = (None, false);
         (settings.mirror, settings.reverse, settings.elimination) =
             (self.mirror, self.reverse, false);
-        settings.mode = Mode::ALL[(self.mode as usize).min(Mode::ALL.len() - 1)];
+        settings.mode = self.mode();
         settings.bricks = (self.bricks as usize).min(crate::menu::BRICK_RULES.len() - 1);
         settings.speed = (self.speed as usize).min(crate::menu::SPEEDS.len() - 1);
         settings.opponents = (self.opponents as usize).min(crate::menu::MAX_OPPONENTS);
@@ -320,6 +334,28 @@ mod tests {
         };
         assert_eq!(decode::<ToHost>(&encode(&hello)).unwrap(), hello);
         assert!(decode::<ToPlayer>(&[0xff, 0xff, 0xff]).is_err());
+    }
+
+    #[test]
+    fn an_arena_is_raced_on_only_in_a_battle() {
+        let circuits = Circuits::find();
+        let settings = Settings::new(&circuits);
+        let arena = circuits.0.iter().find(|c| c.arena()).expect("an arena");
+        let wanted = |mode: Mode| Rules {
+            circuit: key(arena).to_string(),
+            mode: mode as u8,
+            ..Rules::of(&settings, &circuits)
+        };
+        assert_eq!(wanted(Mode::Battle).fitted(&circuits).circuit, key(arena));
+        for mode in [Mode::Race, Mode::Elimination, Mode::Tag] {
+            let fitted = wanted(mode).fitted(&circuits);
+            assert_eq!(fitted.circuit, key(&circuits.0[0]));
+            assert_eq!(fitted.mode(), mode);
+        }
+        // A circuit that isn't an arena is anyone's, a battle's too.
+        let mut plain = wanted(Mode::Battle);
+        plain.circuit = key(&circuits.0[0]).to_string();
+        assert_eq!(plain.clone().fitted(&circuits), plain);
     }
 
     #[test]

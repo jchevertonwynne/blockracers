@@ -48,7 +48,10 @@ const MARKER: f32 = 16.0;
 const TAG_HEIGHT: f32 = 1.1;
 const TAG_REACH: f32 = 60.0;
 const TAG_NEAR: f32 = 6.0;
-/// The colour of what is said of the car that is "it" in a game of tag.
+/// How far off another car's lives are still shown over it in a battle.
+const LIVES_REACH: f32 = 150.0;
+/// The colour of what is said of the car that is "it" in a game of tag, and of a
+/// car's last life in a battle.
 const IT: Color = Color::srgb(1.0, 0.25, 0.2);
 /// The side of the square the player's arrow is drawn in.
 const ARROW_SPAN: f32 = 20.0;
@@ -634,25 +637,33 @@ pub fn draw(
         })
         .collect();
     // In a game of tag the car that is "it" is marked so, whoever drives it and
-    // however far off it is.
+    // however far off it is; in a battle every other car has its lives over it, the
+    // computer's too, in red when it is down to its last.
+    let battle = settings.mode == crate::menu::Mode::Battle;
     let (lens, eye) = *camera;
     for (kart, shown) in cars.iter().filter(|(kart, _)| {
-        let it = kart.it && kart.slot != player.slot;
-        (people.contains(&kart.slot) || it) && kart.out.is_none()
+        let other = kart.slot != player.slot;
+        (people.contains(&kart.slot) || (other && (kart.it || battle))) && kart.out.is_none()
     }) {
         let above = shown.translation + Vec3::Y * TAG_HEIGHT;
         let away = above.distance(eye.translation);
         let Ok(at) = lens.world_to_viewport(&GlobalTransform::from(*eye), above) else {
             continue;
         };
-        if away > TAG_REACH && !kart.it {
+        let reach = if battle { LIVES_REACH } else { TAG_REACH };
+        if away > reach && !kart.it {
             continue;
         }
-        let (words, colour) = match (kart.it, people.contains(&kart.slot)) {
-            (true, true) => (format!("{} IS IT", kart.name), IT),
-            (true, false) => ("IT".to_string(), IT),
-            (false, _) => (kart.name.to_string(), Color::WHITE),
+        let person = people.contains(&kart.slot);
+        let lives = kart.stake as u32;
+        let (words, colour) = match (kart.it, battle, person) {
+            (true, _, true) => (format!("{} IS IT", kart.name), IT),
+            (true, _, false) => ("IT".to_string(), IT),
+            (false, true, true) => (format!("{} {lives}", kart.name), Color::WHITE),
+            (false, true, false) => (lives.to_string(), Color::WHITE),
+            (false, false, _) => (kart.name.to_string(), Color::WHITE),
         };
+        let colour = if battle && lives <= 1 { IT } else { colour };
         let size = (TAG_NEAR / away).clamp(0.4, 0.8);
         let at = at / fit - Vec2::new(frame.width("font_ths", &words, size) / 2.0, line * size);
         frame.write("font_ths", &words, at, size, colour);
@@ -1236,7 +1247,7 @@ pub fn draw(
 #[test]
 fn a_built_circuit_has_a_map_of_its_road() {
     use crate::track::{Layout, Track};
-    for layout in [Layout::Brick, Layout::FigureEight, Layout::Gauntlet, Layout::HelterSkelter] {
+    for layout in Layout::ALL.into_iter().chain(Layout::ARENAS) {
         let track = Track::built(layout);
         let (map, [west, north, east, south]) = sketch(&track, false);
         assert_eq!(map.width.max(map.height), SKETCH as u32);

@@ -275,6 +275,11 @@ struct Wired<'a> {
 
 impl Wired<'_> {
     /// The race the player here has asked for, as settings to show it by.
+    /// How the host has said the next race is won, as far as the room has heard.
+    fn mode(&self) -> crate::menu::Mode {
+        self.room.hosts().map_or(crate::menu::Mode::Race, Rules::mode)
+    }
+
     fn wish(&self, settings: &Settings, circuits: &Circuits) -> Settings {
         let mut wish = settings.clone();
         if let Some(ballot) = &self.room.ballot {
@@ -795,6 +800,14 @@ impl Art {
 }
 
 /// Which of the game's circuits a race belongs to.
+/// The circuits a race may be run on, of them all: an arena only in a battle,
+/// which is online.
+fn offered(circuits: &Circuits, mode: crate::menu::Mode) -> Vec<usize> {
+    (0..circuits.0.len())
+        .filter(|&n| mode == crate::menu::Mode::Battle || !circuits.0[n].arena())
+        .collect()
+}
+
 fn group(circuits: &Circuits, index: usize) -> usize {
     circuits.0[index].group.min(CIRCUIT_ICONS.len() - 1)
 }
@@ -1274,15 +1287,15 @@ fn items(
             enabled: true,
         }],
         Page::Wishes => {
-            // Every circuit there is, to be voted for.
-            let mut items: Vec<Item> = circuits
-                .0
+            // Every circuit the host's kind of race is run on, to be voted for.
+            let maps = offered(circuits, wired.mode());
+            let mut items: Vec<Item> = maps
                 .iter()
                 .enumerate()
-                .map(|(n, circuit)| {
+                .map(|(at, &n)| {
                     plain(
-                        map_place(n, circuits.0.len()),
-                        &circuit.name,
+                        map_place(at, maps.len()),
+                        &circuits.0[n].name,
                         Action::Map(n),
                     )
                 })
@@ -1721,10 +1734,11 @@ fn notes(
                 .ballot
                 .as_ref()
                 .map(|_| wired.wish(settings, circuits).circuit);
-            for (n, circuit) in circuits.0.iter().enumerate() {
-                let votes = room.votes(net::protocol::key(circuit));
+            let maps = offered(circuits, wired.mode());
+            for (at, &n) in maps.iter().enumerate() {
+                let votes = room.votes(net::protocol::key(&circuits.0[n]));
                 if votes > 0 {
-                    let corner = map_place(n, circuits.0.len());
+                    let corner = map_place(at, maps.len());
                     notes.push((
                         Rect::from_corners(corner, corner + Vec2::splat(ICON)),
                         votes.to_string(),
@@ -1737,7 +1751,7 @@ fn notes(
             // Under them, how the host has said the race is to be run.
             if let Some(rules) = room.hosts() {
                 // A battle and a game of tag aren't run by the lap.
-                let mode = crate::menu::Mode::ALL[rules.mode as usize % crate::menu::Mode::ALL.len()];
+                let mode = rules.mode();
                 let lapped = !matches!(mode, crate::menu::Mode::Battle | crate::menu::Mode::Tag);
                 let mut said = Vec::new();
                 said.extend((rules.mode > 0).then(|| mode.label().to_uppercase()));
@@ -2712,12 +2726,18 @@ fn input(
             Some(wish) => wish,
             None => &mut settings,
         };
-        let races: Vec<usize> = (0..circuits.0.len()).collect();
+        // In the room the kind of race is the host's to say, whoever is voting.
+        let mode = match room.hosts() {
+            Some(hosts) if voting => hosts.mode(),
+            _ => settings.mode,
+        };
+        let races = offered(&circuits, mode);
         let here = group(&circuits, settings.circuit);
         match action {
             // The room has one selector for the circuit, which goes round them all.
             Action::RaceChoice if voting => {
-                settings.circuit = turn(settings.circuit, circuits.0.len())
+                let at = races.iter().position(|&r| r == settings.circuit);
+                settings.circuit = races[turn(at.unwrap_or(0), races.len())]
             }
             Action::Circuit => {
                 // On to the first race of the next circuit that has any.

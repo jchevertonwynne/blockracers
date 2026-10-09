@@ -485,6 +485,8 @@ pub fn load(
         Layout::FigureEight => FIGURE_EIGHT_BORROWED,
         Layout::Gauntlet => &BORROWED,
         Layout::HelterSkelter => HELTER_BORROWED,
+        // Nothing stands in an arena but its cars.
+        Layout::Bowl | Layout::Flyover | Layout::Switchback => &[],
     };
     let mut world = world::borrowed(circuit.unwrap_or("c0"), borrowed)?;
     // Everything is worked out on the circuit as it is unmirrored, in the game's
@@ -518,6 +520,7 @@ pub fn load(
             b.hammer(at(2670.0, 0.0));
             b.stones([3860.0, 3885.0, 3910.0].map(|s| at(s, 0.0)));
         }
+        Layout::Bowl | Layout::Flyover | Layout::Switchback => {}
     }
 
     // Bricks where the circuit's own features ask for them, as without the hazards.

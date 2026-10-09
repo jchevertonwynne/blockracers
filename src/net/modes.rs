@@ -2,8 +2,10 @@
 //! port's own, and the host's to choose (`menu::Mode`, in `protocol::Rules`).
 //!
 //! In a battle every car has `LIVES` lives. Anything that spins a car round or
-//! blows it into the air takes one, and a car with none left is out of the race;
-//! the last car in it wins, or after `BATTLE_TIME` whoever has most left.
+//! blows it into the air takes one (`Kart::hits`), and for `SPARED` seconds after
+//! nothing takes another: a blast throws a car for as long as it is in reach, and
+//! that is one hit. A car with none left is out of the race; the last car in it
+//! wins, or after `BATTLE_TIME` whoever has most left.
 //!
 //! In a game of tag every car has a clock of `TAG_TIME` seconds, and one car, drawn
 //! at the start, is "it". Its clock runs down until it bumps another car, which is
@@ -27,6 +29,8 @@ use crate::{Phase, Race};
 /// The lives a car begins a battle with, and how long one is fought for.
 pub const LIVES: f32 = 3.0;
 pub const BATTLE_TIME: f32 = 240.0;
+/// How long a car that has just lost a life can't lose another.
+pub const SPARED: f32 = 1.5;
 /// The seconds on each car's clock in a game of tag.
 pub const TAG_TIME: f32 = 30.0;
 /// How long a car that has just been made "it" can't make another so.
@@ -42,8 +46,10 @@ const APART: f32 = 1e-3;
 pub struct Play {
     /// Every car has been given what it begins with.
     begun: bool,
-    /// The cars, by grid slot, that were spinning or in the air at the last step.
-    hurt: [bool; crate::kart::PLAYER_SLOT + 1],
+    /// How many hits each car, by grid slot, had taken at the last step, and what
+    /// is left of the time it is spared another life in.
+    hits: [u32; crate::kart::PLAYER_SLOT + 1],
+    spared: [f32; crate::kart::PLAYER_SLOT + 1],
     /// What is left of the time "it" can't be passed on in.
     held: f32,
 }
@@ -63,6 +69,7 @@ fn end<'a>(karts: impl Iterator<Item = Mut<'a, Kart>>, time: f32) {
 
 /// A battle: a car hit loses a life, and one with none left is out.
 pub fn battle(
+    time: Res<Time>,
     race: Res<Race>,
     settings: Res<Settings>,
     mut play: ResMut<Play>,
@@ -80,15 +87,20 @@ pub fn battle(
     if !on(&race) {
         return;
     }
+    let dt = time.delta_secs();
+    let play = &mut *play;
     for mut kart in &mut karts {
-        let hurt = kart.spin > 0.0 || kart.spin_out > 0.0;
-        let was = play
-            .hurt
-            .get_mut(kart.slot)
-            .map_or(hurt, |was| std::mem::replace(was, hurt));
-        if !hurt || was || kart.out.is_some() || kart.finished.is_some() {
+        let (Some(seen), Some(spared)) =
+            (play.hits.get_mut(kart.slot), play.spared.get_mut(kart.slot))
+        else {
+            continue;
+        };
+        let hit = std::mem::replace(seen, kart.hits) != kart.hits;
+        *spared = (*spared - dt).max(0.0);
+        if !hit || *spared > 0.0 || kart.out.is_some() || kart.finished.is_some() {
             continue;
         }
+        *spared = SPARED;
         kart.stake = (kart.stake - 1.0).max(0.0);
         debug!("{} has {} lives left", kart.name, kart.stake);
         if kart.stake <= 0.0 {
@@ -263,17 +275,26 @@ mod tests {
         let mut world = world(Mode::Battle, 3);
         world.run_system_once(battle).unwrap();
         assert!(cars(&mut world).iter().all(|kart| kart.stake == LIVES));
-        // One spin is one life, however long it lasts.
-        car(&mut world, 0).spin = 1.0;
-        world.run_system_once(battle).unwrap();
+        // A blast throws a car for as long as it is in reach, and a car that drives
+        // for itself is over being thrown by the next step: that is one life all
+        // the same, and not one for every step of it.
+        for _ in 0..3 {
+            assert!(car(&mut world, 0).launch(1.0));
+            car(&mut world, 0).spin_out = 0.0;
+        }
         world.run_system_once(battle).unwrap();
         assert_eq!(car(&mut world, 0).stake, LIVES - 1.0);
-        // Each time it is hit afresh it loses another, and with none it is out.
+        // Thrown again at once it is spared; a step of a second on, it isn't, and
+        // a spin costs it what a throw does. With no lives it is out.
+        car(&mut world, 0).launch(1.0);
+        world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(100));
+        world.run_system_once(battle).unwrap();
+        assert_eq!(car(&mut world, 0).stake, LIVES - 1.0);
+        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(2));
+        world.run_system_once(battle).unwrap();
         for _ in 0..2 {
-            let mut hit = car(&mut world, 0);
-            (hit.spin, hit.spin_out) = (0.0, 0.0);
-            world.run_system_once(battle).unwrap();
-            car(&mut world, 0).spin_out = 1.0;
+            car(&mut world, 0).spin = 0.0;
+            car(&mut world, 0).spin_round(1.0);
             world.run_system_once(battle).unwrap();
         }
         let all = cars(&mut world);
@@ -281,7 +302,7 @@ mod tests {
         assert!(all[1].finished.is_none() && all[2].finished.is_none());
         // A second car out leaves the winner, who is home.
         car(&mut world, 1).stake = 1.0;
-        car(&mut world, 1).spin = 1.0;
+        car(&mut world, 1).spin_round(1.0);
         world.run_system_once(battle).unwrap();
         let all = cars(&mut world);
         assert!(all[1].out.is_some() && all[2].out.is_none());

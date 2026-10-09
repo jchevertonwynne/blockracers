@@ -24,7 +24,11 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   (`kart::Ai::byway`), `items::laid` puts the bricks where those features are,
   `src/gauntlet.rs` stands hazards of the game's round each, and `src/helter.rs` is the
   helter skelter's scenery. They have no picture for the race display's map, so one
-  is drawn of the road (`hud::original::sketch`).
+  is drawn of the road (`hud::original::sketch`). Three more are arenas
+  (`Layout::ARENAS`: the bowl, the flyover and the switchback), short laps made for
+  a battle online and offered nowhere else: the room's vote lists them only when
+  the host's mode is battle (`frontend`'s `offered`), and the host runs anything
+  else voted onto one on the first circuit (`Rules::fitted`). They have no hazards.
 - **Built cars:** `src/build.rs` has the rules of putting bricks on a chassis, the
   bytes a car is saved as and the model made of one, and a racer's minifigure;
   `src/assets/leb.rs`, `gcb.rs` and `lrs.rs` read the bricks, the minifigure's heads
@@ -215,7 +219,7 @@ menu instead. These combine with it:
 
 | Variable | Does |
 |---|---|
-| `BRICK_RACE=RACEC0R0` | which race folder to load (`TEST` is the garage's test drive; `BRICK`, `FIGURE8`, `GAUNTLET` and `HELTER` are the built-in circuits; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
+| `BRICK_RACE=RACEC0R0` | which race folder to load (`TEST` is the garage's test drive; `BRICK`, `FIGURE8`, `GAUNTLET` and `HELTER` are the built-in circuits, `BOWL`, `FLYOVER` and `SWITCHBACK` the arenas; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
 | `BRICK_CAM=x,y,z,tx,ty,tz` | fixed camera, in the game's coordinates |
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
