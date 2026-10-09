@@ -14,7 +14,7 @@ use super::room::{Finish, Voter};
 use super::scene::{EventNote, Scene};
 use super::state::{Standing, State};
 use crate::kart::Controls;
-use crate::menu::{Circuits, LAP_CHOICES, Settings};
+use crate::menu::{Circuits, LAP_CHOICES, Mode, Settings};
 use crate::replay::Pose;
 
 /// A step of the race. Host and players each count their own.
@@ -127,7 +127,8 @@ pub struct Rules {
     pub mirror: bool,
     pub reverse: bool,
     pub bricks: u8,
-    pub elimination: bool,
+    /// Which of `Mode::ALL` the race is.
+    pub mode: u8,
     /// Which of `menu::SPEEDS` every car goes at.
     pub speed: u8,
     pub opponents: u8,
@@ -153,7 +154,11 @@ impl Rules {
             mirror: settings.mirror,
             reverse: settings.reverse,
             bricks: settings.bricks as u8,
-            elimination: settings.elimination,
+            // A host who races alone by elimination is taken to want it here too.
+            mode: match settings.mode {
+                Mode::Race if settings.elimination => Mode::Elimination,
+                mode => mode,
+            } as u8,
             speed: settings.speed as u8,
             opponents: settings.opponents as u8,
             difficulty: settings.difficulty as u8,
@@ -169,7 +174,8 @@ impl Rules {
         settings.lap_choice = (self.lap_choice as usize).min(LAP_CHOICES.len() - 1);
         (settings.championship, settings.time_race) = (None, false);
         (settings.mirror, settings.reverse, settings.elimination) =
-            (self.mirror, self.reverse, self.elimination);
+            (self.mirror, self.reverse, false);
+        settings.mode = Mode::ALL[(self.mode as usize).min(Mode::ALL.len() - 1)];
         settings.bricks = (self.bricks as usize).min(crate::menu::BRICK_RULES.len() - 1);
         settings.speed = (self.speed as usize).min(crate::menu::SPEEDS.len() - 1);
         settings.opponents = (self.opponents as usize).min(crate::menu::MAX_OPPONENTS);

@@ -162,7 +162,15 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   from the room they can go back to it, and someone with no car in a race watches
   it (`net::Watching`: on their game the car followed carries `Player`). A joiner's own car
   is driven ahead of the host and the others are shown where they will be by then
-  (`net::client`), so that what is seen and what is bumped into agree.
+  (`net::client`), so that what is seen and what is bumped into agree. How a race
+  online is won is the host's to say on "rules" (`menu::Mode`, sent in
+  `net::protocol::Rules`): a race, elimination, or one of the two of `src/net/modes.rs`
+  that laps don't end, a battle (three lives, a spin or a blow into the air takes
+  one, the last car left wins) and a game of tag (the car that is "it" runs its
+  clock down until it bumps another; the first clock out ends it). What a car has
+  left is `Kart::stake` and `Kart::it`, which go to the players with its standing
+  and are shown where the display counts laps. A session's "series" scores any of
+  them by place, race after race.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 
@@ -173,7 +181,8 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
 - If the original does something the port has no feature for yet, build the feature.
   Don't leave a stand-in without saying so.
 - What the port adds to the original (replays, photo mode, reversed circuits, the brick
-  rules, elimination, quick steering, faster cars, the video options, online play) is off until asked for, and says in its
+  rules, elimination, quick steering, faster cars, the video options, online play and
+  its battle and tag) is off until asked for, and says in its
   module comment that it is the port's own.
 - Units: the game's are Z-up; ours are Y-up, with one game unit `physics::UNIT` of
   ours. Use `scenery::to_world` for positions.
@@ -235,6 +244,7 @@ menu instead. These combine with it:
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
 | `BRICK_NET=host:2` | host a session and start its race, without a vote, once that many players are in it (the host is one); `host:9` never fills, and leaves the session in its room |
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
+| `BRICK_MODE=battle\|tag\|elimination` | how the race a demo hosts is won (`BRICK_NET=host:1` hosts one against the computer's cars alone) |
 | `BRICK_SESSION`, `BRICK_NAME`, `BRICK_CAR`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, who they race as (a code from `roster::NAMES`, such as `PH`, or a number for that one of the garage's racers), the password set or given |
 | `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
 | `RUST_LOG=blockracers::hazards=debug` | per-module logging |

@@ -19,6 +19,9 @@ pub struct Standing {
     pub progress: f32,
     pub finished: Option<f32>,
     pub laps: LapTimes,
+    /// What it has left in a battle or a game of tag, and that it is "it".
+    pub stake: f32,
+    pub it: bool,
 }
 
 impl Standing {
@@ -29,13 +32,15 @@ impl Standing {
             progress: k.progress,
             finished: k.finished,
             laps: k.laps,
+            stake: k.stake,
+            it: k.it,
         }
     }
 
     pub fn put(self, k: &mut Kart) {
         (k.lap, k.place, k.progress, k.finished) =
             (self.lap, self.place as usize, self.progress, self.finished);
-        k.laps = self.laps;
+        (k.laps, k.stake, k.it) = (self.laps, self.stake, self.it);
     }
 }
 

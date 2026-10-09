@@ -108,6 +108,35 @@ pub const NAME_LENGTH: usize = 10;
 const CIRCUIT_LAPS: i32 = 3;
 pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("Hard", 1.06)];
 
+/// How a race online is won. The port's own, all but the first; the last two are
+/// `net::modes`'.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Mode {
+    /// To the line, as the original races.
+    #[default]
+    Race,
+    /// The last car is put out each lap (`rules::elimination`).
+    Elimination,
+    /// Every car has a few lives, and a hit takes one; the last car left wins.
+    Battle,
+    /// One car is "it" and its clock runs down until it bumps another, which is
+    /// "it" then; the game ends when a clock runs out.
+    Tag,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 4] = [Mode::Race, Mode::Elimination, Mode::Battle, Mode::Tag];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Race => "Race",
+            Mode::Elimination => "Elimination",
+            Mode::Battle => "Battle",
+            Mode::Tag => "Tag",
+        }
+    }
+}
+
 #[derive(Resource, Clone)]
 pub struct Settings {
     pub circuit: usize,
@@ -132,6 +161,11 @@ pub struct Settings {
     pub bricks: usize,
     /// The last car is put out each lap, until one is left.
     pub elimination: bool,
+    /// How a race online is won, which its host says (`Rules`). A game alone races.
+    pub mode: Mode,
+    /// How many other cars are in the race online, players' and the computer's
+    /// together; nothing for a game alone, where they are `opponents`.
+    pub rivals: Option<usize>,
     /// The wheels go to full lock almost at once, instead of turning as slowly as the
     /// original's do.
     pub quick_steering: bool,
@@ -189,6 +223,8 @@ pub enum Extra {
     Reverse,
     Bricks,
     Elimination,
+    /// The host's, online: which of `Mode::ALL` the race is.
+    Mode,
     Steering,
     Speed,
     VSync,
@@ -213,6 +249,7 @@ impl Extra {
             Extra::Reverse => "Reversed",
             Extra::Bricks => "Bricks",
             Extra::Elimination => "Elimination",
+            Extra::Mode => "Mode",
             Extra::Steering => "Steering",
             Extra::Speed => "Car speed",
             Extra::VSync => "Frame rate",
@@ -245,6 +282,8 @@ impl Settings {
             reverse: false,
             bricks: 0,
             elimination: false,
+            mode: Mode::Race,
+            rivals: None,
             quick_steering: false,
             speed: 0,
             vsync: true,
@@ -351,7 +390,14 @@ impl Settings {
 
     /// Whether the last car goes out each lap: it takes someone to race against.
     pub fn eliminating(&self) -> bool {
-        self.elimination && self.single() && self.opponents > 0
+        (self.elimination || self.mode == Mode::Elimination)
+            && self.single()
+            && self.rivals.unwrap_or(self.opponents) > 0
+    }
+
+    /// Whether the race is one of those that laps don't end (`net::modes`).
+    pub fn lapless(&self) -> bool {
+        matches!(self.mode, Mode::Battle | Mode::Tag)
     }
 
     /// The rule the race's bricks follow, as an index into `BRICK_RULES`.
@@ -370,6 +416,11 @@ impl Settings {
                     (self.bricks as i32 + change).rem_euclid(BRICK_RULES.len() as i32) as usize
             }
             Extra::Elimination => flip(&mut self.elimination),
+            Extra::Mode => {
+                let at = Mode::ALL.iter().position(|mode| *mode == self.mode);
+                let to = at.unwrap_or(0) as i32 + change;
+                self.mode = Mode::ALL[to.rem_euclid(Mode::ALL.len() as i32) as usize]
+            }
             Extra::Steering => flip(&mut self.quick_steering),
             Extra::Speed => {
                 self.speed = (self.speed as i32 + change).rem_euclid(SPEEDS.len() as i32) as usize
@@ -388,6 +439,7 @@ impl Settings {
             Extra::Reverse => on(self.reverse),
             Extra::Bricks => BRICK_RULES[self.bricks].to_string(),
             Extra::Elimination => on(self.elimination),
+            Extra::Mode => self.mode.label().to_string(),
             Extra::Steering => if self.quick_steering {
                 "Quick"
             } else {
@@ -423,7 +475,7 @@ impl Settings {
         }
         // One car goes at the end of each lap, and the last lap leaves the winner.
         if self.eliminating() {
-            return self.opponents as i32;
+            return self.rivals.unwrap_or(self.opponents) as i32;
         }
         LAP_CHOICES[self.lap_choice]
     }

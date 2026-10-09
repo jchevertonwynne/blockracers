@@ -48,6 +48,8 @@ const MARKER: f32 = 16.0;
 const TAG_HEIGHT: f32 = 1.1;
 const TAG_REACH: f32 = 60.0;
 const TAG_NEAR: f32 = 6.0;
+/// The colour of what is said of the car that is "it" in a game of tag.
+const IT: Color = Color::srgb(1.0, 0.25, 0.2);
 /// The side of the square the player's arrow is drawn in.
 const ARROW_SPAN: f32 = 20.0;
 /// A change of place makes the number swell to twice its size and back.
@@ -631,22 +633,29 @@ pub fn draw(
                 .map(|seat| seat.slot as usize)
         })
         .collect();
+    // In a game of tag the car that is "it" is marked so, whoever drives it and
+    // however far off it is.
     let (lens, eye) = *camera;
-    for (kart, shown) in cars
-        .iter()
-        .filter(|(kart, _)| people.contains(&kart.slot) && kart.out.is_none())
-    {
+    for (kart, shown) in cars.iter().filter(|(kart, _)| {
+        let it = kart.it && kart.slot != player.slot;
+        (people.contains(&kart.slot) || it) && kart.out.is_none()
+    }) {
         let above = shown.translation + Vec3::Y * TAG_HEIGHT;
         let away = above.distance(eye.translation);
         let Ok(at) = lens.world_to_viewport(&GlobalTransform::from(*eye), above) else {
             continue;
         };
-        if away > TAG_REACH {
+        if away > TAG_REACH && !kart.it {
             continue;
         }
+        let (words, colour) = match (kart.it, people.contains(&kart.slot)) {
+            (true, true) => (format!("{} IS IT", kart.name), IT),
+            (true, false) => ("IT".to_string(), IT),
+            (false, _) => (kart.name.to_string(), Color::WHITE),
+        };
         let size = (TAG_NEAR / away).clamp(0.4, 0.8);
-        let at = at / fit - Vec2::new(frame.width("font_ths", &kart.name, size) / 2.0, line * size);
-        frame.write("font_ths", &kart.name, at, size, Color::WHITE);
+        let at = at / fit - Vec2::new(frame.width("font_ths", &words, size) / 2.0, line * size);
+        frame.write("font_ths", &words, at, size, colour);
     }
 
     // Laps: the time of the one under way, and the best so far.
@@ -688,16 +697,25 @@ pub fn draw(
             );
         }
         if info {
-            let count = format!("{}/{}", player.display_lap(laps), laps);
+            // The port's own: a battle counts lives and a game of tag seconds, where
+            // a race counts laps, and whoever is "it" is told so in red.
+            let left = crate::net::modes::left(&settings, player);
+            let (label, count) = match left {
+                Some((label, left)) => (label.to_string(), left),
+                None => (
+                    string(text::LAP),
+                    format!("{}/{}", player.display_lap(laps), laps),
+                ),
+            };
+            let colour = if player.it { IT } else { white };
             let count_x = time_x - frame.width("font_ths", &count, 1.0) - 14.0;
-            frame.write("font_ths", &count, Vec2::new(count_x, TOP), 1.0, white);
-            let label = string(text::LAP);
+            frame.write("font_ths", &count, Vec2::new(count_x, TOP), 1.0, colour);
             frame.write(
                 "font_ths",
                 &label,
                 Vec2::new(count_x - frame.width("font_ths", &label, 1.0) - 8.0, TOP),
                 1.0,
-                white,
+                colour,
             );
         }
         if let Some(best) = best_lap.filter(|_| info) {

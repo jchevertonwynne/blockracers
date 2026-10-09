@@ -150,6 +150,9 @@ pub fn receive(
             kart.place = standing.map_or(kart.place, |standing| standing.place as usize);
             // Its laps are timed by the host, whose clock the race is run on.
             kart.laps = standing.map_or(kart.laps, |standing| standing.laps);
+            // So is what it has left of a battle or a game of tag.
+            (kart.stake, kart.it) =
+                standing.map_or((kart.stake, kart.it), |standing| (standing.stake, standing.it));
             // A white brick taken sounds as it does where the race is run, a note
             // higher for each one carried.
             if state.whites() > kart.whites {

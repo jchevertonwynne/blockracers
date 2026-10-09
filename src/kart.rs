@@ -179,8 +179,12 @@ pub struct Kart {
     pub progress: f32,
     pub place: usize,
     pub finished: Option<f32>,
-    /// When the car was put out of an elimination race.
+    /// When the car was put out of the race, by one of the port's ways of racing.
     pub out: Option<f32>,
+    /// What the car has left online in a battle or a game of tag (`net::modes`): its
+    /// lives, or the seconds of its clock; and that it is "it".
+    pub stake: f32,
+    pub it: bool,
     /// Its laps as the host of a race online has timed them (the port's own; a
     /// game alone times only the player's, in the display).
     pub laps: LapTimes,
@@ -364,6 +368,8 @@ impl Kart {
             place: slot + 1,
             finished: None,
             out: None,
+            stake: 0.0,
+            it: false,
             laps: LapTimes::default(),
             held: None,
             whites: 0,
@@ -1808,7 +1814,12 @@ impl Kart {
 
 /// `Racer::OnEvent`: cars that meet are parted and bounce off each other; a shield
 /// shoves or spins the car that touches it, and a curse is passed on.
-pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player>, Has<Remote>)>) {
+pub fn kart_collisions(
+    mut sfx: ResMut<Sfx>,
+    mut bumps: ResMut<Bumps>,
+    mut q: Query<(&mut Kart, Has<Player>, Has<Remote>)>,
+) {
+    bumps.0.clear();
     let mut pairs = q.iter_combinations_mut();
     while let Some([(mut a, a_here, a_elsewhere), (mut b, b_here, b_elsewhere)]) =
         pairs.fetch_next()
@@ -1816,13 +1827,20 @@ pub fn kart_collisions(mut sfx: ResMut<Sfx>, mut q: Query<(&mut Kart, Has<Player
         // Only bumps a player is part of are heard. Online a player elsewhere hears
         // their own by way of the host.
         let heard = (a_here || a_elsewhere || b_here || b_elsewhere).then_some(&mut *sfx);
-        meet(&mut a, &mut b, heard);
+        if meet(&mut a, &mut b, heard) {
+            bumps.0.push((a.slot, b.slot));
+        }
     }
 }
 
+/// The cars that met in the last step, by grid slot (the port's own, for
+/// `net::modes`' game of tag).
+#[derive(Resource, Default)]
+pub struct Bumps(pub Vec<(usize, usize)>);
+
 /// Two cars, if they are touching, are parted and bounced. `heard` is where the bump
-/// is sounded, if it is to be.
-pub fn meet(a: &mut Kart, b: &mut Kart, heard: Option<&mut Sfx>) {
+/// is sounded, if it is to be. Whether they were touching.
+pub fn meet(a: &mut Kart, b: &mut Kart, heard: Option<&mut Sfx>) -> bool {
     // Karts on different levels (a bridge, say), in warp or blown into the air
     // pass each other by.
     if (a.pos.y - b.pos.y).abs() > 2.0
@@ -1831,7 +1849,7 @@ pub fn meet(a: &mut Kart, b: &mut Kart, heard: Option<&mut Sfx>) {
         || a.spin_out > 0.0
         || b.spin_out > 0.0
     {
-        return;
+        return false;
     }
     let ((ends_a, radius_a), (ends_b, radius_b)) = (a.hull(), b.hull());
     // The deepest overlap between any of a's circles and any of b's.
@@ -1846,7 +1864,7 @@ pub fn meet(a: &mut Kart, b: &mut Kart, heard: Option<&mut Sfx>) {
         }
     }
     let Some((overlap, normal)) = worst else {
-        return;
+        return false;
     };
     a.pos -= normal * overlap * 0.5;
     b.pos += normal * overlap * 0.5;
@@ -1915,15 +1933,18 @@ pub fn meet(a: &mut Kart, b: &mut Kart, heard: Option<&mut Sfx>) {
     if !passed(a, b) {
         passed(b, a);
     }
+    true
 }
 
 /// What karts are ranked by, biggest first: finishers ahead of everyone still racing
 /// and the earliest of them first, then the rest by how far round they are.
-/// Cars put out of an elimination race come after those, the last to go first.
-fn place_key(k: &Kart) -> (u8, f32) {
+/// Cars put out of the race come after those, the last to go first. Where laps
+/// don't end the race (`lapless`), those still in it go by what they have left.
+fn place_key(k: &Kart, lapless: bool) -> (u8, f32) {
     match (k.out, k.finished) {
         (Some(time), _) => (0, time),
         (None, Some(time)) => (2, -time),
+        (None, None) if lapless => (1, k.stake),
         (None, None) => (1, k.progress),
     }
 }
@@ -1937,11 +1958,12 @@ pub fn update_places(race: Res<Race>, settings: Res<Settings>, mut q: Query<&mut
             if timed
                 && k.finished.is_none()
                 && k.out.is_none()
+                && !settings.lapless()
                 && (k.lap > settings.laps() || k.ended)
             {
                 k.finished = Some(race.time);
             }
-            (place_key(&k), k)
+            (place_key(&k, settings.lapless()), k)
         })
         .collect();
     order.sort_by(|a, b| b.0.0.cmp(&a.0.0).then(b.0.1.total_cmp(&a.0.1)));
@@ -2046,7 +2068,7 @@ mod tests {
             kart(None, 325.0),
         ];
         karts.sort_by(|a, b| {
-            let (a, b) = (place_key(a), place_key(b));
+            let (a, b) = (place_key(a, false), place_key(b, false));
             b.0.cmp(&a.0).then(b.1.total_cmp(&a.1))
         });
         let order: Vec<_> = karts.iter().map(|k| (k.finished, k.progress)).collect();
@@ -2064,7 +2086,7 @@ mod tests {
         // ahead of those who went before.
         (karts[3].out, karts[0].out, karts[0].finished) = (Some(20.0), Some(30.0), Some(30.0));
         karts.sort_by(|a, b| {
-            let (a, b) = (place_key(a), place_key(b));
+            let (a, b) = (place_key(a, false), place_key(b, false));
             b.0.cmp(&a.0).then(b.1.total_cmp(&a.1))
         });
         let order: Vec<_> = karts.iter().map(|k| (k.out, k.progress)).collect();

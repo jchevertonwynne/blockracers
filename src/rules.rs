@@ -24,6 +24,13 @@ pub fn brick(rule: usize, brick: Option<Power>) -> Option<Option<Power>> {
     }
 }
 
+/// Puts a car out of the race at `time`: it is gone from the circuit.
+pub fn put_out(kart: &mut Kart, time: f32) {
+    kart.out = Some(time);
+    kart.pos += PARKED;
+    kart.vel = Vec3::ZERO;
+}
+
 /// How many cars should have gone by the time the leader is on `lap`: one for each lap
 /// the leader has finished.
 fn gone_by(lap: i32) -> usize {
@@ -34,9 +41,13 @@ fn gone_by(lap: i32) -> usize {
 pub fn elimination(
     race: Res<Race>,
     settings: Res<Settings>,
+    role: Res<crate::net::Role>,
     mut karts: Query<(&mut Kart, Has<Player>)>,
 ) {
-    if !settings.eliminating() || race.phase != Phase::Racing {
+    // Online the race goes on for the rest once the host's own car is out of it.
+    let online = *role != crate::net::Role::Offline;
+    let on = race.phase == Phase::Racing || (online && race.phase == Phase::Finished);
+    if !settings.eliminating() || !on {
         return;
     }
     let running = karts.iter().filter(|(kart, _)| kart.out.is_none()).count();
@@ -59,11 +70,10 @@ pub fn elimination(
             "{} is out in place {} at {:.1}s",
             kart.name, kart.place, race.time
         );
-        kart.out = Some(race.time);
-        kart.pos += PARKED;
-        kart.vel = Vec3::ZERO;
-        // For the player that is the end of the race.
-        if player {
+        put_out(&mut kart, race.time);
+        // For a player alone that is the end of the race; online they watch the
+        // rest of it, and the race isn't over for the others (`net::host::flow`).
+        if player && !online {
             kart.finished = Some(race.time);
         }
     }

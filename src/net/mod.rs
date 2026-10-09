@@ -17,6 +17,7 @@ pub mod display;
 pub mod host;
 pub mod link;
 pub mod lobby;
+pub mod modes;
 pub mod protocol;
 pub mod room;
 pub mod scene;
@@ -357,6 +358,7 @@ pub fn start(
             .map(|member| (member.peer, member.name.clone(), member.car.clone())),
     );
     let seats = Lineup::seat(&players, settings.opponents);
+    settings.rivals = Some(seats.len().saturating_sub(1));
     (session.racing, session.watching) = (Some(rules.clone()), Vec::new());
     let start = encode(&ToPlayer::Start {
         rules: rules.clone(),
@@ -854,6 +856,7 @@ fn session(
                 ToPlayer::Start { rules, seats } => {
                     if rules.apply(&mut settings, &circuits) {
                         info!("racing {} with {} cars", rules.circuit, seats.len());
+                        settings.rivals = Some(seats.len().saturating_sub(1));
                         room.ready = false;
                         commands.insert_resource(Lineup {
                             seats,
@@ -1087,6 +1090,7 @@ pub fn enter_race(
     commands.insert_resource(Clock::default());
     commands.insert_resource(Pending::default());
     commands.insert_resource(host::Flow::default());
+    commands.insert_resource(modes::Play::default());
     commands.insert_resource(client::Prediction::default());
 }
 
@@ -1100,6 +1104,8 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Watching>()
         .init_resource::<Pending>()
         .init_resource::<host::Flow>()
+        .init_resource::<modes::Play>()
+        .init_resource::<kart::Bumps>()
         .init_resource::<client::Prediction>()
         .init_resource::<scene::Told>()
         .init_resource::<scene::Shown>()
@@ -1164,10 +1170,13 @@ pub fn plugin(app: &mut App) {
                     .run_if(hosting),
                 client::send.run_if(joined),
                 (items::use_items, items::actions).chain().run_if(hosting),
+                modes::pace,
                 kart::kart_physics,
                 client::bump.run_if(joined),
                 (
                     kart::kart_collisions,
+                    modes::battle,
+                    modes::tag,
                     kart::update_places,
                     rules::elimination,
                     items::pickups,

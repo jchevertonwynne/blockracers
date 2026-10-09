@@ -144,11 +144,14 @@ pub fn update_text_hud(
 
     set(
         &mut lap,
-        format!(
-            "LAP {}/{}",
-            player.display_lap(settings.laps()),
-            settings.laps()
-        ),
+        match crate::net::modes::left(&settings, player) {
+            Some((label, left)) => format!("{label} {left}"),
+            None => format!(
+                "LAP {}/{}",
+                player.display_lap(settings.laps()),
+                settings.laps()
+            ),
+        },
     );
     set(&mut place, ordinal(player.place).to_string());
     set(&mut timer, clock(player.finished.unwrap_or(race.time)));

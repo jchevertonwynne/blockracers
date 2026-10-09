@@ -229,7 +229,7 @@ const VOTED: [Extra; 5] = [
     Extra::Mirror,
     Extra::Reverse,
     Extra::Bricks,
-    Extra::Elimination,
+    Extra::Mode,
     Extra::Speed,
 ];
 /// The most sessions the join page lists.
@@ -1736,13 +1736,18 @@ fn notes(
             }
             // Under them, how the host has said the race is to be run.
             if let Some(rules) = room.hosts() {
-                let mut said = vec![
+                // A battle and a game of tag aren't run by the lap.
+                let mode = crate::menu::Mode::ALL[rules.mode as usize % crate::menu::Mode::ALL.len()];
+                let lapped = !matches!(mode, crate::menu::Mode::Battle | crate::menu::Mode::Tag);
+                let mut said = Vec::new();
+                said.extend((rules.mode > 0).then(|| mode.label().to_uppercase()));
+                said.extend(lapped.then(|| {
                     format!(
                         "{} LAPS",
                         LAP_CHOICES[rules.lap_choice as usize % LAP_CHOICES.len()]
-                    ),
-                    format!("{} OPPONENTS", rules.opponents),
-                ];
+                    )
+                }));
+                said.push(format!("{} OPPONENTS", rules.opponents));
                 said.extend(rules.mirror.then(|| "MIRRORED".to_string()));
                 said.extend(rules.reverse.then(|| "REVERSED".to_string()));
                 let bricks = crate::menu::BRICK_RULES.get(rules.bricks as usize);
@@ -1751,7 +1756,6 @@ fn notes(
                         .filter(|_| rules.bricks > 0)
                         .map(|bricks| format!("BRICKS {bricks}")),
                 );
-                said.extend(rules.elimination.then(|| "ELIMINATION".to_string()));
                 let speed = crate::menu::SPEEDS.get(rules.speed as usize);
                 said.extend(
                     speed

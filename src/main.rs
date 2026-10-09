@@ -318,6 +318,13 @@ fn main() {
         set("BRICK_REVERSE"),
         set("BRICK_ELIMINATION"),
     );
+    // `BRICK_MODE=battle` (or tag, elimination) is how a race hosted online is won.
+    if let Some(mode) = std::env::var("BRICK_MODE").ok().and_then(|wanted| {
+        let named = |mode: &&menu::Mode| mode.label().eq_ignore_ascii_case(&wanted);
+        menu::Mode::ALL.iter().find(named).copied()
+    }) {
+        settings.mode = mode;
+    }
     // `BRICK_SPEED=2` has the cars that many times as fast, or as near as there is.
     if let Some(pace) = std::env::var("BRICK_SPEED").ok().and_then(|pace| pace.parse::<f32>().ok()) {
         settings.speed = menu::SPEEDS

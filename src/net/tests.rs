@@ -1002,6 +1002,145 @@ fn a_race_run_is_told_to_everyone_with_its_times() {
     assert_eq!(pair.host.world().resource::<Room>().voters[0].points, 30);
 }
 
+/// A game of tag is the host's to run: the player's game is told who is "it" and
+/// what each clock has left, and the clock that runs out ends it for everyone, the
+/// car that was "it" last.
+#[test]
+fn a_game_of_tag_is_told_to_the_player_and_ends_in_the_room() {
+    let mut pair = Pair::new(0, 0.0);
+    for app in [&mut pair.host, &mut pair.guest] {
+        app.world_mut().resource_mut::<Settings>().mode = crate::menu::Mode::Tag;
+    }
+    for _ in 0..60 {
+        pair.step();
+    }
+    let it = [HOSTS, GUESTS]
+        .into_iter()
+        .find(|&slot| car(&mut pair.host, slot).it)
+        .expect("one of the two to be it");
+    let other = HOSTS + GUESTS - it;
+    for app in [&mut pair.host, &mut pair.guest] {
+        assert!(car(app, it).it && !car(app, other).it);
+        assert!(car(app, it).stake < modes::TAG_TIME);
+        assert_eq!(car(app, other).stake, modes::TAG_TIME);
+        // And is driven the quicker on both.
+        assert!(car(app, it).pace > car(app, other).pace);
+    }
+    // Its clock all but run out.
+    car_mut(&mut pair.host, it).stake = 0.2;
+    for _ in 0..400 {
+        pair.step();
+    }
+    let state = |app: &App| *app.world().resource::<State<Screen>>().get();
+    assert_eq!(
+        (state(&pair.host), state(&pair.guest)),
+        (Screen::Menu, Screen::Menu)
+    );
+    let names = ["Guest", "Host"];
+    let (loser, winner) = if it == HOSTS { (names[1], names[0]) } else { (names[0], names[1]) };
+    for app in [&pair.host, &pair.guest] {
+        let told: Vec<&str> = app
+            .world()
+            .resource::<Room>()
+            .results
+            .iter()
+            .map(|finish| &*finish.name)
+            .collect();
+        assert_eq!(told, [winner, loser]);
+    }
+}
+
+/// In a battle the lives a car has left are the host's to count and everyone's to
+/// see, and laps don't end it.
+#[test]
+fn a_battles_lives_are_told_to_the_player() {
+    let mut pair = Pair::new(0, 0.0);
+    for app in [&mut pair.host, &mut pair.guest] {
+        app.world_mut().resource_mut::<Settings>().mode = crate::menu::Mode::Battle;
+    }
+    for _ in 0..30 {
+        pair.step();
+    }
+    // The player's car is spun round, as a missile spins one, and has done every lap.
+    car_mut(&mut pair.host, GUESTS).spin_round(1.0);
+    car_mut(&mut pair.host, GUESTS).lap = 99;
+    for _ in 0..30 {
+        pair.step();
+    }
+    for app in [&mut pair.host, &mut pair.guest] {
+        assert_eq!(car(app, GUESTS).stake, modes::LIVES - 1.0);
+        assert_eq!(car(app, HOSTS).stake, modes::LIVES);
+        assert!(car(app, GUESTS).finished.is_none());
+    }
+    // Its last life gone, it is out, and the host's car, the only one left, has won.
+    car_mut(&mut pair.host, GUESTS).stake = 1.0;
+    for _ in 0..120 {
+        pair.step();
+    }
+    car_mut(&mut pair.host, GUESTS).spin_round(1.0);
+    for _ in 0..30 {
+        pair.step();
+    }
+    for app in [&mut pair.host, &mut pair.guest] {
+        assert!(car(app, GUESTS).out.is_some());
+        assert_eq!((car(app, HOSTS).place, car(app, GUESTS).place), (1, 2));
+    }
+    assert!(car(&mut pair.host, HOSTS).finished.is_some());
+}
+
+/// Elimination online counts every car, players' and the computer's alike, and the
+/// host's own car going out is not the end of the race for the rest.
+#[test]
+fn elimination_goes_on_without_the_hosts_car() {
+    let mut pair = Pair::new(1, 0.0);
+    for app in [&mut pair.host, &mut pair.guest] {
+        let mut settings = app.world_mut().resource_mut::<Settings>();
+        (settings.mode, settings.rivals) = (crate::menu::Mode::Elimination, Some(2));
+        // Three cars are two laps, whatever the host's own game is set to.
+        settings.opponents = 0;
+        assert!(settings.eliminating());
+        assert_eq!(settings.laps(), 2);
+    }
+    // The computer's car drives off and the player's after it; the host's, which
+    // hasn't moved, is last as the leader's first lap ends.
+    for _ in 0..180 {
+        press(&mut pair.guest, KeyCode::KeyW, true);
+        pair.step();
+    }
+    press(&mut pair.guest, KeyCode::KeyW, false);
+    car_mut(&mut pair.host, 0).lap = 2;
+    for _ in 0..30 {
+        pair.step();
+    }
+    assert!(car(&mut pair.host, HOSTS).out.is_some());
+    assert!(car(&mut pair.host, GUESTS).out.is_none());
+    // Long after, the race is still on for the two left in it.
+    for _ in 0..800 {
+        pair.step();
+    }
+    let state = |app: &App| *app.world().resource::<State<Screen>>().get();
+    assert_eq!(
+        (state(&pair.host), state(&pair.guest)),
+        (Screen::Race, Screen::Race)
+    );
+    assert!(car(&mut pair.host, HOSTS).finished.is_none());
+    assert!(car(&mut pair.host, GUESTS).out.is_none());
+    // The leader's second lap done, the other car goes too and the race is won.
+    car_mut(&mut pair.host, 0).lap = 3;
+    for _ in 0..30 {
+        pair.step();
+    }
+    assert!(car(&mut pair.host, 0).finished.is_some());
+    assert!(car(&mut pair.host, GUESTS).out.is_some());
+    for _ in 0..400 {
+        pair.step();
+    }
+    assert_eq!((state(&pair.host), state(&pair.guest)), (Screen::Menu, Screen::Menu));
+    let room = pair.host.world().resource::<Room>();
+    let told: Vec<&str> = room.results.iter().map(|finish| &*finish.name).collect();
+    assert_eq!(told[1..], ["Guest", "Host"]);
+}
+
 /// What is said in the room is heard by everyone in it, with who said it.
 #[test]
 fn what_is_said_in_the_room_is_heard_by_everyone() {

@@ -212,7 +212,7 @@ mod tests {
             mirror: false,
             reverse: false,
             bricks: 0,
-            elimination: false,
+            mode: 0,
             speed: 0,
             opponents: 2,
             difficulty: 1,
