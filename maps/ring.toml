@@ -8,6 +8,7 @@
 # yard.toml says what each thing here is.
 
 name = "The Ring"
+author = "Brick Racers"
 
 # A hundred out from the middle, a corner every fifteen degrees.
 outline = [

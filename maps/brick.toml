@@ -11,7 +11,10 @@
 # the road from the first corner, and wants measuring again when the road is
 # changed.
 
+# What the menus call it, and who made it, which they say after its name. A map
+# need not say who.
 name = "Brick Circuit"
+author = "Brick Racers"
 
 # The road's corners, each [x, height, z, radius]: the road runs straight from each
 # towards the next and is rounded at each to its radius. A corner with no radius

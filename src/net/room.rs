@@ -78,6 +78,9 @@ pub struct Room {
     pub revision: u32,
     /// What everyone in the room races as.
     pub rides: Vec<(Peer, Ride)>,
+    /// What the host's circuits are known by, in its order, as a player was told:
+    /// those are the ones voted for. Nothing on the host, which has its own.
+    pub maps: Vec<String>,
     /// What was last sent, so that it is sent again only when it changes.
     pub(super) told: Vec<u8>,
     pub(super) sent: Option<(Option<Rules>, bool)>,

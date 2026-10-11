@@ -801,9 +801,15 @@ impl Art {
 
 /// Which of the game's circuits a race belongs to.
 /// The circuits a race may be run on, of them all: an arena only in a battle or
-/// a game of tag, which are online.
-fn offered(circuits: &Circuits, mode: crate::menu::Mode) -> Vec<usize> {
-    (0..circuits.0.len())
+/// a game of tag, which are online; and in a session someone else hosts, only the
+/// host's (`hosts`, what each is known by), in the host's order.
+fn offered(circuits: &Circuits, mode: crate::menu::Mode, hosts: &[String]) -> Vec<usize> {
+    let own = 0..circuits.0.len();
+    let listed = hosts
+        .iter()
+        .filter_map(|key| circuits.0.iter().position(|c| c.key() == key));
+    let all: Vec<usize> = if hosts.is_empty() { own.collect() } else { listed.collect() };
+    all.into_iter()
         .filter(|&n| mode.lapless() || !circuits.0[n].arena())
         .collect()
 }
@@ -1288,7 +1294,7 @@ fn items(
         }],
         Page::Wishes => {
             // Every circuit the host's kind of race is run on, to be voted for.
-            let maps = offered(circuits, wired.mode());
+            let maps = offered(circuits, wired.mode(), &wired.room.maps);
             let mut items: Vec<Item> = maps
                 .iter()
                 .enumerate()
@@ -1764,7 +1770,7 @@ fn notes(
                 .ballot
                 .as_ref()
                 .map(|_| wired.wish(settings, circuits).circuit);
-            let maps = offered(circuits, wired.mode());
+            let maps = offered(circuits, wired.mode(), &wired.room.maps);
             for (at, &n) in maps.iter().enumerate() {
                 let votes = room.votes(net::protocol::key(&circuits.0[n]));
                 if votes > 0 {
@@ -1835,8 +1841,11 @@ fn notes(
             };
             let wish = wired.wish(settings, circuits);
             let voted = match &room.ballot {
-                Some(_) => circuits.0[wish.circuit].name.as_str(),
-                None => "NONE YET",
+                Some(_) => {
+                    let circuit = &circuits.0[wish.circuit];
+                    format!("{}{}", circuit.name, circuit.credit())
+                }
+                None => "NONE YET".to_string(),
             };
             if let Some(rules) = room.hosts() {
                 notes.push((line(0), said(rules), "font_ths", LABEL, true));
@@ -2731,7 +2740,8 @@ fn input(
             Some(hosts) if voting => hosts.mode(),
             _ => settings.mode,
         };
-        let races = offered(&circuits, mode);
+        let voted: &[String] = if voting { &room.maps } else { &[] };
+        let races = offered(&circuits, mode, voted);
         let here = group(&circuits, settings.circuit);
         match action {
             // The room has one selector for the circuit, which goes round them all.
@@ -3291,9 +3301,12 @@ fn draw(
                 .map(|s| s.rounds.iter().map(name).collect::<Vec<_>>());
             rounds.unwrap_or_default().join("\n\n")
         } else if menu.page == Page::TimeRace {
+            // Under the name of one of the port's own maps, who made it.
+            let by = circuits.0[settings.circuit].credit();
             format!(
-                "{}\n\nLAPS {}",
+                "{}{}\n\nLAPS {}",
                 art.circuit_name(&circuits, settings.circuit),
+                if by.is_empty() { by } else { format!("\n{}", by.trim()) },
                 crate::time_race::LAPS
             )
         } else {
@@ -3320,14 +3333,19 @@ fn draw(
             if settings.speed > 0 {
                 extras.push(format!("SPEED {}", settings.shown(Extra::Speed)));
             }
-            let mut lines = vec![
-                art.circuit_name(&circuits, settings.circuit),
+            let mut lines = vec![art.circuit_name(&circuits, settings.circuit)];
+            // Under the name of one of the port's own maps, who made it.
+            let by = circuits.0[settings.circuit].credit();
+            if !by.is_empty() {
+                lines.push(by.trim().to_string());
+            }
+            lines.extend([
                 format!("LAPS {}", settings.laps()),
                 format!("OPPONENTS {}", settings.opponents),
                 DIFFICULTIES[settings.difficulty].0.to_string(),
-            ];
+            ]);
             // The frame holds the original's four lines spaced out; any more are closed up.
-            let gap = if extras.is_empty() { "\n\n" } else { "\n" };
+            let gap = if lines.len() + extras.len() > 4 { "\n" } else { "\n\n" };
             lines.extend(extras);
             lines.join(gap)
         };
@@ -3616,4 +3634,22 @@ fn the_winner_of_a_race_online_is_who_celebrates() {
     // A race nobody finished has nobody to celebrate.
     room.results[0].time = None;
     assert_eq!(winner(&room, &jam), None);
+}
+
+#[cfg(test)]
+#[test]
+fn a_player_votes_among_the_host_s_circuits() {
+    let mut circuits = Circuits::find();
+    let race = crate::menu::Mode::Race;
+    // Alone, or hosting, every circuit of this game's that the race can be run on.
+    let own = offered(&circuits, race, &[]);
+    assert!(own.iter().all(|&n| !circuits.0[n].arena()) && own.len() + 4 == circuits.0.len());
+    // In someone else's session only the host's, in the host's order: not this
+    // game's own that the host hasn't, and a map only the host has by its name.
+    let hosts = ["HELTER".to_string(), "THEIRS".to_string(), "YARD".to_string(), "BRICK".to_string()];
+    circuits.promise("THEIRS", "Their Circuit", "", false);
+    let listed: Vec<&str> = offered(&circuits, race, &hosts).into_iter().map(|n| circuits.0[n].key()).collect();
+    assert_eq!(listed, ["HELTER", "THEIRS", "BRICK"]);
+    let fought = offered(&circuits, crate::menu::Mode::Battle, &hosts);
+    assert_eq!(fought.len(), 4);
 }

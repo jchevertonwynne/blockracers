@@ -9,6 +9,7 @@
 # yard.toml says what each thing here is.
 
 name = "Crossroads"
+author = "Brick Racers"
 
 # The corners of the floor in order, each [x, z]: a wall stands round it. The floor
 # is laid from the middle, [0, 0], out to each side, so every corner is seen from there.

@@ -17,10 +17,15 @@ pub enum Screen {
 
 pub struct Circuit {
     pub name: String,
+    /// Who made it, for one of the port's own maps that says.
+    pub author: String,
     /// Folder in the original game's archive; `None` is one of the built-in circuits.
     pub race: Option<String>,
     /// Which of the port's own maps, when it is one.
     pub map: Option<Map>,
+    /// A map a session's host has and this game hasn't, until the host sends it
+    /// with a race's start: what it is known by, and whether it is an arena.
+    pub hosts: Option<(String, bool)>,
     /// Which of the game's circuits the race is one of, counting from none; the
     /// built-in circuits are in a set of their own after the last.
     pub group: usize,
@@ -29,7 +34,15 @@ pub struct Circuit {
 impl Circuit {
     /// Whether it is one of the arenas, which are for a battle or a game of tag.
     pub fn arena(&self) -> bool {
-        self.map.as_ref().is_some_and(Map::arena)
+        self.map.as_ref().is_some_and(Map::arena) || self.hosts.as_ref().is_some_and(|hosts| hosts.1)
+    }
+
+    /// Who made it, as the menus say after its name; nothing where nobody is said to.
+    pub fn credit(&self) -> String {
+        match self.author.as_str() {
+            "" => String::new(),
+            author => format!(" BY {author}"),
+        }
     }
 
     /// The map its road is built from: its own, or for one of the game's circuits
@@ -41,7 +54,8 @@ impl Circuit {
     /// What it is known by between games, to `$BRICK_RACE` and to the ghosts kept
     /// of it: its folder in the game's data, or its map's key.
     pub fn key(&self) -> &str {
-        self.race.as_deref().unwrap_or(&self.map().key)
+        let hosts = self.hosts.as_ref().map(|hosts| hosts.0.as_str());
+        self.race.as_deref().or(hosts).unwrap_or(&self.map().key)
     }
 }
 
@@ -75,8 +89,10 @@ impl Circuits {
                 let group = order.get(place(&race)).map_or(sets, |o| o.1);
                 Circuit {
                     name,
+                    author: String::new(),
                     race: Some(race),
                     map: None,
+                    hosts: None,
                     group,
                 }
             })
@@ -90,8 +106,10 @@ impl Circuits {
             }
             circuits.push(Circuit {
                 name: map.name.clone(),
+                author: map.author.clone(),
                 race: None,
                 map: Some(map),
+                hosts: None,
                 group: sets,
             });
         }
@@ -102,8 +120,8 @@ impl Circuits {
     /// game's own of that name, or as well as its own: which circuit it then is,
     /// or what is wrong with it.
     pub fn lend(&mut self, key: &str, text: &str) -> Result<usize, String> {
-        let had = self.0.iter().position(|c| c.map.as_ref().is_some_and(|map| map.key == key));
-        if let Some(at) = had.filter(|&at| self.0[at].map().text == text) {
+        let had = self.0.iter().position(|c| c.race.is_none() && c.key() == key);
+        if let Some(at) = had.filter(|&at| self.0[at].hosts.is_none() && self.0[at].map().text == text) {
             return Ok(at);
         }
         if self.0.iter().any(|c| c.race.as_deref() == Some(key)) || key == TEST_TRACK {
@@ -114,21 +132,49 @@ impl Circuits {
             Some(at) => {
                 // Its file is still this game's own, to be read again later.
                 map.file = self.0[at].map().file.clone();
-                (self.0[at].name, self.0[at].map) = (map.name.clone(), Some(map));
+                (self.0[at].name, self.0[at].author) = (map.name.clone(), map.author.clone());
+                (self.0[at].map, self.0[at].hosts) = (Some(map), None);
                 Ok(at)
             }
             None => {
-                let group = self.0.iter().filter(|c| c.map.is_some()).map(|c| c.group).next();
-                let group = group.or(self.0.iter().map(|c| c.group + 1).max());
                 self.0.push(Circuit {
                     name: map.name.clone(),
+                    author: map.author.clone(),
                     race: None,
                     map: Some(map),
-                    group: group.unwrap_or(0),
+                    hosts: None,
+                    group: self.own(),
                 });
                 Ok(self.0.len() - 1)
             }
         }
+    }
+
+    /// The set the port's own maps are in, after the game's circuits.
+    fn own(&self) -> usize {
+        let maps = self.0.iter().filter(|c| c.race.is_none()).map(|c| c.group).next();
+        maps.or(self.0.iter().map(|c| c.group + 1).max()).unwrap_or(0)
+    }
+
+    /// Takes the name of a map a session's host has and this game hasn't, to be
+    /// voted for: the map itself comes with the start of a race on it (`lend`).
+    pub fn promise(&mut self, key: &str, name: &str, author: &str, arena: bool) {
+        if self.0.iter().any(|c| c.key() == key) || key == TEST_TRACK {
+            return;
+        }
+        self.0.push(Circuit {
+            name: name.chars().take(lobby_api::MAX_NAME).collect(),
+            author: author.chars().take(lobby_api::MAX_NAME).collect(),
+            race: None,
+            map: None,
+            hosts: Some((key.to_string(), arena)),
+            group: self.own(),
+        });
+    }
+
+    /// Forgets the maps a host promised and never sent, the session being over.
+    pub fn forget(&mut self) {
+        self.0.retain(|c| c.hosts.is_none());
     }
 
     /// Reads a circuit's map again if its file has changed, so that a map being
@@ -138,7 +184,7 @@ impl Circuits {
             && let Some(map) = c.map.as_ref().and_then(Map::reread)
         {
             info!("read {} again", map.key);
-            (c.name, c.map) = (map.name.clone(), Some(map));
+            (c.name, c.author, c.map) = (map.name.clone(), map.author.clone(), Some(map));
         }
     }
 }
@@ -156,8 +202,10 @@ impl Circuits {
         let group = self.0.iter().map(|c| c.group).max().map_or(0, |g| g + 1);
         self.0.push(Circuit {
             name: "Test track".into(),
+            author: String::new(),
             race: Some(TEST_TRACK.into()),
             map: None,
+            hosts: None,
             group,
         });
         settings.circuit = self.0.len() - 1;
@@ -734,7 +782,10 @@ fn menu(
     for (row, mut text, mut colour) in &mut rows {
         let option = |label: &str, value: String| format!("{label}    <  {value}  >");
         let line = match row.0 {
-            0 => option("Circuit", circuits.0[settings.circuit].name.clone()),
+            0 => {
+                let circuit = &circuits.0[settings.circuit];
+                option("Circuit", format!("{}{}", circuit.name, circuit.credit().to_lowercase()))
+            }
             1 => option("Laps", settings.laps().to_string()),
             2 => option("Opponents", settings.opponents.to_string()),
             3 => option(
@@ -890,4 +941,28 @@ fn a_map_changed_on_file_is_read_again() {
     circuits.reread(at);
     assert_eq!(circuits.0[at].map().road.corners.len(), own.road.corners.len());
     let _ = std::fs::remove_file(file);
+}
+
+#[cfg(test)]
+#[test]
+fn a_host_s_map_is_voted_for_before_this_game_has_it() {
+    let mut circuits = Circuits::find();
+    let count = circuits.0.len();
+    // One this game has is its own; one it hasn't is there by name alone.
+    circuits.promise("BRICK", "Brick Circuit", "", false);
+    circuits.promise("PEN", "The Pen", "Penny", true);
+    assert_eq!(circuits.0[count].credit(), " BY Penny");
+    assert_eq!(circuits.0.len(), count + 1);
+    let pen = &circuits.0[count];
+    assert_eq!((pen.key(), pen.name.as_str(), pen.arena()), ("PEN", "The Pen", true));
+    assert_eq!(pen.group, circuits.0[count - 1].group);
+    // Sent with a start, it is that map; never sent, it goes with the session.
+    circuits.promise("OVAL", "Oval", "Someone", false);
+    let oval = "name = \"Oval\"\ncorners = [[0, 0, 0, 0], [100, 0, 0, 30], [100, 0, 80, 30], [-100, 0, 80, 30], [-100, 0, 0, 30]]\n";
+    assert_eq!(circuits.lend("OVAL", oval), Ok(count + 1));
+    assert!(circuits.0[count + 1].hosts.is_none() && circuits.0[count + 1].map.is_some());
+    assert_eq!(circuits.0[count + 1].credit(), "");
+    circuits.forget();
+    let keys: Vec<&str> = circuits.0[count..].iter().map(Circuit::key).collect();
+    assert_eq!(keys, ["OVAL"]);
 }

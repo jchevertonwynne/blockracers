@@ -8,6 +8,7 @@
 # brick.toml says what each thing here is.
 
 name = "Gauntlet"
+author = "Brick Racers"
 
 corners = [
     [-20, 0, -119, 0],

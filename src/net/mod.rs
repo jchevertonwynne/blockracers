@@ -511,6 +511,14 @@ pub fn leave(
     next.set(Screen::Menu);
 }
 
+/// A session over, the maps its host promised and never sent are gone.
+fn forget(mut circuits: ResMut<Circuits>, mut settings: ResMut<Settings>) {
+    if circuits.0.iter().any(|c| c.hosts.is_some()) {
+        circuits.forget();
+        settings.circuit = settings.circuit.min(circuits.0.len().saturating_sub(1));
+    }
+}
+
 /// The session's comings and goings, in a race or out of one, and the room's vote.
 fn session(
     mut commands: Commands,
@@ -629,7 +637,12 @@ fn session(
                             ToPlayer::Welcome { you: peer }
                         }
                     };
+                    let welcome = matches!(answer, ToPlayer::Welcome { .. });
                     wire.0.send(peer, encode(&answer));
+                    if welcome {
+                        let listed = protocol::Listed::all(&circuits);
+                        wire.0.send(peer, encode(&ToPlayer::Circuits(listed)));
+                    }
                 }
                 ToHost::Loaded => {
                     if let Some(member) = session
@@ -902,6 +915,18 @@ fn session(
                     room.rides = rides;
                     room.revision += 1;
                 }
+                ToPlayer::Circuits(listed) => {
+                    // A map this game hasn't is there to be voted for all the same.
+                    for circuit in listed.iter().take(256) {
+                        if let Some(arena) = circuit.map
+                            && crate::map::keyed(&circuit.key)
+                        {
+                            circuits.promise(&circuit.key, &circuit.name, &circuit.author, arena);
+                        }
+                    }
+                    room.maps = listed.into_iter().map(|circuit| circuit.key).collect();
+                    room.revision += 1;
+                }
             }
         }
         if gone {
@@ -1141,6 +1166,7 @@ pub fn plugin(app: &mut App) {
             Update,
             (
                 session.run_if(online),
+                forget.run_if(not(online)),
                 lobby::keep,
                 auto.run_if(resource_exists::<Auto>),
             ),

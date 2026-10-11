@@ -207,6 +207,28 @@ impl Rules {
     }
 }
 
+/// A circuit a host has, for its players to vote for: what it is known by, what
+/// it is called, and for one of the port's own maps whether it is an arena.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Listed {
+    pub key: String,
+    pub name: String,
+    pub author: String,
+    pub map: Option<bool>,
+}
+
+impl Listed {
+    pub fn all(circuits: &Circuits) -> Vec<Listed> {
+        let listed = |c: &crate::menu::Circuit| Listed {
+            key: key(c).to_string(),
+            name: c.name.clone(),
+            author: c.author.clone(),
+            map: c.map.as_ref().map(|map| map.arena()),
+        };
+        circuits.0.iter().map(listed).collect()
+    }
+}
+
 /// What a player races as.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub enum Ride {
@@ -316,6 +338,8 @@ pub enum ToPlayer {
     Said(String),
     /// What everyone in the room races as, told when any of it changes.
     Rides(Vec<(Peer, Ride)>),
+    /// The circuits the host has, which are the ones there are to vote for.
+    Circuits(Vec<Listed>),
 }
 
 #[cfg(test)]

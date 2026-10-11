@@ -4,7 +4,7 @@
 //!
 //! A map is a TOML file named for what it is known by: `brick.toml` is `BRICK` to
 //! `$BRICK_RACE`, to the ghosts kept of it and to the other games of a session. It
-//! has a `name` and either a road, which makes it a circuit (`corners`, and what
+//! has a `name`, may say its `author`, and has either a road, which makes it a circuit (`corners`, and what
 //! `track::Road` has besides), or a floor, which makes it an arena (`outline`, and
 //! the rest of `arena::Plan`); and it may have `hazards` of the game's stood about
 //! it (`gauntlet::Stood`), `scenery` (`landmarks::Landmark`) and, a circuit, the
@@ -71,6 +71,8 @@ pub struct Map {
     /// What it is known by: its file's name, in capitals.
     pub key: String,
     pub name: String,
+    /// Who made it, if the file says (`author`).
+    pub author: String,
     /// The file as it was read, which is what a session's players are sent.
     pub text: String,
     /// The file itself, if it is one of a folder's.
@@ -89,6 +91,8 @@ pub struct Map {
 #[serde(deny_unknown_fields)]
 struct Sheet {
     name: String,
+    #[serde(default)]
+    author: String,
     #[serde(default)]
     corners: Vec<[f32; 4]>,
     #[serde(default)]
@@ -221,6 +225,7 @@ impl Map {
         let map = Map {
             key: key.to_string(),
             name: sheet.name.trim().to_string(),
+            author: sheet.author.trim().to_string(),
             text: text.to_string(),
             file: None,
             road,
@@ -238,7 +243,7 @@ impl Map {
     /// As `read`, for a map that isn't the game's own: one the game can't build
     /// everything of is refused too, whatever the reason.
     pub fn tried(key: &str, text: &str) -> Result<Map, String> {
-        if key_of(Path::new(key)).as_deref() != Ok(key) {
+        if !keyed(key) {
             return Err("it is not named as a map is".into());
         }
         let map = Map::read(key, text)?;
@@ -261,6 +266,9 @@ impl Map {
     fn amiss(&self) -> Option<String> {
         if self.name.is_empty() || self.name.len() > lobby_api::MAX_NAME {
             return Some(format!("its name is from 1 to {} letters long", lobby_api::MAX_NAME));
+        }
+        if self.author.len() > lobby_api::MAX_NAME {
+            return Some(format!("its author is {} letters long at the most", lobby_api::MAX_NAME));
         }
         let lap = match &self.plan {
             Some(plan) => {
@@ -527,6 +535,11 @@ pub fn kept(demo: bool, keeping: bool) -> Vec<Map> {
     maps
 }
 
+/// Whether something is what a map may be known by.
+pub fn keyed(key: &str) -> bool {
+    key_of(Path::new(key)).as_deref() == Ok(key)
+}
+
 /// What a map's file makes it known by: its name in capitals.
 fn key_of(file: &Path) -> Result<String, String> {
     let stem = file.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
@@ -621,6 +634,7 @@ mod tests {
             assert!(text.len() < LONGEST / 4, "{key}");
         }
         assert_eq!(named("FIGURE8").name, "Figure Eight");
+        assert!(stock().iter().all(|map| map.author == "Brick Racers"));
     }
 
     /// A circuit as short as a file of one can be.
@@ -630,6 +644,9 @@ mod tests {
     fn a_map_of_a_few_lines_is_a_circuit() {
         let map = Map::tried("OVAL", OVAL).unwrap();
         assert!(!map.arena() && map.look == Look::default() && map.hazards.is_empty());
+        assert_eq!(map.author, "");
+        let signed = Map::tried("OVAL", &format!("{OVAL}author = \" Pepper Roni \"\n")).unwrap();
+        assert_eq!(signed.author, "Pepper Roni");
         let track = Track::made(&map, false);
         assert!(track.length > 400.0 && track.course.zones.len() == 2);
         assert!(track.course.checkpoints.len() > 10);

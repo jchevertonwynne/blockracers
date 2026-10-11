@@ -7,6 +7,7 @@
 # brick.toml says what each thing here is.
 
 name = "Helter Skelter"
+author = "Brick Racers"
 
 # Each turn of the spiral is 10.5 under the one before, which is room for a road
 # with a parapet to go under a road.

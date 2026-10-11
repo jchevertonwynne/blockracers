@@ -9,6 +9,7 @@
 # brick.toml says what each thing here is.
 
 name = "Figure Eight"
+author = "Brick Racers"
 
 # [x, height, z, radius]. Where two stretches cross at one height neither has a
 # barrier across the other.

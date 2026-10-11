@@ -33,7 +33,9 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   no road can be built from, is said in the log and left out (`Map::read` says
   what is wrong; `Map::tried` builds it every way and refuses what panics).
   `maps/brick.toml` and `maps/yard.toml` say what a circuit's file and an
-  arena's have in them.
+  arena's have in them. A map may say its `author`, which the race pages show
+  under its name, the room after the circuit voted for, and a host tells its
+  players with its list (`Circuit::credit`).
 - **Kept between sessions:** everything is in one folder, `~/.brickracers`
   (`src/home.rs`; `BRICK_HOME` says another): `settings`, `garage`, `progress`,
   `ghosts/` and `maps/`. What an earlier game left loose in the home folder
@@ -251,8 +253,12 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   them by place, race after race. A race on one of the port's own maps is run on
   the host's: its file goes to the players with the start (`ToPlayer::Start`,
   `Circuits::lend`) and is raced whatever their own games have of that name. The
-  vote lists each player's own maps; one voted for that the host hasn't got is
-  run on the first circuit there is (`Rules::fitted`).
+  circuits there are to vote for are the host's: it tells each player its list
+  as they join (`ToPlayer::Circuits`), a player's vote page shows that list and
+  none of their own that the host hasn't (`frontend`'s `offered`), and a map
+  only the host has is there by name (`Circuits::promise`) until a start brings
+  it. The drop-in and the countdown wait for every player's game to say it has
+  the race loaded (`ToHost::Loaded`, `host`'s `LOAD_WAIT` at the longest).
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 
