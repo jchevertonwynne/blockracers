@@ -5,7 +5,9 @@
 //! The circuits built here are laid out to be driven at the game's speeds: narrow,
 //! folded in on themselves so that one stretch runs beside, over or under another,
 //! and never straight or level for long, so that little of the road ahead is seen
-//! at once. Each is a list of corners (`cornered`).
+//! at once. Each is a list of corners (`cornered`). What hides one stretch from
+//! another is the walls at the corners here (`Track::screens`) and `roadside`'s
+//! walls and hedges.
 
 use crate::assets::materials::Surface;
 use crate::collision::Collision;
@@ -26,9 +28,9 @@ const KERB: f32 = 0.8;
 /// the road runs east under two bridges of its own, sweeps right round a corner with
 /// grass inside it, comes back round a hairpin and climbs a long S onto the first
 /// bridge; comes down round a right-hander and a hairpin to the north side, where it
-/// swings out round an island over a rise; goes round another hairpin and up onto
-/// the second bridge; and drops off the end of it into a hairpin, a left-hander over
-/// a rise and a last hairpin onto the straight.
+/// swings out and back over a rise; goes round another hairpin and up onto the
+/// second bridge; and drops off the end of it into a hairpin, a left-hander over a
+/// rise and a last hairpin onto the straight.
 ///
 /// No corner of these circuits is tighter than a car going flat out can be slid
 /// round (`TIGHTEST`): a hairpin is eighteen or twenty to its middle, and two bends
@@ -174,17 +176,20 @@ struct Extras {
     banks: &'static [(f32, f32, f32)],
 }
 
-/// The brick circuit's: a way straight on where the road swings out round the island,
-/// the grass inside the first corner, and its two hairpins on the east side banked.
+/// The brick circuit's: a way across the inside of the last hairpin, at a right angle
+/// to the road and through a shed that hides it, onto the straight before the line;
+/// the grass inside the first corner; and its two hairpins on the east side banked.
+/// Where the road swings out round the rise on the north side there is no way
+/// straight on: that would be the road, and no short cut.
 const BRICK_EXTRAS: Extras = Extras {
     byways: &[Byway {
-        from: 534.0,
-        to: 626.0,
+        from: 985.0,
+        to: 1075.0,
         road: 4.0,
         wall: 5.5,
         bumps: 0.0,
-        covered: false,
-        taken: 0.4,
+        covered: true,
+        taken: 0.3,
     }],
     infields: &[(108.0, 158.0)],
     pads: &[(742.0, 0.0), (498.0, 0.0)],
@@ -204,7 +209,7 @@ const FIGURE_EIGHT_EXTRAS: Extras = Extras {
         taken: 0.25,
     }],
     infields: &[],
-    pads: &[(690.0, 0.0), (832.0, 0.0)],
+    pads: &[(1104.0, 0.0), (832.0, 0.0)],
     banks: &[(53.0, 120.0, 0.15), (616.0, 677.0, 0.15)],
 };
 /// The gauntlet's: a way across the inside of its first western hairpin, through a
@@ -220,7 +225,7 @@ const GAUNTLET_EXTRAS: Extras = Extras {
         taken: 0.3,
     }],
     infields: &[],
-    pads: &[(20.0, 0.0), (1070.0, 0.0)],
+    pads: &[(20.0, 0.0), (1716.0, 0.0)],
     banks: &[(104.0, 155.0, 0.15), (982.0, 1033.0, 0.15)],
 };
 /// The helter skelter's. One byway goes straight on where the road swings out round
@@ -321,7 +326,7 @@ fn jump_height(along: f32) -> f32 {
 
 /// How many samples round the lap two stretches of road must be from each other to
 /// be two stretches, and not the one road going round a corner.
-const STRETCH: usize = 30;
+pub(crate) const STRETCH: usize = 30;
 /// How near each other two stretches' middles are where the road crosses itself, and
 /// how many samples either side of that either road is looked at for the other.
 const CROSSING_NEAR: f32 = 1.5;
@@ -333,19 +338,46 @@ const GATE_REACH: (f32, f32) = (2.0, 6.0);
 /// How far across a lap zone is.
 const ZONE_RADIUS: f32 = WALL + 3.0;
 
-/// A corner tighter than this has a wall inside it, this high and this thick, if the
-/// wall would be this many samples long or longer; none stands this near the line.
-const SCREEN_TURN: f32 = 1.0 / 31.0;
-const SCREEN_HEIGHT: f32 = 6.0;
-const SCREEN_THICK: f32 = 1.0;
+/// A corner tighter than this has a wall inside it, this thick, if the wall would be
+/// this many samples long or longer; none stands this near the line. The wall round
+/// the outside of a corner is high, so that nothing is seen past the corner; the one
+/// inside it is low, so that where the road goes next is seen over it. The rest of
+/// what hides one stretch of road from another is `roadside`'s.
+pub(crate) const SCREEN_TURN: f32 = 1.0 / 31.0;
+pub(crate) const SCREEN_HEIGHT: f32 = 6.0;
+pub(crate) const INNER_HEIGHT: f32 = 1.6;
+pub(crate) const SCREEN_THICK: f32 = 1.0;
 const SCREEN_SHORTEST: usize = 6;
 const SCREEN_OFF_LINE: usize = 12;
+/// A corner tighter than this has a wall round the outside of it too, with arrows on
+/// it the way the corner goes: what is looked at at the end of the straight before.
+const BACKDROP_TURN: f32 = 1.0 / 45.0;
 
 /// How many trees and bricks are scattered round a circuit, about, and how far out
 /// from its road they go, or from an arena's floor.
 const SCATTERED: usize = 520;
 const SCATTER_ROUND: f32 = 45.0;
 const ARENA_ROUND: f32 = 100.0;
+/// How far from a road's barrier one of the scattered bricks keeps.
+const BRICK_ROOM: f32 = 14.0;
+/// How far from the low wall inside a corner, or from a low wall of `roadside`'s,
+/// nothing is scattered: what is seen over the wall is the road beyond it.
+pub(crate) const INSIDE_CLEAR: f32 = 13.0;
+
+/// What the walls at the corners are made of: pale and plain.
+const CONCRETE: Color = Color::srgb(0.80, 0.80, 0.77);
+/// How high over its road the parapet of a road well off the ground is, how high off
+/// the ground a road is that begins to have one, and how high each course of it is.
+const PARAPET: f32 = 3.0;
+const PARAPET_FROM: f32 = 0.8;
+const PARAPET_COURSE: f32 = 0.7;
+
+/// How far over the top of its barrier the parapet of a road this high off the
+/// ground stands: a course at a time, the higher the road.
+pub(crate) fn parapet(raised: f32) -> f32 {
+    let courses = ((raised - PARAPET_FROM) * 1.5 / PARAPET_COURSE).floor().max(0.0);
+    (courses * PARAPET_COURSE).min(PARAPET - 0.9)
+}
 
 /// How high a tunnel's roof is over its road, and how thick its walls and roof are.
 const TUNNEL_HEIGHT: f32 = 8.5;
@@ -532,8 +564,8 @@ pub struct Track {
     pub screens: Vec<Screen>,
 }
 
-/// A wall inside a corner, where the barrier is, high enough that the road beyond it
-/// is not seen over it.
+/// A wall at a corner, where the barrier is: round the outside of the corner, high
+/// enough that nothing beyond it is seen over it, or inside the corner, and low.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Screen {
     /// Its first sample, and the one after its last.
@@ -541,11 +573,18 @@ pub struct Screen {
     pub to: usize,
     /// Which side of the road it is: 1 for the right, -1 for the left.
     pub side: f32,
+    /// It is round the outside of its corner, and has arrows on it.
+    pub outside: bool,
 }
 
 impl Screen {
-    fn stands(&self, i: usize, side: f32) -> bool {
+    pub(crate) fn stands(&self, i: usize, side: f32) -> bool {
         (self.from..self.to).contains(&i) && side * self.side > 0.0
+    }
+
+    /// How high it stands over the road.
+    pub(crate) fn height(&self) -> f32 {
+        if self.outside { SCREEN_HEIGHT } else { INNER_HEIGHT }
     }
 }
 
@@ -939,7 +978,7 @@ impl Track {
     }
 
     /// How many samples apart two samples are, the shorter way round the lap.
-    fn apart(&self, a: usize, b: usize) -> usize {
+    pub(crate) fn apart(&self, a: usize, b: usize) -> usize {
         let n = self.n();
         ((a + n - b) % n).min((b + n - a) % n)
     }
@@ -1096,17 +1135,20 @@ impl Track {
         }
 
         let (branches, infields) = (track.branches.clone(), track.infields.clone());
-        // A wall inside each of the tighter corners, where the road is on the ground
-        // with its barrier standing and nothing else is close by: not across a
-        // byway's end, an infield or a crossing, in a tunnel, beside a jump or
-        // against another stretch of the road.
+        // A wall inside each of the tighter corners and round the outside of each
+        // corner, where the road is on the ground with its barrier standing and
+        // nothing else is close by: not across a byway's end, an infield or a
+        // crossing, in a tunnel, beside a jump or against another stretch of the
+        // road.
         let inside = |i: usize| -track.flat[i].cross(track.flat[(i + 1) % n]).y.signum();
-        let walled = |i: usize| {
-            let side = inside(i);
+        let walled = |i: usize, outside: bool| {
+            let side = if outside { -inside(i) } else { inside(i) };
             let barrier = track.edge(i, side * WALL);
             let covered = |stretch: &(usize, usize)| (stretch.0..stretch.1).contains(&i);
-            track.curv[i] > SCREEN_TURN
-                && track.pts[i].y < 0.3
+            // A banked corner is on the ground for all that its middle is lifted.
+            let lifted = track.pts[i].y - track.bank[i].abs() * WALL;
+            track.curv[i] > if outside { BACKDROP_TURN } else { SCREEN_TURN }
+                && lifted < 0.3
                 && track.apart(i, 0) > SCREEN_OFF_LINE
                 && !track.tunnels.iter().chain(&track.jumps).any(covered)
                 && !branches.iter().any(|branch| branch.holds(barrier))
@@ -1114,20 +1156,25 @@ impl Track {
                 && !track.crossed(i, barrier, WALL + 2.0)
                 && track.alone(i, 2.0 * WALL + 4.0, DECK - 1.0, DECK - 1.0)
         };
-        let (mut screens, mut i) = (Vec::new(), 0);
-        while i < n {
-            let from = i;
-            while i < n && walled(i) && inside(i) == inside(from) {
-                i += 1;
+        let mut screens = Vec::new();
+        for outside in [false, true] {
+            let mut i = 0;
+            while i < n {
+                let from = i;
+                while i < n && walled(i, outside) && inside(i) == inside(from) {
+                    i += 1;
+                }
+                if i - from >= SCREEN_SHORTEST {
+                    let side = if outside { -inside(from) } else { inside(from) };
+                    screens.push(Screen {
+                        from,
+                        to: i,
+                        side,
+                        outside,
+                    });
+                }
+                i = i.max(from + 1);
             }
-            if i - from >= SCREEN_SHORTEST {
-                screens.push(Screen {
-                    from,
-                    to: i,
-                    side: inside(from),
-                });
-            }
-            i = i.max(from + 1);
         }
         track.screens = screens.clone();
         let lawns: Vec<[Vec3; 4]> = infields
@@ -1164,13 +1211,12 @@ impl Track {
             // stands as high as the wall.
             let jump = track.jumps.iter().any(|jump| (jump.0..jump.1).contains(&i));
             for side in [-1.0, 1.0] {
+                let wall = screens.iter().find(|screen| screen.stands(i, side));
                 let top = Vec3::Y
                     * if jump {
                         JUMP_LIPS.0 + 6.0
-                    } else if screens.iter().any(|screen| screen.stands(i, side)) {
-                        SCREEN_HEIGHT
                     } else {
-                        3.0
+                        wall.map_or(3.0, |wall| wall.height().max(3.0))
                     };
                 let (mut a, mut b) = (track.edge(i, side * WALL), track.edge(j, side * WALL));
                 // There is none across the end of a byway, before an infield, or
@@ -1501,6 +1547,7 @@ impl Track {
                 from: n - screen.to,
                 to: n - screen.from,
                 side: -screen.side,
+                outside: screen.outside,
             };
         }
         // What was on the right is on the left, and as far from the line the other way.
@@ -1575,7 +1622,7 @@ impl Track {
 
     /// Whether each sample's road is carried over another stretch of the circuit, so
     /// that what holds it up has to leave the way underneath clear.
-    fn bridged(&self) -> Vec<bool> {
+    pub(crate) fn bridged(&self) -> Vec<bool> {
         let reach = (WALL + 4.0).powi(2);
         let edges = [-WALL - 0.8, 0.0, WALL + 0.8];
         (0..self.n())
@@ -1674,29 +1721,78 @@ impl Track {
                 let half = Vec3::new(0.4, 0.45, a0.distance(a1) / 2.0 + 0.05);
                 b.cuboid(mid + up * 0.45, half, rot, barrier);
                 b.cyl(mid + up * 0.9, 0.25, 0.15, rot, barrier);
-                // A wall inside a corner: two courses of bricks behind the barrier,
-                // each wall its own colour, and a white coping.
-                let screen = self.screens.iter().position(|screen| screen.stands(i, side));
+                // A wall at a corner, behind the barrier: plain, so that it is the
+                // road that is looked at, on a dark footing and under a coping. One
+                // round the outside of its corner has arrows along it, the way the
+                // corner goes.
+                let screen = self.screens.iter().find(|screen| screen.stands(i, side));
                 if let Some(screen) = screen {
-                    let colours = [RED, BLUE, YELLOW, ORANGE, GREEN];
                     let (b0, b1) = at(side * (WALL + 0.8 + SCREEN_THICK / 2.0));
                     let (mid, long) = ((b0 + b1) / 2.0, a0.distance(a1) / 2.0 + 0.3);
-                    let course = (SCREEN_HEIGHT - 0.5) / 2.0;
-                    for level in 0..2 {
-                        let colour = if (i / 3 + level) % 2 == 0 {
-                            colours[screen % colours.len()]
-                        } else {
-                            WHITE
+                    let (high, coping) = (screen.height(), 0.5);
+                    let footing = (0.4 * high).min(1.0);
+                    let body = high - footing - coping;
+                    let thick = SCREEN_THICK / 2.0;
+                    b.cuboid(
+                        mid + up * (footing / 2.0 - 0.5),
+                        Vec3::new(thick + 0.1, footing / 2.0 + 0.5, long),
+                        rot,
+                        DARK_GREY,
+                    );
+                    b.cuboid(
+                        mid + up * (footing + body / 2.0),
+                        Vec3::new(thick, body / 2.0, long),
+                        rot,
+                        CONCRETE,
+                    );
+                    b.brick(
+                        mid + up * (high - coping / 2.0),
+                        Vec3::new(thick + 0.15, coping / 2.0, long),
+                        rot,
+                        GREY,
+                        (1, 1),
+                    );
+                    if screen.outside {
+                        // On the face of it, just clear of the wall: a band, and on
+                        // every other stretch of the band an arrowhead.
+                        let (f0, f1) = at(side * (WALL + 0.74));
+                        let on = |along: f32, high: f32| f0.lerp(f1, along) + up * high;
+                        let mut face = |corners: [Vec3; 4], colour: Color| {
+                            let [p, q, r, t] = corners;
+                            b.quad(p, q, r, t, colour);
+                            b.quad(t, r, q, p, colour);
                         };
-                        b.cuboid(
-                            mid + up * course * (level as f32 + 0.5),
-                            Vec3::new(SCREEN_THICK / 2.0, course / 2.0, long),
-                            rot,
-                            colour,
-                        );
+                        let (low, high) = (1.6, 4.8);
+                        face([on(0.0, low), on(1.0, low), on(1.0, high), on(0.0, high)], YELLOW);
+                        if i % 2 == 0 {
+                            let (g0, g1) = at(side * (WALL + 0.68));
+                            let on = |along: f32, high: f32| g0.lerp(g1, along) + up * high;
+                            let (middle, tip) = ((low + high) / 2.0, 0.95);
+                            let arms = [(high - 0.3, middle), (low + 0.3, middle)];
+                            for (from, to) in arms {
+                                face(
+                                    [on(0.05, from), on(0.45, from), on(tip, to), on(tip - 0.4, to)],
+                                    BLACK,
+                                );
+                            }
+                        }
                     }
-                    let coping = Vec3::new(SCREEN_THICK / 2.0 + 0.15, 0.25, long);
-                    b.brick(mid + up * (SCREEN_HEIGHT - 0.25), coping, rot, GREY, (1, 1));
+                }
+
+                // Road that is up off the ground has a parapet over its barrier,
+                // the higher the road the higher it, up to what the barrier stops:
+                // from up there nothing below is seen but what is a long way off,
+                // and from below nothing of what is on it.
+                let raised = (p0.y + p1.y) / 2.0 - self.bank[i].abs() * WALL;
+                let parapet = parapet(raised);
+                let covered = |stretch: &(usize, usize)| (stretch.0..stretch.1).contains(&i);
+                if parapet > 0.1 && screen.is_none() && !self.tunnels.iter().chain(&self.jumps).any(covered) {
+                    b.cuboid(
+                        mid + up * (0.9 + parapet / 2.0),
+                        Vec3::new(0.3, parapet / 2.0, a0.distance(a1) / 2.0 + 0.05),
+                        rot,
+                        CONCRETE,
+                    );
                 }
 
                 // Embankment under raised sections, visible from both sides.
@@ -1736,10 +1832,11 @@ impl Track {
                 let rot = Transform::IDENTITY.looking_to(p1 - p0, up).rotation;
                 let (mid, length) = ((p0 + p1) / 2.0, p0.distance(p1) / 2.0 + 0.05);
                 let portal = i < from + 2 || i + 2 >= to;
+                // Its bricks are two greys that are nearly one: it is not striped.
                 let (colour, extra) = match (portal, (i / 4) % 2 == 0) {
                     (true, _) => (YELLOW, 0.6),
                     (false, true) => (GREY, 0.0),
-                    (false, false) => (DARK_GREY, 0.0),
+                    (false, false) => (Color::srgb(0.56, 0.58, 0.59), 0.0),
                 };
                 let across = (r0 + r1).normalize() * (WALL + 0.8 + TUNNEL_THICK / 2.0);
                 let wall = Vec3::new(TUNNEL_THICK / 2.0 + extra, TUNNEL_HEIGHT / 2.0, length);
@@ -1936,6 +2033,22 @@ impl Track {
     /// Brick trees and oversized bricks scattered around the outside of the circuit.
     pub fn build_scenery(&self, layout: Layout, rng: &mut Rng) -> Mesh {
         let mut b = BrickMesh::default();
+        // The walls and hedges that hide one stretch of road from another, which
+        // what is scattered keeps off.
+        let fences = crate::roadside::fences(self);
+        crate::roadside::draw(self, layout, &fences, &mut b);
+        // Nor does it stand against a wall at a corner, to show through it, or
+        // anywhere inside a corner, which is looked across: each wall's places, and
+        // how far from them is kept clear.
+        let walls: Vec<(Vec3, f32)> = self
+            .screens
+            .iter()
+            .flat_map(|screen| {
+                let clear = if screen.outside { 5.0 } else { INSIDE_CLEAR };
+                (screen.from..screen.to)
+                    .map(move |i| (self.edge(i, screen.side * (WALL + 1.3)), clear))
+            })
+            .collect();
         // Over the circuit's own ground and a little way round it; round an arena,
         // whose floor it is kept off, further.
         let (least, most) = match self.arena {
@@ -1963,6 +2076,8 @@ impl Track {
             // How far it is to the nearest barrier: nothing is bigger than that.
             let room = clear - WALL - 1.0;
             if room < 1.5
+                || fences.iter().any(|fence| fence.shades(pos))
+                || walls.iter().any(|&(wall, clear)| xz_dist2(wall, pos) < clear * clear)
                 || self
                     .clearings
                     .iter()
@@ -1971,8 +2086,9 @@ impl Track {
                 continue;
             }
             let rot = Quat::from_rotation_y(rng.range(0.0, std::f32::consts::TAU));
-            // A tree wherever there is not the room for a brick, and most other places.
-            if rng.f() < 0.65 || room < 5.0 {
+            // Trees nearly everywhere: a brick only now and then, and only well
+            // away from the road, where it is not what a driver looks at.
+            if rng.f() < 0.8 || room < BRICK_ROOM {
                 let s = rng.range(0.8, 1.7).min(room / 2.5);
                 b.cuboid(
                     pos + Vec3::Y * 1.5 * s,
@@ -2432,6 +2548,53 @@ mod tests {
                 let (up, down) = (t.surface_point(s, high), t.surface_point(s, -high));
                 assert!((up.y - t.edge(i, high).y).abs() < 0.1, "{layout:?} {i}");
                 assert!(up.y >= down.y && back.bank[n - i] == -t.bank[i]);
+            }
+        }
+    }
+
+    /// The walls at the corners: one inside each tight corner that is on the ground
+    /// and one round the outside of it, as high as hides the road beyond, solid to
+    /// that height, and nowhere near the line, a crossing or a byway's mouth.
+    #[test]
+    fn walls_stand_inside_and_round_the_tight_corners() {
+        for layout in Layout::ALL {
+            let t = Track::built(layout);
+            let n = t.n();
+            let (inside, outside): (Vec<&Screen>, Vec<&Screen>) =
+                t.screens.iter().partition(|screen| !screen.outside);
+            assert!(inside.len() >= 2 && outside.len() >= 4, "{layout:?} {:?}", t.screens);
+            for screen in &t.screens {
+                let middle = (screen.from + screen.to) / 2;
+                // Which side the corner turns to is the inside of it.
+                let turn: f32 = (screen.from..screen.to)
+                    .map(|i| t.flat[i].cross(t.flat[(i + 1) % n]).y)
+                    .sum();
+                let within = -turn.signum() * screen.side > 0.0;
+                assert_eq!(within, !screen.outside, "{layout:?} {screen:?}");
+                // The one round the outside is high, and a car thrown as high as
+                // its top is still stopped by it; the one inside is low enough to
+                // be seen over from behind a car, and stops no more than a barrier.
+                assert_eq!(screen.height() > 3.6, screen.outside);
+                let out = t.edge(middle, screen.side * (WALL + 1.0));
+                let stopped = |high: f32| {
+                    let lift = Vec3::Y * high;
+                    t.collision.wall(t.pts[middle] + lift, out + lift).is_some()
+                };
+                assert!(stopped(screen.height() - 0.5), "{layout:?} {screen:?}");
+                assert_eq!(stopped(SCREEN_HEIGHT - 0.5), screen.outside, "{layout:?} {screen:?}");
+                assert!(t.apart(screen.from, 0) > SCREEN_OFF_LINE && t.apart(screen.to, 0) > 8);
+                for i in screen.from..screen.to {
+                    let barrier = t.edge(i, screen.side * WALL);
+                    assert!(!t.branches.iter().any(|branch| branch.holds(barrier)));
+                    assert!(!t.crossed(i, barrier, WALL));
+                }
+            }
+            // Turned round, each is the same wall, on what is then the other side.
+            let mut back = Track::built(layout);
+            back.reverse();
+            for (screen, turned) in t.screens.iter().zip(&back.screens) {
+                assert_eq!((turned.side, turned.outside), (-screen.side, screen.outside));
+                assert_eq!(back.pts[turned.from], t.pts[screen.to]);
             }
         }
     }

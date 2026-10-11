@@ -31,8 +31,24 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   (`kart`'s `every_corner_of_the_built_in_circuits_is_slid_round_flat_out`). The
   figure of eight also crosses itself on
   the level (`Track::crossings`), where neither road has a barrier or a verge across
-  the other. A wall stands inside each of the tighter corners that are on the
-  ground (`Track::screens`), so that the road round it is not seen. The gates are
+  the other. So that little is seen from a car but the road it is on and the
+  road it will be on next, a high wall stands round the outside of each corner,
+  with arrows on it the way the corner goes, and a low one inside each of the
+  tighter corners that are on the ground, to be seen over (`Track::screens`,
+  which a car can reach and which are solid); road that is off the ground has a
+  parapet over its barrier; and `src/roadside.rs` (the port's own) stands a wall
+  half way between any two stretches that run beside each other on the level,
+  high but for the last of the way into a hairpin and the first of the way out
+  of it, and a hedge along the outside of a stretch that has nothing beside it,
+  low on the inside of a bend, neither of them solid. None of these stands near
+  the level crossing, across a byway's mouth or an infield, or where a hazard has
+  something standing (`Track::clearings`), and nothing is scattered where a wall
+  is low. What is scattered about is trees, with a brick only well away from the
+  road. A test says how much is in sight from each place on a lap of the road
+  elsewhere and of the road next (`roadside`'s
+  `little_of_the_rest_of_the_road_is_seen_from_a_car`). A curse is left half
+  way round a lap, well on from where it is set off and all on one side of the
+  road (`gauntlet`'s `Curse`). The gates are
   every thirty-odd units, and neither they nor the lap zones are where a car on
   another stretch could reach them; a car that leaves its stretch is looked for on
   the others (`Track::strays`). The distances in `Extras` and those the hazards

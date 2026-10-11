@@ -33,6 +33,7 @@ mod physics;
 mod progress;
 mod racer_sounds;
 mod replay;
+mod roadside;
 mod roster;
 mod rules;
 mod scenery;

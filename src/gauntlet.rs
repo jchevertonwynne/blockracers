@@ -115,6 +115,22 @@ const LANE_LENGTH: f32 = 35.0;
 const LANE_WARNING: f32 = 60.0;
 /// How far round the lap the force field's gate is.
 const FIELD_AT: f32 = 900.0;
+/// Where a circuit's curse is: how far round the lap the place is that sets it off,
+/// and how far round and how far right of the middle of the road each of the three
+/// places it may be left. Half way round the lap, where the cars are no longer
+/// bunched as they are off the line, with the three places far enough on, and
+/// straight enough on, to be seen in time to be steered round. Every car that
+/// comes sets off another, so there may be one in each place at once: all three
+/// are on the one side of the road, and the other side is the way by.
+type Curse = (f32, [(f32, f32); 3]);
+/// The figure of eight's: out of the east lobe's first hairpin, and left on the
+/// outside of the way into its second, past the mouth of the byway that goes round
+/// it.
+const EIGHT_CURSE: Curse = (680.0, [(723.0, 3.0), (728.0, 3.0), (732.0, 3.0)]);
+/// The gauntlet's: out of the hairpin into its sixth row, and left before the ghost.
+const GAUNTLET_CURSE: Curse = (1054.0, [(1097.0, -3.0), (1103.0, -3.0), (1109.0, -3.0)]);
+/// How far round the place that sets a curse off a car is that does.
+const CURSE_REACH: f32 = 12.0;
 /// How far from the middle of the road the legs of the hammer's frame stand, the
 /// cannons' muzzles are and the ark's plinth is.
 const FRAME_OUT: f32 = WALL + 3.0;
@@ -482,11 +498,12 @@ impl Builder<'_> {
         self.plinth(fit.point(Vec3::new(540.35, -495.04, -45.1)), 3.2, TAN);
     }
 
-    /// A mummy's curse is left on the road ahead of whoever comes first to `site`,
-    /// at one of `drops`.
-    fn curse(&mut self, places: &mut Places, site: Site, drops: [Site; 3]) {
-        self.hazard(CURSE, Kind::CurseDrop, site.origin, 12.0);
-        places.curse_drops = drops.map(|drop| drop.origin);
+    /// A mummy's curse is left on the road ahead of whoever comes first to where
+    /// it is set off, at one of its three places.
+    fn curse(&mut self, places: &mut Places, plain: &Track, (site, drops): Curse) {
+        let site = Site::along(plain, site, 0.0);
+        self.hazard(CURSE, Kind::CurseDrop, site.origin, CURSE_REACH);
+        places.curse_drops = drops.map(|(s, right)| Site::along(plain, s, right).origin);
     }
 }
 
@@ -524,13 +541,12 @@ pub fn load(
         Layout::Brick => {
             b.hammer(at(60.0, 0.0));
             b.ghost(at(174.0, 0.0));
-            b.cannons(at(985.0, 0.0));
+            b.cannons(at(514.0, 0.0));
         }
         Layout::FigureEight => {
-            let drops = [(24.0, -3.0), (30.0, 3.0), (36.0, 0.0)].map(|(s, lat)| at(s, lat));
-            b.curse(&mut places, at(10.0, 0.0), drops);
             // The dragon is over the crossing.
             b.dragon(at(467.0, 0.0), 70.0);
+            b.curse(&mut places, &plain, EIGHT_CURSE);
             b.stones([930.0, 950.0, 970.0].map(|s| at(s, 0.0)));
         }
         Layout::Gauntlet => gauntlet(&mut b, &mut places, &plain),
@@ -580,9 +596,7 @@ pub fn load(
 /// another at one end of it.
 fn gauntlet(b: &mut Builder, places: &mut Places, plain: &Track) {
     let at = |s: f32, lat: f32| Site::along(plain, s, lat);
-    // A mummy's curse waits just past the line, and the temple's stones after it.
-    let drops = [(30.0, -3.0), (38.0, 3.0), (46.0, 0.0)].map(|(s, right)| at(s, right));
-    b.curse(places, at(15.0, 0.0), drops);
+    // The temple's stones come first.
     b.stones([55.0, 77.0, 99.0].map(|s| at(s, 0.0)));
 
     // The aliens' saucer comes down the road at its lowest.
@@ -636,6 +650,8 @@ fn gauntlet(b: &mut Builder, places: &mut Places, plain: &Track) {
     b.surface("mmrocc", FIELD_WALL, false);
 
     b.ark(at(988.0, ARK_OUT));
+    // A mummy's curse waits half way round, and the forest's ghost after it.
+    b.curse(places, plain, GAUNTLET_CURSE);
     b.ghost(at(1140.0, 0.0));
 
     // The desert's pillar falls across the right of the road as the first car comes.
@@ -825,6 +841,47 @@ mod tests {
             }
             // The bricks are the ones the circuit has without its hazards.
             assert_eq!(world.bricks.len(), crate::items::laid(&track).len());
+        }
+    }
+
+    /// A curse is not left where the race begins, and where it is left it can be
+    /// seen coming: the three places are well on from where it is set off, with
+    /// little of a corner between, and each leaves the road beside it to go by on.
+    #[test]
+    fn a_curse_is_left_where_it_can_be_seen_and_gone_round() {
+        for (layout, (site, drops)) in [
+            (Layout::FigureEight, EIGHT_CURSE),
+            (Layout::Gauntlet, GAUNTLET_CURSE),
+        ] {
+            let track = Track::plain(layout);
+            let at = |s: f32| (s / track.spacing).round() as usize % track.n();
+            // In the middle half of the lap, far from the grid either way round.
+            assert!(
+                site > track.length / 4.0 && site < 3.0 * track.length / 4.0,
+                "{layout:?} {site} of {}",
+                track.length
+            );
+            for (s, right) in drops {
+                // A second and a half off at the least for whoever sets it off,
+                // going flat out, and more for a car just out of a hairpin.
+                let warning = s - (site - CURSE_REACH);
+                assert!((55.0..110.0).contains(&warning), "{layout:?} {warning}");
+                // It is all but straight ahead of a car where it is set off.
+                let to = (track.point(s, right) - track.pts[at(site)]).with_y(0.0);
+                let off = to.angle_between(track.flat[at(site)]).to_degrees();
+                assert!(off < 20.0, "{layout:?} is {off} degrees off");
+                assert!(right.abs() < crate::track::ROAD_HW);
+            }
+            // With one lying in each of the three places at once there is still a
+            // way by: the middle of a car may come within half a car's width of
+            // either barrier and must keep a curse's reach off each, and what is
+            // left of the road for it on one side is a car and a half wide.
+            let (reach, car) = (10.0 * UNIT + 1.5 * UNIT, 0.95);
+            let rights = drops.map(|drop| drop.1);
+            let left = rights.iter().fold(f32::MAX, |least, &right| least.min(right)) - reach;
+            let right = rights.iter().fold(f32::MIN, |most, &right| most.max(right)) + reach;
+            let room = (left + (WALL - car)).max((WALL - car) - right);
+            assert!(room > 3.0 * car, "{layout:?} {room}");
         }
     }
 
