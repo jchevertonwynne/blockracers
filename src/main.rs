@@ -14,7 +14,7 @@ mod frontend;
 mod garage;
 mod gauntlet;
 mod hazards;
-mod helter;
+mod home;
 mod hud;
 mod input;
 mod item_models;
@@ -22,7 +22,9 @@ mod lighting;
 mod items;
 mod kart;
 mod kart_effects;
+mod landmarks;
 mod loading;
+mod map;
 mod menu;
 mod meshgen;
 mod mixer;
@@ -289,17 +291,20 @@ fn main() {
             mode == Some("menu"),
         ))
     });
-    let mut circuits = Circuits::find();
+    // A demo is set up by its variables alone, and leaves what is kept as it is.
+    let keeping = demo.is_none();
+    if keeping {
+        home::gather();
+    }
+    let mut circuits = Circuits::of(map::kept(demo.is_some(), keeping));
     let mut settings = Settings::new(&circuits);
-    // A demo is set up by its variables alone, and leaves the kept settings as they are.
-    if demo.is_none() {
+    if keeping {
         settings.restore();
     }
     // `BRICK_RACE=TEST`: a demo of the garage's test drive.
     if demo.is_some() && std::env::var("BRICK_RACE").as_deref() == Ok(menu::TEST_TRACK) {
         circuits.begin_test_drive(&mut settings);
     }
-    let keeping = demo.is_none();
     // `BRICK_LAPS=1`: how long a demo's race is.
     let laps = std::env::var("BRICK_LAPS")
         .ok()
@@ -606,7 +611,7 @@ fn setup_scene(mut commands: Commands) {
 /// Loads the chosen circuit and resets the race.
 fn load_race(
     mut commands: Commands,
-    circuits: Res<Circuits>,
+    mut circuits: ResMut<Circuits>,
     settings: Res<Settings>,
     demo: Option<Res<DemoShot>>,
     idle: Res<frontend::idle::Idle>,
@@ -617,6 +622,11 @@ fn load_race(
     garage: Res<garage::Garage>,
     mut cheats: ResMut<cheats::Cheats>,
 ) {
+    // A map that has been changed since it was read is raced as it now is; online
+    // it is the host's that is raced, as the host sent it.
+    if *role == net::Role::Offline {
+        circuits.reread(settings.circuit);
+    }
     let circuit = &circuits.0[settings.circuit];
     let mut variant = variant::Variant::of(&settings, &championship, circuit.race.as_deref());
     // The licence's cheat codes: which of them this race has.
@@ -673,11 +683,11 @@ fn load_race(
             if circuit.race.is_some() {
                 warn!("could not load {}; using the brick circuit", circuit.name);
             }
-            let mut track = Track::built(circuit.layout);
+            let mut track = Track::built(circuit.map());
             // Our own circuits have hazards of the game's to stand round their roads,
             // where the game's data is there to take them from.
             let furnished = if circuit.race.is_none() {
-                gauntlet::load(circuit.layout, &mut track, settings.championship.as_deref())
+                gauntlet::load(circuit.map(), &mut track, settings.championship.as_deref())
             } else {
                 None
             };
@@ -771,7 +781,7 @@ fn setup_brick_world(
         MeshMaterial3d(plastic.clone()),
     ));
     commands.spawn((
-        Mesh3d(meshes.add(track.build_scenery(circuits.0[settings.circuit].layout, &mut rng))),
+        Mesh3d(meshes.add(track.build_scenery(circuits.0[settings.circuit].map(), &mut rng))),
         MeshMaterial3d(plastic.clone()),
     ));
     // Hazards that stand on nothing of ours leave nothing to draw, and a mesh of

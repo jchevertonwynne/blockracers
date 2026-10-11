@@ -1,0 +1,79 @@
+# The brick circuit. From the start the road runs east under two bridges of its
+# own, sweeps right round a corner with grass inside it, comes back round a hairpin
+# and climbs a long S onto the first bridge; comes down round a right-hander and a
+# hairpin to the north side, where it swings out and back over a rise; goes round
+# another hairpin and up onto the second bridge; and drops off the end of it into a
+# hairpin, a left-hander over a rise and a last hairpin onto the straight.
+#
+# A map is a circuit if it has `corners`, and an arena if it has an `outline`
+# (yard.toml). Everything is in the game's units: x runs east, z south, and a
+# height is up. What is "so far round the lap" is measured along the middle of
+# the road from the first corner, and wants measuring again when the road is
+# changed.
+
+name = "Brick Circuit"
+
+# The road's corners, each [x, height, z, radius]: the road runs straight from each
+# towards the next and is rounded at each to its radius. A corner with no radius
+# is only a height on the way. The first is the start. The height is that of the
+# middle of the corner, and is eased from one to the next. A road is 16 across
+# from barrier to barrier, so two stretches side by side are 18 apart or more, and
+# one over another is 8 above it. A car going flat out slides round a corner of
+# 18 and no tighter.
+corners = [
+    [-52, 0, 8, 0],
+    [88, 0, 8, 32],
+    [88, 0, 92, 20], [48, 0, 92, 20],
+    [48, 2.5, 54, 24], [32, 7, 32, 24],
+    [32, 8, 22, 0], [32, 8, -6, 0],
+    [32, 7, -26, 18],
+    [104, 1, -26, 20], [104, 0, -66, 20],
+    [4, 0, -66, 18], [-24, 4, -98, 18], [-52, 0, -66, 18],
+    [-104, 0, -66, 20], [-104, 0, -26, 20],
+    [-16, 6.5, -26, 18],
+    [-16, 8, -6, 0], [-16, 8, 22, 0],
+    [-16, 7.6, 34, 0], [-16, 2.4, 46, 0],
+    [-16, 0, 92, 20], [-56, 0, 92, 20],
+    [-56, 3, 48, 18],
+    [-124, 0, 48, 20], [-124, 0, 8, 20],
+]
+
+# Ways off the road and back onto it further round, straight from one place on it
+# to another: from so far round the lap to so far, with its tarmac `road` and its
+# barriers `wall` from its middle, `bumps` so high along it, `covered` by a shed
+# or not, and `taken` by the computer's cars that part of the time. This one cuts
+# across the inside of the last hairpin, through a shed that hides it, onto the
+# straight before the line.
+byways = [
+    { from = 985, to = 1075, road = 4, wall = 5.5, bumps = 0, covered = true, taken = 0.3 },
+]
+
+# Corners with grass inside them and no barrier before it, to be cut across: the
+# first corner.
+infields = [{ from = 108, to = 158 }]
+
+# Speed pads: where, and how far `right` of the middle of the road if not on it.
+pads = [{ at = 742 }, { at = 498 }]
+
+# Banked corners: from where to where, and how steep across the road at the
+# steepest. The two hairpins on the east side.
+banks = [
+    { from = 191, to = 252, tilt = 0.15 },
+    { from = 400, to = 462, tilt = 0.15 },
+]
+
+# What the walls between its stretches of road are built of: sandstone under
+# white. A colour is red, blue, yellow, green, lime, white, black, grey,
+# "dark grey", orange, brown or tan, or its own [red, green, blue] from 0 to 1.
+walls = { wall = "tan", footing = [0.62, 0.52, 0.36], coping = "white", cap = "red", battlements = false }
+
+# The game's hazards stood about it, one of each at the most: `at` so far round
+# the lap and `right` of the middle of the road, or at a `place` [x, z] with a
+# `heading` in degrees round from east to north. There are the hammer, stones,
+# cannons, ghost, dragon, ark, curse, saucer, lava, field, pillar, barrels, crane,
+# warp, smoke and water (gauntlet.toml has them all).
+hazards = [
+    { kind = "hammer", at = 60 },
+    { kind = "ghost", at = 174 },
+    { kind = "cannons", at = 514 },
+]

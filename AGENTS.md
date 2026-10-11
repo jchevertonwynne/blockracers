@@ -18,8 +18,29 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   keep it up to date as things are ported or gaps are found.
 - **Code:** `src/assets/` holds the file-format readers; everything else in `src/` is
   the game. Each module's header comment says which part of the original it follows.
-- **Our own circuits:** `src/track.rs` lays out the four built here (`track::Layout`) and
-  what each has besides its road (`Extras`: byways, infields, speed pads and banked
+- **Maps:** the circuits and arenas of the port's own are files, read as the game
+  runs (`src/map.rs`: a TOML file to a map, named for what it is known by, so
+  `brick.toml` is `BRICK`). The game carries the eight of `maps/` (`map::stock`),
+  which are all a demo or a test has unless `BRICK_MAPS` names a folder. A game
+  being played has every map of its folder (`~/.brickracers/maps`), one named as
+  one of the game's own in that one's place, and writes its own there to be
+  changed: where there is none of that name, and over one nobody has changed
+  since the game wrote it (`map::stock_up`, which keeps what it wrote in
+  `.written`), so a map changed in `maps/` reaches a folder whose copy is
+  untouched and never one that has been worked on; delete a file to have the
+  game's again. A map's file is read again each time a race alone is loaded, so
+  one being worked on is seen by restarting the race. One that is no map, or that
+  no road can be built from, is said in the log and left out (`Map::read` says
+  what is wrong; `Map::tried` builds it every way and refuses what panics).
+  `maps/brick.toml` and `maps/yard.toml` say what a circuit's file and an
+  arena's have in them.
+- **Kept between sessions:** everything is in one folder, `~/.brickracers`
+  (`src/home.rs`; `BRICK_HOME` says another): `settings`, `garage`, `progress`,
+  `ghosts/` and `maps/`. What an earlier game left loose in the home folder
+  (`~/.brick_racers_settings` and the rest) is moved in as a game that keeps
+  things starts (`home::gather`).
+- **Our own circuits:** `src/track.rs` builds a map's road (`track::Road`) and
+  what it has besides (byways, infields, speed pads and banked
   corners, each so far round the lap). Each road is a list of corners
   (`track::cornered`: x, height, z and the radius it is rounded to, with straights
   between and the heights eased from one to the next), narrow, and folded in on
@@ -55,11 +76,14 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   stand at are measured round the lap, and want measuring again when a road is
   changed. The computer's cars take the byways
   (`kart::Ai::byway`), `items::laid` puts the bricks where those features are,
-  `src/gauntlet.rs` stands hazards of the game's round each, and `src/helter.rs` is the
-  helter skelter's scenery. They have no picture for the race display's map, so one
+  `src/gauntlet.rs` stands the hazards of the game's that a map asks for
+  (`gauntlet::Stood`, one of each at the most), `src/landmarks.rs` builds the
+  scenery a map asks for (the helter skelter's tower, stand, gantry, pond and
+  rocks) and a map says what its walls are built of (`roadside::Look`). They have no picture for the race display's map, so one
   is drawn of the road (`hud::original::sketch`).
-- **Arenas:** `src/arena.rs` (the port's own) lays out four places to fight in
-  (`Layout::ARENAS`: the yard, the crossroads, the ring and the town), for a battle or a game
+- **Arenas:** `src/arena.rs` (the port's own) builds a map that has a floor and
+  no road: four places to fight in
+  (the yard, the crossroads, the ring and the town), for a battle or a game
   of tag online and offered nowhere else: the room's vote lists them only when the
   host's mode is one of those (`frontend`'s `offered`), and the host runs a race
   voted onto one on the first circuit (`Rules::fitted`). An arena is a walled floor
@@ -78,8 +102,7 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   computer's cars wander when they have nobody in sight to go for (`kart::Ai::quarry`:
   the nearest car, when they hold a power-up or are "it"). Each has a hazard or
   two of the game's (`gauntlet::load`), and its map is of its wall and blocks.
-  Every plan is the same either side of its east-west line, so mirrored it is
-  itself; one that wasn't would need its floor and blocks mirrored too.
+  A mirrored race turns the plan over (`Plan::mirrored`).
 - **Built cars:** `src/build.rs` has the rules of putting bricks on a chassis, the
   bytes a car is saved as and the model made of one, and a racer's minifigure;
   `src/assets/leb.rs`, `gcb.rs` and `lrs.rs` read the bricks, the minifigure's heads
@@ -225,7 +248,11 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   clock down until it bumps another; the first clock out ends it). What a car has
   left is `Kart::stake` and `Kart::it`, which go to the players with its standing
   and are shown where the display counts laps. A session's "series" scores any of
-  them by place, race after race.
+  them by place, race after race. A race on one of the port's own maps is run on
+  the host's: its file goes to the players with the start (`ToPlayer::Start`,
+  `Circuits::lend`) and is raced whatever their own games have of that name. The
+  vote lists each player's own maps; one voted for that the host hasn't got is
+  run on the first circuit there is (`Rules::fitted`).
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 
@@ -270,21 +297,23 @@ menu instead. These combine with it:
 
 | Variable | Does |
 |---|---|
-| `BRICK_RACE=RACEC0R0` | which race folder to load (`TEST` is the garage's test drive; `BRICK`, `FIGURE8`, `GAUNTLET` and `HELTER` are the built-in circuits, `YARD`, `CROSSROADS`, `RING` and `TOWN` the arenas, where a demo's own car stays on the grid unless `BRICK_KEYS` drives it; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
+| `BRICK_RACE=RACEC0R0` | which race folder to load, or which map by its file's name (`TEST` is the garage's test drive; `BRICK`, `FIGURE8`, `GAUNTLET` and `HELTER` are the game's own circuits, `YARD`, `CROSSROADS`, `RING` and `TOWN` its arenas, where a demo's own car stays on the grid unless `BRICK_KEYS` drives it; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
 | `BRICK_CAM=x,y,z,tx,ty,tz` | fixed camera, in the game's coordinates |
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
 | `BRICK_EVENTS=18@3` | circuit events to set off, and when |
 | `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (a demo's keys are bound as a new game's are: `W` or `Up` is the accelerator; `P` is photo mode; `R` at the finish is the replay; where bricks are placed `I`, `J`, `K` and `L` move the brick, `R` turns it, `Enter` adds it, which takes most of a second as it drops onto the car, and only where it fits, which on one of the game's own cars is nowhere until `Back` has taken a brick off, `Tab` and `T` are the next brick and set, `Left` and `Right` turn the car, `Up` and `Down` raise and lower the view and `C` puts it back; on the driver page "done" waits a second or two for the driver's move before the page changes) |
-| `BRICK_SETTINGS=<file>` | where settings are kept (default `~/.brick_racers_settings`; demos neither read nor write it) |
+| `BRICK_HOME=<folder>` | where everything kept is (default `~/.brickracers`); each of the next has its own place in it |
+| `BRICK_MAPS=<folder>` | a folder of maps (default `~/.brickracers/maps`; a demo without it has the game's own and no others, and a demo writes nothing there). `BRICK_MAPS=maps` races the files of the repo as they are, without building again |
+| `BRICK_SETTINGS=<file>` | where settings are kept (default `~/.brickracers/settings`; demos neither read nor write it) |
 | `BRICK_START=1` | keep the drop-in and countdown (demos skip them) |
 | `BRICK_LAPS=1` | race length |
 | `BRICK_SERIES=0` | race that circuit's races as a circuit race |
 | `BRICK_TIME=1` | time race |
 | `BRICK_MENU=race\|circuit\|time\|options\|game\|audio\|video\|extras\|controls\|award\|online\|host\|join\|garage\|racer\|driver\|licence\|car\|bricks\|language` | menu page to open on; `language` is the options' page, where `Right` and `Left` change it (a demo reads no settings, so that is how one is put in another language); the five before it are of the build menu, with the racer `BRICK_RACER` names on the bench; `award` is a circuit won, as it is the first time the first is: its film (eleven and a half seconds), then the page that says what was won |
-| `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brick_racers_garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
+| `BRICK_GARAGE=<file>` | where the racers built are kept (default `~/.brickracers/garage`; a demo without it has the game's 24 quick-build racers for a garage, and keeps nothing) |
 | `BRICK_FILM=C_AWARD1` | a film to show as the menu opens, by its folder in `/MENUDATA` (`C_AWARD1` to `C_AWARD4` are the circuit's places, `WINCAR` a champion's car set won, `WINCAR:c3` being the fourth circuit's, `WINRRCAR` Rocket Racer's, which is thirty-seven seconds, `WINVVCAR` Veronica Voltage's, `CIRCUIT1` to `CIRCUIT7` those before each circuit, `LEGAL` the opening notice and `CREDITS` the credits, which are two minutes; a key ends it after a second) |
-| `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brick_racers_progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
+| `BRICK_PROGRESS=<file>` | where what has been won is kept (default `~/.brickracers/progress`; a demo without it has everything won, and keeps nothing; a file that isn't there yet is a game with nothing won) |
 | `BRICK_CHEATS=FSTFRWRD,NWHLS` | the licence's cheat codes, as if each were typed as its name (`NSLWJ`, `FLYSKYHGH`, `PGLLRD`, `PGLLYLL`, `PGLLGRN`, `LNFRRRM`, `RPCRNLY`, `MXPMX`, `FSTFRWRD`, `NWHLS`, `NCHSSS`, `NDRVR`; `NMRCHTS` clears them) |
 | `BRICK_LOADING=4` | begin on the loading screen and hold it that many seconds of the real clock, its ticks filling in (demos otherwise skip it); `0` shows the load itself, as long as it takes |
 | `BRICK_IDLE=2` | how many seconds the main menu waits before its demo race (sixty without it), and lets a demo run go to one, which it otherwise never does |
@@ -295,7 +324,7 @@ menu instead. These combine with it:
 | `BRICK_BRICKS=red\|yellow\|blue\|green\|none\|random` | what the circuit's bricks are made |
 | `BRICK_OPPONENTS=1` | how many of the computer's cars race |
 | `BRICK_PHOTOS=<folder>` | where photo mode saves (default `screenshots/`) |
-| `BRICK_GHOSTS=<folder>` | where best time-race runs are kept (default `~/.brick_racers_ghosts`) |
+| `BRICK_GHOSTS=<folder>` | where best time-race runs are kept (default `~/.brickracers/ghosts`) |
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
 | `BRICK_NET=host:2` | host a session and start its race, without a vote, once that many players are in it (the host is one); `host:9` never fills, and leaves the session in its room |
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |

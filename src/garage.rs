@@ -1,7 +1,7 @@
 //! The racers the player has built, and where they are kept: a file of the game's own
 //! kind for saved racers (`assets::lrs`), so that one of the game's is as good.
 //!
-//! `BRICK_GARAGE=<file>` says which file (default `~/.brick_racers_garage`). A demo
+//! `BRICK_GARAGE=<file>` says which file (default `garage` in `home`'s folder). A demo
 //! without it has the game's quick-build racers for a garage, and keeps nothing.
 
 use crate::assets::{
@@ -29,7 +29,7 @@ impl Garage {
     /// The garage as it was left; a demo's is `stock` unless it names a file.
     pub fn open(demo: bool, jam: Option<&Jam>) -> Garage {
         let named = std::env::var_os("BRICK_GARAGE").map(PathBuf::from);
-        let home = || Some(PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_garage"));
+        let home = || crate::home::kept("BRICK_GARAGE", "garage");
         match named.or_else(|| home().filter(|_| !demo)) {
             Some(file) => Garage {
                 racers: std::fs::read(&file).map_or_else(|_| Vec::new(), |data| lrs::read(&data)),
@@ -47,7 +47,7 @@ impl Garage {
         if let Some(Err(error)) = self
             .file
             .as_ref()
-            .map(|file| std::fs::write(file, lrs::write(&self.racers)))
+            .map(|file| crate::home::write(file, lrs::write(&self.racers)))
         {
             warn!("could not keep the garage: {error}");
         }

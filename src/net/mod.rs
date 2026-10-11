@@ -363,6 +363,7 @@ pub fn start(
     let start = encode(&ToPlayer::Start {
         rules: rules.clone(),
         seats: seats.clone(),
+        map: rules.map(circuits),
     });
     for member in &mut session.members {
         member.loaded = false;
@@ -516,7 +517,7 @@ fn session(
     time: Res<Time<Real>>,
     role: Res<Role>,
     screen: Res<State<Screen>>,
-    circuits: Res<Circuits>,
+    mut circuits: ResMut<Circuits>,
     mut inbox: ResMut<Inbox>,
     mut session: ResMut<Session>,
     mut room: ResMut<Room>,
@@ -674,6 +675,7 @@ fn session(
                             encode(&ToPlayer::Start {
                                 rules: rules.clone(),
                                 seats: lineup.seats.clone(),
+                                map: rules.map(&circuits),
                             }),
                         );
                     }
@@ -855,9 +857,23 @@ fn session(
                     ) = (voters, closing, racing, last, results);
                     room.revision += 1;
                 }
-                ToPlayer::Start { rules, seats } => {
+                ToPlayer::Start { rules, seats, map } => {
+                    // The host's map is the one raced, whatever this game has.
+                    let lent = map.map(|text| circuits.lend(&rules.circuit, &text));
+                    if let Some(Err(wrong)) = &lent {
+                        warn!("the host's {}: {wrong}", rules.circuit);
+                        leave(
+                            &mut commands,
+                            session,
+                            &mut settings,
+                            Some("The host's circuit could not be built"),
+                            &mut next,
+                        );
+                        return;
+                    }
                     if rules.apply(&mut settings, &circuits) {
-                        info!("racing {} with {} cars", rules.circuit, seats.len());
+                        let name = &circuits.0[settings.circuit].name;
+                        info!("racing {} ({name}) with {} cars", rules.circuit, seats.len());
                         settings.rivals = Some(seats.len().saturating_sub(1));
                         room.ready = false;
                         commands.insert_resource(Lineup {

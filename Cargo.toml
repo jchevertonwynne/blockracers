@@ -9,6 +9,8 @@ bevy = { version = "0.19.1", features = ["wav", "serialize"] }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 lobby-api = { path = "crates/lobby-api" }
+# The maps of the port's own circuits and arenas, which are files.
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 anyhow = "1"
 thiserror = "2"
 iroh = "1"

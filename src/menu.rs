@@ -2,7 +2,7 @@
 
 use crate::audio::{Sfx, id};
 use crate::meshgen::YELLOW;
-use crate::track::Layout;
+use crate::map::Map;
 use crate::world;
 use bevy::prelude::*;
 
@@ -19,18 +19,29 @@ pub struct Circuit {
     pub name: String,
     /// Folder in the original game's archive; `None` is one of the built-in circuits.
     pub race: Option<String>,
-    /// Which built-in circuit, when it is one.
-    pub layout: Layout,
+    /// Which of the port's own maps, when it is one.
+    pub map: Option<Map>,
     /// Which of the game's circuits the race is one of, counting from none; the
     /// built-in circuits are in a set of their own after the last.
     pub group: usize,
 }
 
 impl Circuit {
-    /// Whether it is one of the arenas, which are for a battle or a game of tag
-    /// (`Layout::ARENAS`).
+    /// Whether it is one of the arenas, which are for a battle or a game of tag.
     pub fn arena(&self) -> bool {
-        self.race.is_none() && self.layout.arena()
+        self.map.as_ref().is_some_and(Map::arena)
+    }
+
+    /// The map its road is built from: its own, or for one of the game's circuits
+    /// that didn't load, the first the game carries.
+    pub fn map(&self) -> &Map {
+        self.map.as_ref().unwrap_or(&crate::map::stock()[0])
+    }
+
+    /// What it is known by between games, to `$BRICK_RACE` and to the ghosts kept
+    /// of it: its folder in the game's data, or its map's key.
+    pub fn key(&self) -> &str {
+        self.race.as_deref().unwrap_or(&self.map().key)
     }
 }
 
@@ -38,8 +49,15 @@ impl Circuit {
 pub struct Circuits(pub Vec<Circuit>);
 
 impl Circuits {
-    /// Every circuit in the original game's data, if it's there, and our own.
+    /// Every circuit in the original game's data, if it's there, and the maps the
+    /// game carries.
+    #[cfg(test)]
     pub fn find() -> Self {
+        Circuits::of(crate::map::stock().to_vec())
+    }
+
+    /// Every circuit in the original game's data, if it's there, and these maps.
+    pub fn of(maps: Vec<Map>) -> Self {
         // In the order the circuits run them, which is not the order of their folders.
         let order = world::circuit_order();
         let place = |race: &str| {
@@ -58,20 +76,70 @@ impl Circuits {
                 Circuit {
                     name,
                     race: Some(race),
-                    layout: Layout::default(),
+                    map: None,
                     group,
                 }
             })
             .collect();
         // The arenas come last, and are for a battle or a game of tag online.
-        let built = Layout::ALL.into_iter().chain(Layout::ARENAS);
-        circuits.extend(built.map(|layout| Circuit {
-            name: layout.name().into(),
-            race: None,
-            layout,
-            group: sets,
-        }));
+        for map in maps {
+            // A map named as a folder of the game's would never be found by name.
+            if circuits.iter().any(|c| c.key() == map.key) || map.key == TEST_TRACK {
+                crate::home::say(&format!("the map {} is left out: the game has a race called that", map.key));
+                continue;
+            }
+            circuits.push(Circuit {
+                name: map.name.clone(),
+                race: None,
+                map: Some(map),
+                group: sets,
+            });
+        }
         Circuits(circuits)
+    }
+
+    /// Takes a map as a session's host has it, to be raced in place of this
+    /// game's own of that name, or as well as its own: which circuit it then is,
+    /// or what is wrong with it.
+    pub fn lend(&mut self, key: &str, text: &str) -> Result<usize, String> {
+        let had = self.0.iter().position(|c| c.map.as_ref().is_some_and(|map| map.key == key));
+        if let Some(at) = had.filter(|&at| self.0[at].map().text == text) {
+            return Ok(at);
+        }
+        if self.0.iter().any(|c| c.race.as_deref() == Some(key)) || key == TEST_TRACK {
+            return Err("the game has a race called that".into());
+        }
+        let mut map = Map::tried(key, text)?;
+        match had {
+            Some(at) => {
+                // Its file is still this game's own, to be read again later.
+                map.file = self.0[at].map().file.clone();
+                (self.0[at].name, self.0[at].map) = (map.name.clone(), Some(map));
+                Ok(at)
+            }
+            None => {
+                let group = self.0.iter().filter(|c| c.map.is_some()).map(|c| c.group).next();
+                let group = group.or(self.0.iter().map(|c| c.group + 1).max());
+                self.0.push(Circuit {
+                    name: map.name.clone(),
+                    race: None,
+                    map: Some(map),
+                    group: group.unwrap_or(0),
+                });
+                Ok(self.0.len() - 1)
+            }
+        }
+    }
+
+    /// Reads a circuit's map again if its file has changed, so that a map being
+    /// worked on is raced as it now is.
+    pub fn reread(&mut self, circuit: usize) {
+        if let Some(c) = self.0.get_mut(circuit)
+            && let Some(map) = c.map.as_ref().and_then(Map::reread)
+        {
+            info!("read {} again", map.key);
+            (c.name, c.map) = (map.name.clone(), Some(map));
+        }
     }
 }
 
@@ -89,7 +157,7 @@ impl Circuits {
         self.0.push(Circuit {
             name: "Test track".into(),
             race: Some(TEST_TRACK.into()),
-            layout: Layout::default(),
+            map: None,
             group,
         });
         settings.circuit = self.0.len() - 1;
@@ -138,7 +206,7 @@ impl Mode {
     pub const ALL: [Mode; 4] = [Mode::Race, Mode::Elimination, Mode::Battle, Mode::Tag];
 
     /// Whether laps don't end it: it is then fought out, in an arena if the room
-    /// likes (`track::Layout::ARENAS`).
+    /// likes (`arena`).
     pub fn lapless(self) -> bool {
         matches!(self, Mode::Battle | Mode::Tag)
     }
@@ -280,10 +348,10 @@ impl Settings {
     /// original's, or a built-in circuit's key.
     pub fn new(circuits: &Circuits) -> Self {
         let wanted = std::env::var("BRICK_RACE").ok();
-        let circuit = circuits.0.iter().position(|c| match &c.race {
-            Some(_) => c.race == wanted,
-            None => wanted.as_deref() == Some(c.layout.key()),
-        });
+        let circuit = circuits
+            .0
+            .iter()
+            .position(|c| wanted.as_deref().is_some_and(|wanted| wanted.eq_ignore_ascii_case(c.key())));
         Settings {
             circuit: circuit.unwrap_or(0),
             test_drive: None,
@@ -516,14 +584,9 @@ impl Settings {
     }
 }
 
-/// Where the settings are kept: `$BRICK_SETTINGS`, or a file in the home folder.
+/// Where the settings are kept: `$BRICK_SETTINGS`, or `settings` in `home`'s folder.
 fn settings_file() -> Option<std::path::PathBuf> {
-    match std::env::var_os("BRICK_SETTINGS") {
-        Some(file) => Some(file.into()),
-        None => {
-            Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_settings"))
-        }
-    }
+    crate::home::kept("BRICK_SETTINGS", "settings")
 }
 
 /// Keeps the settings whenever they change, for the next session.
@@ -534,7 +597,7 @@ pub fn keep(settings: Res<Settings>, mut kept: Local<Option<String>>) {
     let text = settings.write();
     // The first look is at what was just restored, which is on file already.
     if kept.as_ref().is_some_and(|kept| *kept != text)
-        && let Some(Err(error)) = settings_file().map(|file| std::fs::write(file, &text))
+        && let Some(Err(error)) = settings_file().map(|file| crate::home::write(&file, &text))
     {
         warn!("could not keep the settings: {error}");
     }
@@ -777,4 +840,54 @@ fn the_language_is_kept_with_the_settings() {
     // One past the nine the original lists is left alone.
     back.read("language=9\n");
     assert_eq!(back.language, 7);
+}
+
+#[cfg(test)]
+#[test]
+fn a_host_s_map_is_raced_in_place_of_this_game_s_own() {
+    let mut circuits = Circuits::find();
+    let count = circuits.0.len();
+    let own = crate::map::named("BRICK");
+    let brick = circuits.0.iter().position(|c| c.key() == "BRICK").unwrap();
+    // The same map is the one this game has.
+    assert_eq!(circuits.lend("BRICK", &own.text), Ok(brick));
+    assert_eq!(circuits.0[brick].map(), own);
+    // Another of the same name is raced in its place, and one this game hasn't
+    // is another circuit, among the port's own.
+    let theirs = own.text.replace("Brick Circuit", "Their Circuit").replace("[88, 0, 8, 32]", "[90, 0, 8, 30]");
+    assert_eq!(circuits.lend("BRICK", &theirs), Ok(brick));
+    assert_eq!(circuits.0[brick].name, "Their Circuit");
+    assert_eq!(circuits.0[brick].map().road.corners[1], [90.0, 0.0, 8.0, 30.0]);
+    assert_eq!(circuits.lend("THEIRS", &theirs), Ok(count));
+    assert_eq!((circuits.0[count].key(), circuits.0[count].group), ("THEIRS", circuits.0[brick].group));
+    assert!(!circuits.0[count].arena());
+    // One that is no map, or is named as a race of the game's, is refused.
+    assert!(circuits.lend("BROKEN", "name = 3").is_err());
+    assert!(circuits.lend(TEST_TRACK, &own.text).is_err());
+    assert!(circuits.lend("../BRICK", &theirs).is_err());
+    assert_eq!(circuits.0.len(), count + 1);
+}
+
+#[cfg(test)]
+#[test]
+fn a_map_changed_on_file_is_read_again() {
+    let file = std::env::temp_dir().join(format!("brick_reread_{}.toml", std::process::id()));
+    let own = crate::map::named("BRICK");
+    std::fs::write(&file, &own.text).unwrap();
+    let mut circuits = Circuits::of(vec![Map {
+        file: Some(file.clone()),
+        ..own.clone()
+    }]);
+    let at = circuits.0.len() - 1;
+    circuits.reread(at);
+    assert_eq!(circuits.0[at].map().text, own.text);
+    // Changed, it is the map as it now is; broken, it is left as it was.
+    std::fs::write(&file, own.text.replace("Brick Circuit", "Brick Circus")).unwrap();
+    circuits.reread(at);
+    assert_eq!(circuits.0[at].name, "Brick Circus");
+    assert_eq!(circuits.0[at].map().file.as_ref(), Some(&file));
+    std::fs::write(&file, "name = \"Brick Circus\"\ncorners = [[0, 0, 0, 0]]\n").unwrap();
+    circuits.reread(at);
+    assert_eq!(circuits.0[at].map().road.corners.len(), own.road.corners.len());
+    let _ = std::fs::remove_file(file);
 }

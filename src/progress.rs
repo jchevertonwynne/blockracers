@@ -4,7 +4,7 @@
 //! `AwardCinematicScreen::GrantAwards`, `MenuManager::ProcessRecordBeaten`,
 //! `CarModelScreenBase::PopulateCategoryCarousel` and `MenuRacerCarousel` use them.
 //!
-//! `BRICK_PROGRESS=<file>` says which file (default `~/.brick_racers_progress`). A
+//! `BRICK_PROGRESS=<file>` says which file (default `progress` in `home`'s folder). A
 //! demo without it has everything, and keeps nothing.
 //!
 //! The original gives nothing to a player racing as one of its own drivers; here
@@ -58,7 +58,7 @@ impl Progress {
     /// it names a file.
     pub fn open(demo: bool, jam: Option<&Jam>) -> Progress {
         let named = std::env::var_os("BRICK_PROGRESS").map(PathBuf::from);
-        let home = || Some(PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_progress"));
+        let home = || crate::home::kept("BRICK_PROGRESS", "progress");
         let races = jam.map(roster::races).unwrap_or_default();
         let mut progress = Progress {
             circuits: 1,
@@ -114,7 +114,7 @@ impl Progress {
         if let Some(Err(error)) = self
             .file
             .as_ref()
-            .map(|file| std::fs::write(file, self.write()))
+            .map(|file| crate::home::write(file, self.write()))
         {
             warn!("could not keep what has been won: {error}");
         }

@@ -712,7 +712,7 @@ pub fn laid(track: &Track) -> Vec<(Option<Power>, Vec3)> {
         }
     }
     // An arena has more where its line doesn't go, each a colour of its own.
-    if let Some(plan) = track.arena {
+    if let Some(plan) = &track.arena {
         for (i, &[x, z]) in plan.bricks.iter().enumerate() {
             // On whatever is uppermost there: the floor, or the high ground.
             let over = Vec3::new(x, 20.0, z);
@@ -2554,9 +2554,10 @@ mod tests {
 #[cfg(test)]
 #[test]
 fn bricks_are_laid_where_a_circuit_s_features_are() {
-    use crate::track::{Layout, WALL};
-    for layout in Layout::ALL.into_iter().chain(Layout::ARENAS) {
-        let track = Track::built(layout);
+    use crate::track::WALL;
+    for map in crate::map::stock() {
+        let layout = map.key.as_str();
+        let track = Track::built(map);
         let bricks = laid(&track);
         let near = |p: Vec3, reach: f32| bricks.iter().any(|b| b.1.distance(p) < reach);
         // Each byway has bricks of its own, off the road.
@@ -2566,7 +2567,7 @@ fn bricks_are_laid_where_a_circuit_s_features_are() {
                 .iter()
                 .filter(|b| b.0.is_some() && b.1.distance(middle) < branch.road)
                 .count();
-            assert_eq!(coloured, 2, "{layout:?}");
+            assert_eq!(coloured, 2, "{layout}");
             assert!(!track.on_road(middle, WALL));
         }
         // Each jump has one in the air over its dip, higher than its lip.
@@ -2575,7 +2576,7 @@ fn bricks_are_laid_where_a_circuit_s_features_are() {
                 .iter()
                 .filter(|b| (from..to).contains(&track.nearest(b.1.with_y(0.0))))
                 .collect();
-            assert_eq!(over.len(), 1, "{layout:?}");
+            assert_eq!(over.len(), 1, "{layout}");
             let ground = track.collision.ground(over[0].1, 20.0).unwrap();
             assert!(over[0].1.y - ground.point.y > 6.0 && ground.point.y < 0.1);
         }
@@ -2583,18 +2584,18 @@ fn bricks_are_laid_where_a_circuit_s_features_are() {
         for infield in &track.infields {
             let grass = track.grass(infield);
             let [a, _, _, d] = grass[grass.len() / 2];
-            assert!(near((a + d) / 2.0, 0.1), "{layout:?}");
+            assert!(near((a + d) / 2.0, 0.1), "{layout}");
         }
         let banked = bricks.iter().filter(|b| {
             let i = track.nearest(b.1);
             track.bank[i] != 0.0 && b.1.y > track.pts[i].y + 0.3
         });
-        assert!(banked.count() >= 1 || layout.arena(), "{layout:?}");
+        assert!(banked.count() >= 1 || map.arena(), "{layout}");
         // Every one of them is over ground a car can be on.
         for (_, at) in &bricks {
             assert!(
                 track.collision.ground(*at + Vec3::Y, 20.0).is_some(),
-                "{layout:?} {at}"
+                "{layout} {at}"
             );
         }
     }

@@ -318,7 +318,7 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
     let first = lines[0][0];
     lines[0].push(first);
     lines.extend(track.branches.iter().map(|b| b.pts.iter().map(flat).collect()));
-    if let Some(plan) = track.arena {
+    if let Some(plan) = &track.arena {
         let outlines = plan.outlines();
         lines = outlines.iter().map(|line| line.iter().map(flat).collect()).collect();
     }
@@ -360,7 +360,7 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
     let bar = (lines[0][0] - across, lines[0][0] + across);
     // An arena's lines are its floor, then its blocks, its ramps and its decks. A
     // block a ramp comes up to is high ground, and drawn as a deck is.
-    let kinds = track.arena.map(|plan| {
+    let kinds = track.arena.as_ref().map(|plan| {
         let blocks = 1..1 + plan.blocks.len();
         let ramps = blocks.end..blocks.end + plan.ramps.len();
         let high: Vec<bool> = plan
@@ -1324,9 +1324,10 @@ pub fn draw(
 #[cfg(test)]
 #[test]
 fn a_built_circuit_has_a_map_of_its_road() {
-    use crate::track::{Layout, Track};
-    for layout in Layout::ALL.into_iter().chain(Layout::ARENAS) {
-        let track = Track::built(layout);
+    use crate::track::Track;
+    for map in crate::map::stock() {
+        let layout = map.key.as_str();
+        let track = Track::built(map);
         let (map, [west, north, east, south]) = sketch(&track, false);
         assert_eq!(map.width.max(map.height), SKETCH as u32);
         let range = Vec2::new(east - west, north - south);
@@ -1345,9 +1346,9 @@ fn a_built_circuit_has_a_map_of_its_road() {
             let from_corner = Vec2::new(p.x / UNIT - east, south + p.z / UNIT) / range;
             let at = (Vec2::ONE + from_corner) * Vec2::new(map.width as f32, map.height as f32);
             let (x, y) = (at.x as u32, at.y as u32);
-            assert!(x < map.width && y < map.height, "{layout:?} {p}");
+            assert!(x < map.width && y < map.height, "{layout} {p}");
             let alpha = map.rgba[((y * map.width + x) * 4 + 3) as usize];
-            assert_eq!(alpha, 255, "{layout:?}: no road drawn under {p}");
+            assert_eq!(alpha, 255, "{layout}: no road drawn under {p}");
         }
     }
 }

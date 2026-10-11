@@ -5,14 +5,16 @@
 //! The circuits built here are laid out to be driven at the game's speeds: narrow,
 //! folded in on themselves so that one stretch runs beside, over or under another,
 //! and never straight or level for long, so that little of the road ahead is seen
-//! at once. Each is a list of corners (`cornered`). What hides one stretch from
-//! another is the walls at the corners here (`Track::screens`) and `roadside`'s
-//! walls and hedges.
+//! at once. Each is a map (`map::Map`, a file of `maps/`) whose road is a list of
+//! corners (`Road`, `cornered`). What hides one stretch from another is the walls
+//! at the corners here (`Track::screens`) and `roadside`'s walls and hedges.
 
 use crate::assets::materials::Surface;
 use crate::collision::Collision;
+use crate::map::Map;
 use crate::meshgen::*;
 use bevy::prelude::*;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
@@ -22,36 +24,70 @@ pub const ROAD_HW: f32 = 6.0;
 pub const WALL: f32 = 8.0;
 const KERB: f32 = 0.8;
 
-/// The brick circuit's corners as (x, height, z, radius): the road runs straight from
-/// each towards the next and is rounded at each to its radius, and a corner with no
-/// radius is only a height on the way (`cornered`). The first is the start. From it
-/// the road runs east under two bridges of its own, sweeps right round a corner with
-/// grass inside it, comes back round a hairpin and climbs a long S onto the first
-/// bridge; comes down round a right-hander and a hairpin to the north side, where it
-/// swings out and back over a rise; goes round another hairpin and up onto the
-/// second bridge; and drops off the end of it into a hairpin, a left-hander over a
-/// rise and a last hairpin onto the straight.
+/// A circuit's road, as its map has it. The corners are each (x, height, z, radius):
+/// the road runs straight from each towards the next and is rounded at each to its
+/// radius, and a corner with no radius is only a height on the way (`cornered`). The
+/// first is the start.
 ///
-/// No corner of these circuits is tighter than a car going flat out can be slid
-/// round (`TIGHTEST`): a hairpin is eighteen or twenty to its middle, and two bends
-/// one after the other, one each way, are gentler than that.
-const BRICK: &[[f32; 4]] = &[
-    [-52.0, 0.0, 8.0, 0.0],
-    [88.0, 0.0, 8.0, 32.0],
-    [88.0, 0.0, 92.0, 20.0], [48.0, 0.0, 92.0, 20.0],
-    [48.0, 2.5, 54.0, 24.0], [32.0, 7.0, 32.0, 24.0],
-    [32.0, 8.0, 22.0, 0.0], [32.0, 8.0, -6.0, 0.0],
-    [32.0, 7.0, -26.0, 18.0],
-    [104.0, 1.0, -26.0, 20.0], [104.0, 0.0, -66.0, 20.0],
-    [4.0, 0.0, -66.0, 18.0], [-24.0, 4.0, -98.0, 18.0], [-52.0, 0.0, -66.0, 18.0],
-    [-104.0, 0.0, -66.0, 20.0], [-104.0, 0.0, -26.0, 20.0],
-    [-16.0, 6.5, -26.0, 18.0],
-    [-16.0, 8.0, -6.0, 0.0], [-16.0, 8.0, 22.0, 0.0],
-    [-16.0, 7.6, 34.0, 0.0], [-16.0, 2.4, 46.0, 0.0],
-    [-16.0, 0.0, 92.0, 20.0], [-56.0, 0.0, 92.0, 20.0],
-    [-56.0, 3.0, 48.0, 18.0],
-    [-124.0, 0.0, 48.0, 20.0], [-124.0, 0.0, 8.0, 20.0],
-];
+/// No corner of the circuits the game carries is tighter than a car going flat out
+/// can be slid round (`TIGHTEST`): a hairpin is eighteen or twenty to its middle, and
+/// two bends one after the other, one each way, are gentler than that.
+///
+/// What it has besides is each so far round the lap, but its tunnels and jumps,
+/// which are where they are on the ground.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Road {
+    pub corners: Vec<[f32; 4]>,
+    pub tunnels: Vec<Tunnel>,
+    pub jumps: Vec<Jump>,
+    pub byways: Vec<Byway>,
+    /// Corners with grass inside them and no barrier before it, to be cut across.
+    pub infields: Vec<Stretch>,
+    pub pads: Vec<Padded>,
+    pub banks: Vec<Banked>,
+}
+
+/// Where a tunnel begins and ends, as (x, z).
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Tunnel {
+    pub from: [f32; 2],
+    pub to: [f32; 2],
+}
+
+/// Where the lip of a jump is, as (x, z).
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Jump {
+    pub lip: [f32; 2],
+}
+
+/// Where a stretch of the road begins and ends.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Stretch {
+    pub from: f32,
+    pub to: f32,
+}
+
+/// A speed pad: where, and how far right of the middle of the road.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Padded {
+    pub at: f32,
+    #[serde(default)]
+    pub right: f32,
+}
+
+/// A banked corner: where the bank begins and ends, and how steep it is across the
+/// road at its steepest.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Banked {
+    pub from: f32,
+    pub to: f32,
+    pub tilt: f32,
+}
 
 /// How far over the road below a bridge's road must be: more than a launched kart
 /// rises, so nothing on the road below reaches the deck.
@@ -62,209 +98,45 @@ const DECK: f32 = 8.0;
 #[cfg(test)]
 const TIGHTEST: f32 = 17.5;
 
-/// The figure of eight's corners, as the brick circuit's are: two lobes with a
-/// crossing on the level between them, where the road meets itself at a right angle.
-/// From the start a sweeping hairpin and an S lead up onto a bridge over the way to
-/// the crossing; the road comes down off it round two right-handers and doubles back
-/// under it, over the crossing and a hump that drops away, and out into the east
-/// lobe: a kink, a sweeping hairpin, a hairpin over a rise and another back; and so
-/// over the crossing again, the other way, to the start.
-const FIGURE_EIGHT: &[[f32; 4]] = &[
-    [-86.0, 0.0, -44.0, 0.0],
-    [-160.0, 0.0, -44.0, 22.0], [-160.0, 0.0, 0.0, 22.0],
-    [-114.0, 2.0, 0.0, 28.0], [-82.0, 6.5, 40.0, 28.0],
-    [-66.0, 8.0, 40.0, 0.0], [-14.0, 8.0, 40.0, 0.0],
-    [6.0, 7.0, 40.0, 20.0], [6.0, 2.0, 84.0, 20.0], [-84.0, 0.0, 84.0, 20.0],
-    [0.0, 0.0, 0.0, 0.0], [11.0, 0.0, -11.0, 0.0], [21.0, 2.6, -21.0, 0.0], [24.0, 0.0, -24.0, 0.0],
-    [44.0, 0.0, -44.0, 24.0], [72.0, 0.0, -44.0, 20.0], [90.0, 2.0, -56.0, 20.0],
-    [148.0, 2.0, -56.0, 20.0], [148.0, 0.0, -16.0, 20.0],
-    [54.0, 5.0, -16.0, 20.0], [54.0, 5.0, 24.0, 20.0],
-    [154.0, 0.0, 24.0, 20.0], [154.0, 0.0, 64.0, 20.0],
-    [64.0, 0.0, 64.0, 24.0], [-44.0, 0.0, -44.0, 24.0],
-];
-
-/// The gauntlet's corners, as the brick circuit's are: eight rows, a stretch in each
-/// half of a row for a hazard to stand on (see `gauntlet`), with a hairpin from each
-/// row to the next and a bend or two in the middle of every row but the first, so
-/// that the next hazard is not seen until it is come to. From the end of the last row
-/// the road climbs onto a viaduct that winds back over the western hairpins to the
-/// first. Two of the eastern hairpins are tunnels.
-const GAUNTLET: &[[f32; 4]] = &[
-    [-20.0, 0.0, -119.0, 0.0],
-    [100.0, 0.0, -119.0, 17.0], [100.0, 0.0, -85.0, 17.0],
-    [58.0, 0.0, -85.0, 30.0], [28.0, 0.0, -95.0, 30.0], [-28.0, 0.0, -75.0, 30.0], [-58.0, 0.0, -85.0, 30.0],
-    [-100.0, 0.0, -85.0, 17.0], [-100.0, 0.0, -51.0, 17.0],
-    [-58.0, 0.0, -51.0, 30.0], [-28.0, 3.5, -41.0, 30.0], [28.0, 3.5, -61.0, 30.0], [58.0, 0.0, -51.0, 30.0],
-    [100.0, 0.0, -51.0, 17.0], [100.0, 0.0, -17.0, 17.0],
-    [58.0, 0.0, -17.0, 30.0], [28.0, 0.0, -27.0, 30.0], [-28.0, 0.0, -7.0, 30.0], [-58.0, 0.0, -17.0, 30.0],
-    [-100.0, 0.0, -17.0, 17.0], [-100.0, 0.0, 17.0, 17.0],
-    [-58.0, 0.0, 17.0, 30.0], [-28.0, 0.0, 27.0, 30.0], [28.0, 0.0, 7.0, 30.0], [58.0, 0.0, 17.0, 30.0],
-    [100.0, 0.0, 17.0, 17.0], [100.0, 0.0, 51.0, 17.0],
-    [58.0, 0.0, 51.0, 30.0], [28.0, 3.5, 41.0, 30.0], [-28.0, 3.5, 61.0, 30.0], [-58.0, 0.0, 51.0, 30.0],
-    [-100.0, 0.0, 51.0, 17.0], [-100.0, 0.0, 85.0, 17.0],
-    [-58.0, 0.0, 85.0, 30.0], [-28.0, 0.0, 95.0, 30.0], [28.0, 0.0, 75.0, 30.0], [58.0, 0.0, 85.0, 30.0],
-    [100.0, 0.0, 85.0, 17.0], [100.0, 0.0, 119.0, 17.0],
-    [58.0, 0.0, 119.0, 30.0], [28.0, 0.0, 109.0, 30.0], [-28.0, 1.5, 129.0, 30.0], [-58.0, 3.5, 119.0, 30.0],
-    [-96.0, 6.5, 119.0, 14.0], [-96.0, 8.0, 102.0, 0.0],
-    [-96.0, 8.0, 60.0, 30.0], [-110.0, 9.0, 34.0, 30.0], [-110.0, 11.0, 0.0, 0.0], [-110.0, 9.0, -34.0, 30.0], [-96.0, 8.0, -60.0, 30.0],
-    [-96.0, 8.0, -102.0, 0.0], [-96.0, 6.0, -119.0, 14.0], [-44.0, 0.0, -119.0, 0.0],
-];
-/// The gauntlet's tunnels: where each begins and ends, as (x, z).
-const GAUNTLET_TUNNELS: &[[[f32; 2]; 2]] = &[
-    [[55.0, -51.0], [55.0, -17.0]],
-    [[55.0, 85.0], [55.0, 119.0]],
-];
-
-/// The helter skelter's corners, as the brick circuit's are. From the start: the
-/// jump, a swing out round an island down the east side, a tunnel that winds along
-/// the south, a hairpin through another tunnel, and a road that climbs back and
-/// forth up the west side to the top of the tower, twenty-one up; then twice round the
-/// tower and down, each turn under the one before, out at the bottom, and back along
-/// the north over rollers.
-const HELTER: &[[f32; 4]] = &[
-    [-58.0, 0.0, -94.0, 0.0], [-10.0, 0.0, -94.0, 0.0], [100.0, 0.0, -94.0, 18.0],
-    [100.0, 0.0, -34.0, 18.0], [136.0, 0.0, 2.0, 18.0], [100.0, 0.0, 38.0, 18.0],
-    [100.0, 0.0, 86.0, 18.0],
-    [62.0, 0.0, 86.0, 30.0], [40.0, 0.0, 78.0, 30.0], [10.0, 0.0, 78.0, 30.0], [-12.0, 0.0, 86.0, 30.0],
-    [-100.0, 0.0, 86.0, 18.0], [-100.0, 0.0, 50.0, 18.0], [-46.0, 0.0, 50.0, 0.0],
-    [-14.0, 4.5, 50.0, 18.0], [-14.0, 6.5, 14.0, 18.0],
-    [-100.0, 12.0, 14.0, 18.0], [-100.0, 13.5, -22.0, 18.0],
-    [-56.0, 16.0, -22.0, 30.0], [-38.0, 17.6, -30.0, 30.0], [-20.0, 19.3, -30.0, 30.0], [-2.0, 20.6, -22.0, 30.0],
-    [14.0, 21.0, -22.0, 0.0], [56.0, 21.0, -22.0, 0.0],
-    [80.0, 19.688, -22.0, 24.0], [80.0, 17.063, 26.0, 24.0], [32.0, 14.438, 26.0, 24.0], [32.0, 11.813, -22.0, 24.0],
-    [80.0, 9.188, -22.0, 24.0], [80.0, 6.563, 26.0, 24.0], [32.0, 3.938, 26.0, 24.0], [32.0, 1.313, -22.0, 24.0],
-    [56.0, 0.0, -22.0, 0.0], [80.0, 0.0, -22.0, 18.0], [80.0, 0.0, -58.0, 18.0],
-    [40.0, 0.0, -58.0, 0.0], [25.0, 1.6, -58.0, 0.0], [10.0, 0.0, -58.0, 0.0], [-5.0, 1.6, -58.0, 0.0],
-    [-20.0, 0.0, -58.0, 0.0], [-35.0, 1.6, -58.0, 0.0], [-50.0, 0.0, -58.0, 0.0],
-    [-100.0, 0.0, -58.0, 18.0], [-100.0, 0.0, -94.0, 18.0],
-];
 /// How far each turn of the helter skelter's spiral is under the one before.
 #[cfg(test)]
 const SPIRAL_RISE: f32 = 10.5;
-/// The helter skelter's tunnels: where each begins and ends, as (x, z).
-const HELTER_TUNNELS: &[[[f32; 2]; 2]] = &[
-    [[72.0, 86.0], [-34.0, 86.0]],
-    [[-46.0, 86.0], [-46.0, 50.0]],
-];
-/// Where the lip of the helter skelter's jump is, as (x, z).
-const HELTER_JUMPS: &[[f32; 2]] = &[[14.0, -94.0]];
 
 /// A way off a circuit's road and back onto it further round, straight from one place
 /// on the racing line to another, each so far round the lap: how far its tarmac and
 /// its barriers are from its middle, how high the bumps along it are, whether it has
 /// a shed over it, and how often one of the computer's cars takes it.
-struct Byway {
-    from: f32,
-    to: f32,
-    road: f32,
-    wall: f32,
-    bumps: f32,
-    covered: bool,
-    taken: f32,
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Byway {
+    pub from: f32,
+    pub to: f32,
+    #[serde(default = "Byway::road")]
+    pub road: f32,
+    #[serde(default = "Byway::wall")]
+    pub wall: f32,
+    #[serde(default)]
+    pub bumps: f32,
+    #[serde(default)]
+    pub covered: bool,
+    #[serde(default = "Byway::taken")]
+    pub taken: f32,
 }
 
-/// What a circuit has besides its road, each thing so far round the lap.
-struct Extras {
-    byways: &'static [Byway],
-    /// Corners with grass inside them and no barrier before it, to be cut across:
-    /// where the open stretch begins and ends.
-    infields: &'static [(f32, f32)],
-    /// Speed pads: where, and how far right of the middle of the road.
-    pads: &'static [(f32, f32)],
-    /// Banked corners: where the bank begins and ends, and how steep it is across the
-    /// road at its steepest.
-    banks: &'static [(f32, f32, f32)],
+impl Byway {
+    fn road() -> f32 {
+        4.0
+    }
+
+    fn wall() -> f32 {
+        5.5
+    }
+
+    fn taken() -> f32 {
+        0.3
+    }
 }
 
-/// The brick circuit's: a way across the inside of the last hairpin, at a right angle
-/// to the road and through a shed that hides it, onto the straight before the line;
-/// the grass inside the first corner; and its two hairpins on the east side banked.
-/// Where the road swings out round the rise on the north side there is no way
-/// straight on: that would be the road, and no short cut.
-const BRICK_EXTRAS: Extras = Extras {
-    byways: &[Byway {
-        from: 985.0,
-        to: 1075.0,
-        road: 4.0,
-        wall: 5.5,
-        bumps: 0.0,
-        covered: true,
-        taken: 0.3,
-    }],
-    infields: &[(108.0, 158.0)],
-    pads: &[(742.0, 0.0), (498.0, 0.0)],
-    banks: &[(191.0, 252.0, 0.15), (400.0, 462.0, 0.15)],
-};
-/// The figure of eight's: a way across the inside of the east lobe's middle hairpin,
-/// at a right angle to the road and through a shed that hides it, and the first
-/// hairpin of each lobe banked.
-const FIGURE_EIGHT_EXTRAS: Extras = Extras {
-    byways: &[Byway {
-        from: 708.0,
-        to: 822.0,
-        road: 4.0,
-        wall: 5.5,
-        bumps: 0.0,
-        covered: true,
-        taken: 0.25,
-    }],
-    infields: &[],
-    pads: &[(1104.0, 0.0), (832.0, 0.0)],
-    banks: &[(53.0, 120.0, 0.15), (616.0, 677.0, 0.15)],
-};
-/// The gauntlet's: a way across the inside of its first western hairpin, through a
-/// shed, and two of its eastern hairpins banked.
-const GAUNTLET_EXTRAS: Extras = Extras {
-    byways: &[Byway {
-        from: 294.0,
-        to: 414.0,
-        road: 4.0,
-        wall: 5.5,
-        bumps: 0.0,
-        covered: true,
-        taken: 0.3,
-    }],
-    infields: &[],
-    pads: &[(20.0, 0.0), (1716.0, 0.0)],
-    banks: &[(104.0, 155.0, 0.15), (982.0, 1033.0, 0.15)],
-};
-/// The helter skelter's. One byway goes straight on where the road swings out round
-/// the island: the shorter way, but narrow, with a bump in it. The other cuts across
-/// the inside of the hairpin half way up the climb at a right angle to the road,
-/// through a shed that hides it, and is as steep as a ramp. The corners at either end
-/// of the east side have grass inside them, and the spiral is banked.
-const HELTER_EXTRAS: Extras = Extras {
-    byways: &[
-        Byway {
-            from: 202.0,
-            to: 310.0,
-            road: 4.0,
-            wall: 5.5,
-            bumps: 1.2,
-            covered: false,
-            taken: 0.4,
-        },
-        Byway {
-            from: 728.0,
-            to: 808.0,
-            road: 4.0,
-            wall: 5.5,
-            bumps: 0.0,
-            covered: true,
-            taken: 0.25,
-        },
-    ],
-    infields: &[(140.0, 168.0), (332.0, 360.0)],
-    pads: &[(8.0, 0.0), (1311.0, 0.0)],
-    banks: &[(950.0, 1230.0, 0.12)],
-};
-/// An arena's: it has no road for any of these to be on.
-const ARENA_EXTRAS: Extras = Extras {
-    byways: &[],
-    infields: &[],
-    pads: &[],
-    banks: &[],
-};
 /// How many samples a bank takes to come up to its steepest, and to go down again.
 const BANK_EASE: f32 = 12.0;
 /// How long and how wide a speed pad is.
@@ -298,7 +170,7 @@ const JUMP_FLOOR: f32 = 4.0;
 const JUMP_LANDING: f32 = 18.0;
 const JUMP_LIPS: (f32, f32) = (6.0, 4.5);
 /// How long a jump is from end to end.
-const JUMP_LENGTH: f32 = JUMP_RAMP + JUMP_SIDES.0 + JUMP_FLOOR + JUMP_SIDES.1 + JUMP_LANDING;
+pub(crate) const JUMP_LENGTH: f32 = JUMP_RAMP + JUMP_SIDES.0 + JUMP_FLOOR + JUMP_SIDES.1 + JUMP_LANDING;
 
 /// How high a jump's road is, `along` it from the foot of the ramp.
 fn jump_height(along: f32) -> f32 {
@@ -383,132 +255,6 @@ pub(crate) fn parapet(raised: f32) -> f32 {
 const TUNNEL_HEIGHT: f32 = 8.5;
 const TUNNEL_THICK: f32 = 1.6;
 
-/// The circuits built here rather than loaded from the original game's data.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Layout {
-    #[default]
-    Brick,
-    FigureEight,
-    Gauntlet,
-    HelterSkelter,
-    /// The arenas (`Layout::ARENAS`): places to fight in, laid out in `arena`.
-    Yard,
-    Crossroads,
-    Ring,
-    Town,
-}
-
-impl Layout {
-    /// The places made for a battle or a game of tag, and not for racing round.
-    pub const ARENAS: [Layout; 4] = [
-        Layout::Yard,
-        Layout::Crossroads,
-        Layout::Ring,
-        Layout::Town,
-    ];
-
-    pub fn arena(self) -> bool {
-        self.plan().is_some()
-    }
-
-    /// How it is laid out, if it is an arena.
-    pub fn plan(self) -> Option<&'static crate::arena::Plan> {
-        match self {
-            Layout::Yard => Some(&crate::arena::YARD),
-            Layout::Crossroads => Some(&crate::arena::CROSSROADS),
-            Layout::Ring => Some(&crate::arena::THE_RING),
-            Layout::Town => Some(&crate::arena::TOWN),
-            _ => None,
-        }
-    }
-
-    pub const ALL: [Layout; 4] = [
-        Layout::Brick,
-        Layout::FigureEight,
-        Layout::Gauntlet,
-        Layout::HelterSkelter,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Layout::Brick => "Brick Circuit",
-            Layout::FigureEight => "Figure Eight",
-            Layout::Gauntlet => "Gauntlet",
-            Layout::HelterSkelter => "Helter Skelter",
-            Layout::Yard => "Brick Yard",
-            Layout::Crossroads => "Crossroads",
-            Layout::Ring => "The Ring",
-            Layout::Town => "Bricktown",
-        }
-    }
-
-    /// What `$BRICK_RACE` calls it.
-    pub fn key(self) -> &'static str {
-        match self {
-            Layout::Brick => "BRICK",
-            Layout::FigureEight => "FIGURE8",
-            Layout::Gauntlet => "GAUNTLET",
-            Layout::HelterSkelter => "HELTER",
-            Layout::Yard => "YARD",
-            Layout::Crossroads => "CROSSROADS",
-            Layout::Ring => "RING",
-            Layout::Town => "TOWN",
-        }
-    }
-
-    /// Its line, a point every little way, as it is unmirrored or mirrored.
-    fn line(self, mirror: bool) -> Vec<Vec3> {
-        // Mirrored, the built-in circuits are turned over the same way the game's are.
-        let side = if mirror { -1.0 } else { 1.0 };
-        match self {
-            Layout::Brick => cornered(BRICK, side),
-            Layout::FigureEight => cornered(FIGURE_EIGHT, side),
-            Layout::Gauntlet => cornered(GAUNTLET, side),
-            Layout::HelterSkelter => cornered(HELTER, side),
-            // An arena's is a spline through its points.
-            Layout::Yard | Layout::Crossroads | Layout::Ring | Layout::Town => {
-                let points: Vec<Vec3> = self
-                    .plan()
-                    .map_or(&[][..], |plan| plan.line)
-                    .iter()
-                    .map(|c| Vec3::new(c[0], c[1], c[2] * side))
-                    .collect();
-                splined(&points)
-            }
-        }
-    }
-
-    /// Where its tunnels begin and end, as (x, z) on the unmirrored circuit.
-    fn tunnels(self) -> &'static [[[f32; 2]; 2]] {
-        match self {
-            Layout::Gauntlet => GAUNTLET_TUNNELS,
-            Layout::HelterSkelter => HELTER_TUNNELS,
-            _ => &[],
-        }
-    }
-
-    /// What it has besides its road.
-    fn extras(self) -> &'static Extras {
-        match self {
-            Layout::Brick => &BRICK_EXTRAS,
-            Layout::FigureEight => &FIGURE_EIGHT_EXTRAS,
-            Layout::Gauntlet => &GAUNTLET_EXTRAS,
-            Layout::HelterSkelter => &HELTER_EXTRAS,
-            Layout::Yard | Layout::Crossroads | Layout::Ring | Layout::Town => &ARENA_EXTRAS,
-        }
-    }
-
-    /// Where the lips of its jumps are, as (x, z) on the unmirrored circuit.
-    fn jumps(self) -> &'static [[f32; 2]] {
-        if self == Layout::HelterSkelter {
-            HELTER_JUMPS
-        } else {
-            &[]
-        }
-    }
-
-}
-
 #[derive(Resource)]
 pub struct Track {
     pub pts: Vec<Vec3>,
@@ -546,7 +292,7 @@ pub struct Track {
     pub unrouted: bool,
     /// How it is laid out, if it is an arena and not a circuit: there is then no
     /// road, and the line is only something to lay bricks along (`arena`).
-    pub arena: Option<&'static crate::arena::Plan>,
+    pub arena: Option<crate::arena::Plan>,
     /// How steeply each sample's road is banked: how much higher it is for each unit
     /// to the right of its middle.
     pub bank: Vec<f32>,
@@ -892,26 +638,44 @@ impl Track {
     /// The built-in brick circuit.
     #[cfg(test)]
     pub fn new() -> Self {
-        Track::built(Layout::Brick)
+        Track::built(crate::map::named("BRICK"))
     }
 
-    /// The road of a built-in circuit as it is unmirrored: its line, jumps and banks,
+    /// The road of a map's circuit as it is unmirrored: its line, jumps and banks,
     /// and nothing to drive on.
-    pub fn plain(layout: Layout) -> Self {
-        Track::shaped(layout, false)
+    pub fn plain(map: &Map) -> Self {
+        Track::shaped(map, false)
     }
 
-    /// The line of a built-in circuit, with its tunnels, jumps and banks.
-    fn shaped(layout: Layout, mirror: bool) -> Self {
-        let road = if layout.arena() { crate::arena::LINE_ROAD } else { ROAD_HW };
-        let mut track = Track::resampled(&layout.line(mirror), road);
-        if !layout.arena() {
+    /// A map's line and no more, a point every little way, as it is unmirrored or
+    /// mirrored: through a circuit's corners, or a spline through an arena's points.
+    pub fn line(map: &Map, mirror: bool) -> Self {
+        // Mirrored, these are turned over the same way the game's circuits are.
+        let side = if mirror { -1.0 } else { 1.0 };
+        match &map.plan {
+            Some(plan) => {
+                let points: Vec<Vec3> = plan
+                    .line
+                    .iter()
+                    .map(|c| Vec3::new(c[0], c[1], c[2] * side))
+                    .collect();
+                Track::resampled(&splined(&points), crate::arena::LINE_ROAD)
+            }
+            None => Track::resampled(&cornered(&map.road.corners, side), ROAD_HW),
+        }
+    }
+
+    /// The line of a map, with its tunnels, jumps and banks.
+    fn shaped(map: &Map, mirror: bool) -> Self {
+        let (mut track, road) = (Track::line(map, mirror), &map.road);
+        if !map.arena() {
             track.strays = (WALL + 4.0, DECK - 1.0);
         }
         let side = if mirror { -1.0 } else { 1.0 };
-        track.tunnels = layout
-            .tunnels()
+        track.tunnels = road
+            .tunnels
             .iter()
+            .map(|tunnel| [tunnel.from, tunnel.to])
             .map(|ends| ends.map(|[x, z]| track.nearest(Vec3::new(x, 0.0, z * side))))
             .map(|[from, to]| (from, to))
             .collect();
@@ -923,10 +687,10 @@ impl Track {
         let n = track.n();
         let ramp = (JUMP_RAMP / track.spacing).round() as usize;
         let after = ((JUMP_LENGTH - JUMP_RAMP) / track.spacing).round() as usize;
-        track.jumps = layout
-            .jumps()
+        track.jumps = road
+            .jumps
             .iter()
-            .map(|&[x, z]| track.nearest(Vec3::new(x, 0.0, z * side)))
+            .map(|&Jump { lip: [x, z] }| track.nearest(Vec3::new(x, 0.0, z * side)))
             .map(|lip| (lip - ramp, lip + after + 1))
             .collect();
         for (from, to) in track.jumps.clone() {
@@ -938,7 +702,7 @@ impl Track {
         }
         // A banked corner is tipped about its inner edge, which stays where it was:
         // the outside of the corner is the high side.
-        for &(from, to, tilt) in layout.extras().banks {
+        for &Banked { from, to, tilt } in &road.banks {
             let (from, to) = (track.index(from), track.index(to));
             let turn: f32 = (from..to)
                 .map(|i| track.flat[i].cross(track.flat[i + 1]).y)
@@ -1036,19 +800,25 @@ impl Track {
             .collect()
     }
 
-    /// One of the built-in circuits.
-    pub fn built(layout: Layout) -> Self {
-        let mut track = Track::shaped(layout, crate::scenery::mirror());
+    /// A map's circuit or arena, to be driven on, as the race in hand has it.
+    pub fn built(map: &Map) -> Self {
+        Track::made(map, crate::scenery::mirror())
+    }
+
+    /// A map's circuit or arena, mirrored or not.
+    pub fn made(map: &Map, mirror: bool) -> Self {
+        let mut track = Track::shaped(map, mirror);
         // An arena is its floor, its wall and its blocks, with nothing along the
         // line to keep a car to it or to count it round.
-        if let Some(plan) = layout.plan() {
+        if let Some(plan) = &map.plan {
+            let plan = if mirror { plan.mirrored() } else { plan.clone() };
             plan.collide(&mut track.collision);
             track.course.grid = plan.grid();
             track.clearings.push((Vec3::ZERO, plan.reach() + 12.0));
             track.arena = Some(plan);
             return track;
         }
-        let (n, extras) = (track.n(), layout.extras());
+        let (n, extras) = (track.n(), &map.road);
         // A byway runs straight from one place on the line to another, at an even
         // slope but for its bumps from where it leaves the one road to where it
         // meets the other.
@@ -1096,7 +866,7 @@ impl Track {
         track.infields = extras
             .infields
             .iter()
-            .map(|&(from, to)| (track.index(from), track.index(to)))
+            .map(|stretch| (track.index(stretch.from), track.index(stretch.to)))
             .map(|(from, to)| {
                 let turn: f32 = (from..to)
                     .map(|i| track.flat[i].cross(track.flat[i + 1]).y)
@@ -1111,16 +881,13 @@ impl Track {
         track.pads = extras
             .pads
             .iter()
-            .map(|&(s, lat)| Pad {
-                at: track.index(s),
-                lat,
+            .map(|pad| Pad {
+                at: track.index(pad.at),
+                lat: pad.right,
             })
             .collect();
-        // Scattered scenery keeps off all of them, and off what stands round the
-        // helter skelter.
-        if layout == Layout::HelterSkelter {
-            track.clearings.extend(crate::helter::clearings());
-        }
+        // Scattered scenery keeps off all of them, and off the map's landmarks.
+        track.clearings.extend(crate::landmarks::clearings(&map.scenery));
         for branch in &track.branches {
             for p in branch.pts.iter().step_by(4) {
                 track.clearings.push((*p, branch.wall + 7.0));
@@ -1352,12 +1119,17 @@ impl Track {
             if at <= last {
                 at = last + (n - last) / 2;
             }
+            let wanted = at;
             loop {
                 let beside = stretches.iter().find(|&&(from, to)| {
                     (from.saturating_sub(ZONE_CLEAR)..to + ZONE_CLEAR).contains(&at)
                 });
                 if let Some(&(_, to)) = beside {
                     at = to + ZONE_CLEAR;
+                } else if at >= n {
+                    // A road with nowhere such has it where it was first wanted.
+                    at = wanted.min(n - 1);
+                    break;
                 } else if !track.alone(at, ZONE_RADIUS + WALL + 0.5, ZONE_RADIUS, ZONE_RADIUS) {
                     at += 1;
                 } else {
@@ -1659,7 +1431,7 @@ impl Track {
     }
 
     pub fn build_mesh(&self) -> Mesh {
-        if let Some(plan) = self.arena {
+        if let Some(plan) = &self.arena {
             return plan.mesh();
         }
         let mut b = BrickMesh::default();
@@ -2031,12 +1803,12 @@ impl Track {
     }
 
     /// Brick trees and oversized bricks scattered around the outside of the circuit.
-    pub fn build_scenery(&self, layout: Layout, rng: &mut Rng) -> Mesh {
+    pub fn build_scenery(&self, map: &Map, rng: &mut Rng) -> Mesh {
         let mut b = BrickMesh::default();
         // The walls and hedges that hide one stretch of road from another, which
         // what is scattered keeps off.
         let fences = crate::roadside::fences(self);
-        crate::roadside::draw(self, layout, &fences, &mut b);
+        crate::roadside::draw(self, &map.look, &fences, &mut b);
         // Nor does it stand against a wall at a corner, to show through it, or
         // anywhere inside a corner, which is looked across: each wall's places, and
         // how far from them is kept clear.
@@ -2051,7 +1823,7 @@ impl Track {
             .collect();
         // Over the circuit's own ground and a little way round it; round an arena,
         // whose floor it is kept off, further.
-        let (least, most) = match self.arena {
+        let (least, most) = match &self.arena {
             Some(plan) => {
                 let out = Vec3::splat(plan.reach() + ARENA_ROUND);
                 (-out, out)
@@ -2118,9 +1890,7 @@ impl Track {
                 }
             }
         }
-        if layout == Layout::HelterSkelter {
-            crate::helter::scenery(&mut b);
-        }
+        crate::landmarks::draw(&map.scenery, &mut b);
         b.build()
     }
 }
@@ -2135,20 +1905,20 @@ mod tests {
 
     #[test]
     fn barriers_never_fold_and_track_never_touches_itself() {
-        for layout in Layout::ALL {
-            let t = Track::built(layout);
+        for map in crate::map::circuits() {
+            let (layout, t) = (map.key.as_str(), Track::built(map));
             let n = t.n();
             // Each takes the computer about as long to lap as the road it replaced,
             // which is less road, there being little of it straight.
             let (shortest, longest) = match layout {
-                Layout::Brick => (1000.0, 1150.0),
-                Layout::FigureEight => (1100.0, 1300.0),
-                Layout::Gauntlet => (1900.0, 2100.0),
+                "BRICK" => (1000.0, 1150.0),
+                "FIGURE8" => (1100.0, 1300.0),
+                "GAUNTLET" => (1900.0, 2100.0),
                 _ => (1450.0, 1650.0),
             };
             assert!(
                 t.length > shortest && t.length < longest,
-                "{layout:?} length {}",
+                "{layout} length {}",
                 t.length
             );
             // Nowhere is it level and straight for long: the longest such stretch
@@ -2157,7 +1927,7 @@ mod tests {
             for i in 0..2 * n {
                 let level = (t.pts[(i + 1) % n].y - t.pts[i % n].y).abs() < 0.02;
                 run = if t.curv[i % n] < 0.004 && level { run + 1 } else { 0 };
-                assert!((run as f32) * t.spacing < 170.0, "{layout:?} straight to {i}");
+                assert!((run as f32) * t.spacing < 170.0, "{layout} straight to {i}");
             }
             for i in 0..n {
                 let j = (i + 1) % n;
@@ -2166,7 +1936,7 @@ mod tests {
                     let b = t.pts[j] + t.right[j] * side * (WALL + 0.8);
                     assert!(
                         (b - a).dot(t.fwd[i]) > 0.2,
-                        "{layout:?} barrier folds at {i}"
+                        "{layout} barrier folds at {i}"
                     );
                 }
                 // Any other stretch of the road is far enough off for the barriers of
@@ -2182,7 +1952,7 @@ mod tests {
                     });
                     assert!(
                         beside || !level || meet,
-                        "{layout:?} {i} at {} near {k} at {}",
+                        "{layout} {i} at {} near {k} at {}",
                         t.pts[i],
                         t.pts[k]
                     );
@@ -2190,11 +1960,11 @@ mod tests {
             }
             // No slope is too steep to be driven up either way, and no corner too
             // tight to be slid round flat out.
-            let tightest = if layout == Layout::Gauntlet { 13.5 } else { TIGHTEST };
+            let tightest = if layout == "GAUNTLET" { 13.5 } else { TIGHTEST };
             for i in 0..n {
                 let step = t.pts[(i + 1) % n] - t.pts[i];
-                assert!(step.y.abs() < step.with_y(0.0).length() * 1.1, "{layout:?} {i}");
-                assert!(t.curv[i] * tightest < 1.0, "{layout:?} {i} turns in {}", 1.0 / t.curv[i]);
+                assert!(step.y.abs() < step.with_y(0.0).length() * 1.1, "{layout} {i}");
+                assert!(t.curv[i] * tightest < 1.0, "{layout} {i} turns in {}", 1.0 / t.curv[i]);
             }
         }
     }
@@ -2203,11 +1973,11 @@ mod tests {
     /// road it is on: not from a stretch beside it, over it, under it or across it.
     #[test]
     fn gates_and_lap_zones_belong_to_one_stretch_of_road() {
-        for layout in Layout::ALL {
-            let t = Track::built(layout);
+        for map in crate::map::circuits() {
+            let (layout, t) = (map.key.as_str(), Track::built(map));
             let (n, lift) = (t.n(), Vec3::Y * 0.6);
             let gates = &t.course.checkpoints;
-            assert!(gates.len() as f32 > t.length / 45.0, "{layout:?} {}", gates.len());
+            assert!(gates.len() as f32 > t.length / 45.0, "{layout} {}", gates.len());
             assert_eq!(t.nearest(gates[0].position), 0);
             for pair in gates.windows(2) {
                 assert!(t.nearest(pair[0].position) < t.nearest(pair[1].position));
@@ -2217,14 +1987,14 @@ mod tests {
                     let (from, to) = (t.edge(k, lat) + lift, t.edge((k + 1) % n, lat) + lift);
                     if let Some(hit) = t.course.gates.any(from, to) {
                         let at = t.nearest(gates[hit.tag].position);
-                        assert!(t.apart(at, k) <= 2, "{layout:?} gate at {at} met from {k}");
+                        assert!(t.apart(at, k) <= 2, "{layout} gate at {at} met from {k}");
                     }
                 }
                 for &(centre, radius, _) in &t.course.zones {
                     let at = t.nearest(centre);
                     assert!(
                         t.pts[k].distance(centre) > radius + WALL || t.apart(at, k) < STRETCH,
-                        "{layout:?} zone at {at} entered from {k}"
+                        "{layout} zone at {at} entered from {k}"
                     );
                 }
             }
@@ -2234,7 +2004,7 @@ mod tests {
 
     #[test]
     fn the_figure_eight_crosses_itself_by_a_bridge_and_on_the_level() {
-        let t = Track::built(Layout::FigureEight);
+        let t = Track::built(crate::map::named("FIGURE8"));
         let bridged = t.bridged();
         let n = t.n();
         let starts = (0..n)
@@ -2287,19 +2057,19 @@ mod tests {
             }
         }
         // Turned round it is the same crossing.
-        let mut back = Track::built(Layout::FigureEight);
+        let mut back = Track::built(crate::map::named("FIGURE8"));
         back.reverse();
         assert_eq!(back.crossings.len(), 1);
         assert_eq!(back.pts[back.crossings[0][0]], t.pts[first]);
         // No other circuit has one.
-        for layout in [Layout::Brick, Layout::Gauntlet, Layout::HelterSkelter] {
-            assert!(Track::built(layout).crossings.is_empty(), "{layout:?}");
+        for layout in ["BRICK", "GAUNTLET", "HELTER"] {
+            assert!(Track::built(crate::map::named(layout)).crossings.is_empty(), "{layout}");
         }
     }
 
     #[test]
     fn the_gauntlet_has_two_tunnels() {
-        let t = Track::built(Layout::Gauntlet);
+        let t = Track::built(crate::map::named("GAUNTLET"));
         let bridged = t.bridged();
         // Each tunnel is a good stretch of level road with nothing over it.
         assert_eq!(t.tunnels.len(), 2);
@@ -2313,7 +2083,7 @@ mod tests {
             .count();
         assert_eq!(spans, 3);
         // Turned round, the same road is roofed.
-        let mut back = Track::built(Layout::Gauntlet);
+        let mut back = Track::built(crate::map::named("GAUNTLET"));
         back.reverse();
         for (&(from, to), &(back_from, back_to)) in t.tunnels.iter().zip(&back.tunnels) {
             assert_eq!(
@@ -2325,7 +2095,7 @@ mod tests {
 
     #[test]
     fn the_helter_skelter_has_a_spiral_two_tunnels_and_a_jump() {
-        let t = Track::built(Layout::HelterSkelter);
+        let t = Track::built(crate::map::named("HELTER"));
         let n = t.n();
         // A turn of the road has another over it with room to drive under.
         let over = |i: usize| {
@@ -2391,7 +2161,7 @@ mod tests {
             assert!(step.y.abs() < step.with_y(0.0).length() * 1.1, "{i}");
         }
         // Turned round, the same road is the jump.
-        let mut back = Track::built(Layout::HelterSkelter);
+        let mut back = Track::built(crate::map::named("HELTER"));
         back.reverse();
         let (back_from, back_to) = back.jumps[0];
         assert_eq!(
@@ -2402,16 +2172,16 @@ mod tests {
 
     #[test]
     fn byways_leave_the_road_and_come_back_to_it() {
-        for layout in Layout::ALL {
-            let t = Track::built(layout);
+        for map in crate::map::circuits() {
+            let (layout, t) = (map.key.as_str(), Track::built(map));
             let (n, lift) = (t.n(), Vec3::Y * 0.6);
-            let byways = if layout == Layout::HelterSkelter {
+            let byways = if layout == "HELTER" {
                 2
             } else {
                 1
             };
             let crossing = |i: usize, gap: Vec3| t.crossed(i, gap, WALL);
-            assert_eq!(t.branches.len(), byways, "{layout:?}");
+            assert_eq!(t.branches.len(), byways, "{layout}");
             for branch in &t.branches {
                 // Each runs between two places on the line, and is the shorter way.
                 let (first, last) = (branch.pts[0], branch.pts[branch.pts.len() - 1]);
@@ -2421,7 +2191,7 @@ mod tests {
                 let round = (to - from) as f32 * t.spacing;
                 assert!(
                     to > from && branch.length() < round - 10.0,
-                    "{layout:?} {round}"
+                    "{layout} {round}"
                 );
                 // Nothing stands in it from end to end, there is ground under all of
                 // it, and it has a barrier either side where it is clear of the road.
@@ -2429,7 +2199,7 @@ mod tests {
                     assert!(t.collision.wall(step[0] + lift, step[1] + lift).is_none());
                     let ground = t.collision.ground(step[0] + Vec3::Y * 2.0, 4.0).unwrap();
                     let over = ground.point.y - step[0].y;
-                    assert!((-0.02..1.5).contains(&over), "{layout:?} {over}");
+                    assert!((-0.02..1.5).contains(&over), "{layout} {over}");
                 }
                 let middle = branch.pts[branch.pts.len() / 2];
                 for side in [-1.0, 1.0] {
@@ -2437,7 +2207,7 @@ mod tests {
                     assert!(t.collision.wall(middle + lift, out + lift).is_some());
                 }
                 // It keeps clear of the rest of the road, tunnels and jumps too.
-                assert!(!t.on_road(middle, WALL + branch.wall), "{layout:?}");
+                assert!(!t.on_road(middle, WALL + branch.wall), "{layout}");
                 for stretch in t.tunnels.iter().chain(&t.jumps) {
                     assert!(!(stretch.0..stretch.1).contains(&from));
                     assert!(!(stretch.0..stretch.1).contains(&to));
@@ -2456,12 +2226,12 @@ mod tests {
                             t.branches.iter().any(|b| b.holds(gap))
                                 || t.infields.iter().any(|f| f.opens(i, side))
                                 || crossing(i, gap),
-                            "{layout:?} {i} {side}"
+                            "{layout} {i} {side}"
                         );
                     }
                 }
             }
-            assert!(open > 4 && open < 200, "{layout:?} {open}");
+            assert!(open > 4 && open < 200, "{layout} {open}");
             // Neither lap zone is on road that can be gone round, or near its ends.
             let stretches = t
                 .branches
@@ -2471,11 +2241,11 @@ mod tests {
             for (from, to) in stretches {
                 for &(centre, ..) in &t.course.zones {
                     let at = t.nearest(centre);
-                    assert!(at + 10 < from || at > to + 10, "{layout:?} zone at {at}");
+                    assert!(at + 10 < from || at > to + 10, "{layout} zone at {at}");
                 }
             }
             // Turned round, each byway is the same road from its other end.
-            let mut back = Track::built(layout);
+            let mut back = Track::built(map);
             back.reverse();
             for (branch, turned) in t.branches.iter().zip(&back.branches) {
                 assert_eq!(turned.pts[0], branch.pts[branch.pts.len() - 1]);
@@ -2488,12 +2258,12 @@ mod tests {
 
     #[test]
     fn infields_pads_and_banks_are_where_the_road_can_take_them() {
-        for layout in Layout::ALL {
-            let t = Track::built(layout);
+        for map in crate::map::circuits() {
+            let (layout, t) = (map.key.as_str(), Track::built(map));
             let (n, lift) = (t.n(), Vec3::Y * 0.6);
-            let mut back = Track::built(layout);
+            let mut back = Track::built(map);
             back.reverse();
-            assert!(t.pads.len() >= 2, "{layout:?}");
+            assert!(t.pads.len() >= 2, "{layout}");
             for (infield, turned) in t.infields.iter().zip(&back.infields) {
                 // The grass is slow going, inside the corner, clear of the road, and
                 // nothing stands between it and the road.
@@ -2502,10 +2272,10 @@ mod tests {
                 for &[a, _, _, d] in &grass {
                     let on = (a + d) / 2.0;
                     let ground = t.collision.ground(on + Vec3::Y * 2.0, 4.0).unwrap();
-                    assert!(ground.surface.rolling_resistance >= LAWN_DRAG, "{layout:?}");
+                    assert!(ground.surface.rolling_resistance >= LAWN_DRAG, "{layout}");
                     assert!(
                         a.distance(d) < 2.0 || !t.on_road(on, WALL - 1.0),
-                        "{layout:?} {on}"
+                        "{layout} {on}"
                     );
                     assert!(t.collision.wall(t.pts[middle] + lift, on + lift).is_none());
                 }
@@ -2539,14 +2309,14 @@ mod tests {
             // A bank's high side is the outside of its corner, and a car's wheels
             // find it.
             let banked: Vec<usize> = (0..n).filter(|&i| t.bank[i] != 0.0).collect();
-            assert!(banked.len() > 30, "{layout:?}");
+            assert!(banked.len() > 30, "{layout}");
             for &i in &banked {
                 let turn = t.flat[i].cross(t.flat[(i + 1) % n]).y;
-                assert!(turn * t.bank[i] >= 0.0, "{layout:?} {i}");
+                assert!(turn * t.bank[i] >= 0.0, "{layout} {i}");
                 let high = t.bank[i].signum() * (ROAD_HW - 1.0);
                 let s = i as f32 * t.spacing;
                 let (up, down) = (t.surface_point(s, high), t.surface_point(s, -high));
-                assert!((up.y - t.edge(i, high).y).abs() < 0.1, "{layout:?} {i}");
+                assert!((up.y - t.edge(i, high).y).abs() < 0.1, "{layout} {i}");
                 assert!(up.y >= down.y && back.bank[n - i] == -t.bank[i]);
             }
         }
@@ -2557,12 +2327,12 @@ mod tests {
     /// that height, and nowhere near the line, a crossing or a byway's mouth.
     #[test]
     fn walls_stand_inside_and_round_the_tight_corners() {
-        for layout in Layout::ALL {
-            let t = Track::built(layout);
+        for map in crate::map::circuits() {
+            let (layout, t) = (map.key.as_str(), Track::built(map));
             let n = t.n();
             let (inside, outside): (Vec<&Screen>, Vec<&Screen>) =
                 t.screens.iter().partition(|screen| !screen.outside);
-            assert!(inside.len() >= 2 && outside.len() >= 4, "{layout:?} {:?}", t.screens);
+            assert!(inside.len() >= 2 && outside.len() >= 4, "{layout} {:?}", t.screens);
             for screen in &t.screens {
                 let middle = (screen.from + screen.to) / 2;
                 // Which side the corner turns to is the inside of it.
@@ -2570,7 +2340,7 @@ mod tests {
                     .map(|i| t.flat[i].cross(t.flat[(i + 1) % n]).y)
                     .sum();
                 let within = -turn.signum() * screen.side > 0.0;
-                assert_eq!(within, !screen.outside, "{layout:?} {screen:?}");
+                assert_eq!(within, !screen.outside, "{layout} {screen:?}");
                 // The one round the outside is high, and a car thrown as high as
                 // its top is still stopped by it; the one inside is low enough to
                 // be seen over from behind a car, and stops no more than a barrier.
@@ -2580,8 +2350,8 @@ mod tests {
                     let lift = Vec3::Y * high;
                     t.collision.wall(t.pts[middle] + lift, out + lift).is_some()
                 };
-                assert!(stopped(screen.height() - 0.5), "{layout:?} {screen:?}");
-                assert_eq!(stopped(SCREEN_HEIGHT - 0.5), screen.outside, "{layout:?} {screen:?}");
+                assert!(stopped(screen.height() - 0.5), "{layout} {screen:?}");
+                assert_eq!(stopped(SCREEN_HEIGHT - 0.5), screen.outside, "{layout} {screen:?}");
                 assert!(t.apart(screen.from, 0) > SCREEN_OFF_LINE && t.apart(screen.to, 0) > 8);
                 for i in screen.from..screen.to {
                     let barrier = t.edge(i, screen.side * WALL);
@@ -2590,7 +2360,7 @@ mod tests {
                 }
             }
             // Turned round, each is the same wall, on what is then the other side.
-            let mut back = Track::built(layout);
+            let mut back = Track::built(map);
             back.reverse();
             for (screen, turned) in t.screens.iter().zip(&back.screens) {
                 assert_eq!((turned.side, turned.outside), (-screen.side, screen.outside));
@@ -2601,8 +2371,9 @@ mod tests {
 
     #[test]
     fn a_reversed_circuit_is_the_same_road_the_other_way() {
-        for layout in Layout::ALL {
-            let (forward, mut back) = (Track::built(layout), Track::built(layout));
+        for map in crate::map::circuits() {
+            let layout = map.key.as_str();
+            let (forward, mut back) = (Track::built(map), Track::built(map));
             back.reverse();
             let n = forward.n();
             assert_eq!(back.pts[0], forward.pts[0]);
@@ -2620,7 +2391,7 @@ mod tests {
             // The grid waits before the line, facing it, on what was the way out.
             for &(position, facing) in &back.course.grid {
                 let (_, s, _) = back.project(position, back.nearest(position));
-                assert!(s > back.length - 30.0, "{layout:?} grid at {s}");
+                assert!(s > back.length - 30.0, "{layout} grid at {s}");
                 assert!(facing.dot(back.flat[back.nearest(position)]) > 0.95);
             }
         }

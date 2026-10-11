@@ -1,4 +1,4 @@
-//! What stands beside the roads of the circuits built here (`track::Layout`), so that
+//! What stands beside the roads of the circuits built here (`map::Map`), so that
 //! little is seen from a car but the road it is on. The port's own.
 //!
 //! Folded in on themselves as those circuits are, a car on one stretch of road looks
@@ -21,8 +21,9 @@
 //! inside a corner; or where a hazard has something standing (`Track::clearings`).
 
 use crate::meshgen::*;
-use crate::track::{INSIDE_CLEAR, Layout, SCREEN_TURN, STRETCH, Track, WALL, xz_dist2};
+use crate::track::{INSIDE_CLEAR, SCREEN_TURN, STRETCH, Track, WALL, xz_dist2};
 use bevy::prelude::*;
+use serde::Deserialize;
 
 /// How thick a wall is, and a hedge.
 const WALL_THICK: f32 = 1.0;
@@ -75,51 +76,31 @@ pub struct Fence {
     pub hedge: bool,
 }
 
-/// What a circuit's walls are built of.
-struct Look {
+/// What a circuit's walls are built of, as its map says (`walls`); one that says
+/// nothing has the fair's.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Look {
+    #[serde(deserialize_with = "crate::map::colour")]
     wall: Color,
+    #[serde(deserialize_with = "crate::map::colour")]
     footing: Color,
+    #[serde(deserialize_with = "crate::map::colour")]
     coping: Color,
     /// What caps the piers that stand along it.
+    #[serde(deserialize_with = "crate::map::colour")]
     cap: Color,
     battlements: bool,
 }
 
-impl Look {
-    fn of(layout: Layout) -> Look {
-        match layout {
-            // Sandstone under white.
-            Layout::Brick => Look {
-                wall: TAN,
-                footing: Color::srgb(0.62, 0.52, 0.36),
-                coping: WHITE,
-                cap: RED,
-                battlements: false,
-            },
-            // A speedway's boards.
-            Layout::FigureEight => Look {
-                wall: Color::srgb(0.78, 0.80, 0.82),
-                footing: BLUE,
-                coping: BLUE,
-                cap: YELLOW,
-                battlements: false,
-            },
-            // A castle's.
-            Layout::Gauntlet => Look {
-                wall: GREY,
-                footing: DARK_GREY,
-                coping: GREY,
-                cap: DARK_GREY,
-                battlements: true,
-            },
-            // The fair's.
-            _ => Look {
-                wall: ORANGE,
-                footing: BROWN,
-                coping: WHITE,
-                cap: BLUE,
-                battlements: false,
-            },
+impl Default for Look {
+    fn default() -> Look {
+        Look {
+            wall: ORANGE,
+            footing: BROWN,
+            coping: WHITE,
+            cap: BLUE,
+            battlements: false,
         }
     }
 }
@@ -284,8 +265,7 @@ impl Fence {
 }
 
 /// Builds a circuit's walls and hedges of bricks.
-pub fn draw(track: &Track, layout: Layout, fences: &[Fence], b: &mut BrickMesh) {
-    let look = Look::of(layout);
+pub fn draw(track: &Track, look: &Look, fences: &[Fence], b: &mut BrickMesh) {
     let up = Vec3::Y;
     for fence in fences {
         for (at, pair) in fence.line.windows(2).enumerate() {
@@ -493,8 +473,8 @@ mod tests {
 
     #[test]
     fn little_of_the_rest_of_the_road_is_seen_from_a_car() {
-        for layout in Layout::ALL {
-            let track = Track::built(layout);
+        for map in crate::map::circuits() {
+            let (layout, track) = (map.key.as_str(), Track::built(map));
             let fences = fences(&track);
             let (bare, hidden) = (in_sight(&track, &[]), in_sight(&track, &fences));
             let (walls, hedges): (Vec<&Fence>, Vec<&Fence>) = fences.iter().partition(|f| !f.hedge);
@@ -506,7 +486,7 @@ mod tests {
                     .sum()
             };
             println!(
-                "{layout:?}: of the road elsewhere {:.0}% in sight without them and {:.0}% with, of the road next {:.0}% and {:.0}%; {} walls {:.0} long, {} hedges {:.0} long",
+                "{layout}: of the road elsewhere {:.0}% in sight without them and {:.0}% with, of the road next {:.0}% and {:.0}%; {} walls {:.0} long, {} hedges {:.0} long",
                 100.0 * bare.0,
                 100.0 * hidden.0,
                 100.0 * bare.1,
@@ -518,8 +498,8 @@ mod tests {
             );
             // Little of the road elsewhere is seen, and far less than without them;
             // and most of what could be seen of the road next still is.
-            assert!(hidden.0 < 0.15 && hidden.0 < 0.65 * bare.0, "{layout:?} {bare:?} {hidden:?}");
-            assert!(hidden.1 > 0.6 * bare.1, "{layout:?} {bare:?} {hidden:?}");
+            assert!(hidden.0 < 0.15 && hidden.0 < 0.65 * bare.0, "{layout} {bare:?} {hidden:?}");
+            assert!(hidden.1 > 0.6 * bare.1, "{layout} {bare:?} {hidden:?}");
             // Nothing of them is on a road, a byway or its barriers, and nothing is
             // near the crossing.
             for fence in &fences {
@@ -529,7 +509,7 @@ mod tests {
                         let off = xz_dist2(p, q).sqrt();
                         assert!(
                             off >= WALL + 0.8 + thick / 2.0 || q.y > p.y + 1.0,
-                            "{layout:?} {p} is {off} from the road at {q}"
+                            "{layout} {p} is {off} from the road at {q}"
                         );
                     }
                     for crossing in &track.crossings {
@@ -542,8 +522,8 @@ mod tests {
 
     #[test]
     fn an_arena_has_no_walls_of_these() {
-        for layout in Layout::ARENAS {
-            assert!(fences(&Track::built(layout)).is_empty());
+        for map in crate::map::arenas() {
+            assert!(fences(&Track::built(map)).is_empty());
         }
     }
 }

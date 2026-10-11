@@ -1,0 +1,88 @@
+# The gauntlet: a road past as many of the game's hazards as can be moved. Eight
+# rows, a stretch in each half of a row for a hazard to stand on, with a hairpin
+# from each row to the next and a bend or two in the middle of every row but the
+# first, so that the next hazard is not seen until it is come to. From the end of
+# the last row the road climbs onto a viaduct that winds back over the western
+# hairpins to the first. Two of the eastern hairpins are tunnels.
+#
+# brick.toml says what each thing here is.
+
+name = "Gauntlet"
+
+corners = [
+    [-20, 0, -119, 0],
+    [100, 0, -119, 17], [100, 0, -85, 17],
+    [58, 0, -85, 30], [28, 0, -95, 30], [-28, 0, -75, 30], [-58, 0, -85, 30],
+    [-100, 0, -85, 17], [-100, 0, -51, 17],
+    [-58, 0, -51, 30], [-28, 3.5, -41, 30], [28, 3.5, -61, 30], [58, 0, -51, 30],
+    [100, 0, -51, 17], [100, 0, -17, 17],
+    [58, 0, -17, 30], [28, 0, -27, 30], [-28, 0, -7, 30], [-58, 0, -17, 30],
+    [-100, 0, -17, 17], [-100, 0, 17, 17],
+    [-58, 0, 17, 30], [-28, 0, 27, 30], [28, 0, 7, 30], [58, 0, 17, 30],
+    [100, 0, 17, 17], [100, 0, 51, 17],
+    [58, 0, 51, 30], [28, 3.5, 41, 30], [-28, 3.5, 61, 30], [-58, 0, 51, 30],
+    [-100, 0, 51, 17], [-100, 0, 85, 17],
+    [-58, 0, 85, 30], [-28, 0, 95, 30], [28, 0, 75, 30], [58, 0, 85, 30],
+    [100, 0, 85, 17], [100, 0, 119, 17],
+    [58, 0, 119, 30], [28, 0, 109, 30], [-28, 1.5, 129, 30], [-58, 3.5, 119, 30],
+    [-96, 6.5, 119, 14], [-96, 8, 102, 0],
+    [-96, 8, 60, 30], [-110, 9, 34, 30], [-110, 11, 0, 0], [-110, 9, -34, 30], [-96, 8, -60, 30],
+    [-96, 8, -102, 0], [-96, 6, -119, 14], [-44, 0, -119, 0],
+]
+
+# Where each begins and ends, as [x, z] on the road.
+tunnels = [
+    { from = [55, -51], to = [55, -17] },
+    { from = [55, 85], to = [55, 119] },
+]
+
+# Across the inside of the first western hairpin, through a shed.
+byways = [
+    { from = 294, to = 414, road = 4, wall = 5.5, bumps = 0, covered = true, taken = 0.3 },
+]
+
+pads = [{ at = 20 }, { at = 1716 }]
+
+# Two of the eastern hairpins.
+banks = [
+    { from = 104, to = 155, tilt = 0.15 },
+    { from = 982, to = 1033, tilt = 0.15 },
+]
+
+# A castle's.
+walls = { wall = "grey", footing = "dark grey", coping = "grey", cap = "dark grey", battlements = true }
+
+# In the order the road comes to them: one in the middle of a row, on the straight
+# between its two bends, and another at one end of it. Whatever stands beside a
+# hazard's road has to fit between that row and the next.
+hazards = [
+    # The temple's stones roll across the road one after another.
+    { kind = "stones", at = 55, apart = 22 },
+    # The aliens' saucer comes down the road at its lowest.
+    { kind = "saucer", at = 242 },
+    { kind = "hammer", at = 314 },
+    { kind = "cannons", at = 466 },
+    # The moon's lava leaps between three pools, two of them at the road.
+    { kind = "lava", at = 690 },
+    { kind = "dragon", at = 764, reach = 70 },
+    # The moon's force field shuts the right half of the road to all but the shielded.
+    { kind = "field", at = 900 },
+    # The ark is on a plinth beside the road: that far right of its middle.
+    { kind = "ark", at = 988, right = 11.5 },
+    # Out of the hairpin into the sixth row, and left before the ghost.
+    { kind = "curse", at = 1054, drops = [[1097, -3], [1103, -3], [1109, -3]] },
+    { kind = "ghost", at = 1140 },
+    # The desert's pillar falls across the right of the road as the first car comes.
+    { kind = "pillar", at = 1208, right = 1 },
+    # The dock's barrels shut the right half of the road until a horn's cannon clears them.
+    { kind = "barrels", at = 1350 },
+    # The dock's crane swings its load in from the left: the outside of the last row.
+    { kind = "crane", at = 1581, right = 2 },
+    # A pad on the left of the road, and where it comes `out`: up on the viaduct.
+    { kind = "warp", at = 1599, right = -4, out = 1707 },
+    # The ice planet's craft hangs over the top of the viaduct letting out smoke,
+    # and it snows there.
+    { kind = "smoke", at = 1805 },
+    # The island's water lies beside it all, to the east, sloshing.
+    { kind = "water", place = [185, 0], heading = 90 },
+]

@@ -1,0 +1,83 @@
+# The helter skelter. From the start: the jump, a swing out round an island down
+# the east side, a tunnel that winds along the south, a hairpin through another
+# tunnel, and a road that climbs back and forth up the west side to the top of the
+# tower, twenty-one up; then twice round the tower and down, each turn under the
+# one before, out at the bottom, and back along the north over rollers.
+#
+# brick.toml says what each thing here is.
+
+name = "Helter Skelter"
+
+# Each turn of the spiral is 10.5 under the one before, which is room for a road
+# with a parapet to go under a road.
+corners = [
+    [-58, 0, -94, 0], [-10, 0, -94, 0], [100, 0, -94, 18],
+    [100, 0, -34, 18], [136, 0, 2, 18], [100, 0, 38, 18],
+    [100, 0, 86, 18],
+    [62, 0, 86, 30], [40, 0, 78, 30], [10, 0, 78, 30], [-12, 0, 86, 30],
+    [-100, 0, 86, 18], [-100, 0, 50, 18], [-46, 0, 50, 0],
+    [-14, 4.5, 50, 18], [-14, 6.5, 14, 18],
+    [-100, 12, 14, 18], [-100, 13.5, -22, 18],
+    [-56, 16, -22, 30], [-38, 17.6, -30, 30], [-20, 19.3, -30, 30], [-2, 20.6, -22, 30],
+    [14, 21, -22, 0], [56, 21, -22, 0],
+    [80, 19.688, -22, 24], [80, 17.063, 26, 24], [32, 14.438, 26, 24], [32, 11.813, -22, 24],
+    [80, 9.188, -22, 24], [80, 6.563, 26, 24], [32, 3.938, 26, 24], [32, 1.313, -22, 24],
+    [56, 0, -22, 0], [80, 0, -22, 18], [80, 0, -58, 18],
+    [40, 0, -58, 0], [25, 1.6, -58, 0], [10, 0, -58, 0], [-5, 1.6, -58, 0],
+    [-20, 0, -58, 0], [-35, 1.6, -58, 0], [-50, 0, -58, 0],
+    [-100, 0, -58, 18], [-100, 0, -94, 18],
+]
+
+tunnels = [
+    { from = [72, 86], to = [-34, 86] },
+    { from = [-46, 86], to = [-46, 50] },
+]
+
+# Where the lip of each is, as [x, z] on the road: a ramp of 24 is cut into the
+# road before it and a dip and a landing of 34 after, which want level road
+# and a run up.
+jumps = [{ lip = [14, -94] }]
+
+byways = [
+    # Straight on where the road swings out round the island: the shorter way, but
+    # narrow, with a bump in it.
+    { from = 202, to = 310, road = 4, wall = 5.5, bumps = 1.2, covered = false, taken = 0.4 },
+    # Across the inside of the hairpin half way up the climb, at a right angle to
+    # the road, through a shed that hides it, and as steep as a ramp.
+    { from = 728, to = 808, road = 4, wall = 5.5, bumps = 0, covered = true, taken = 0.25 },
+]
+
+# The corners at either end of the east side.
+infields = [{ from = 140, to = 168 }, { from = 332, to = 360 }]
+
+pads = [{ at = 8 }, { at = 1311 }]
+
+# The spiral.
+banks = [{ from = 950, to = 1230, tilt = 0.12 }]
+
+# The fair's.
+walls = { wall = "orange", footing = "brown", coping = "white", cap = "blue", battlements = false }
+
+hazards = [
+    { kind = "hammer", at = 30 },
+    { kind = "stones", at = 110, apart = 12 },
+    { kind = "ark", at = 257, right = -11.5 },
+    { kind = "cannons", at = 700 },
+]
+
+# What stands about to know the place by, none of it solid: each at a `place`
+# [x, z], with a `heading` in degrees round from east to north where it matters.
+# There are a tower, a stand (which looks the way it is headed, and may have a
+# `length`), a gantry (over a road that runs the way it is headed), a pond (which
+# may have a `radius`) and rocks.
+scenery = [
+    # In the middle of the spiral, which comes down round it.
+    { kind = "tower", place = [56, 2] },
+    # By the start, looking south at it.
+    { kind = "stand", place = [-20, -113], heading = -90, length = 80 },
+    # At the foot of the jump.
+    { kind = "gantry", place = [-10, -94] },
+    { kind = "pond", place = [0, 134], radius = 30 },
+    # On the island the road swings out round.
+    { kind = "rocks", place = [112.5, 2] },
+]

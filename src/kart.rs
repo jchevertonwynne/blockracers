@@ -2263,10 +2263,11 @@ mod tests {
 
     #[test]
     fn ai_laps_the_built_in_circuits() {
-        for layout in crate::track::Layout::ALL {
-            let track = Track::built(layout);
+        for map in crate::map::circuits() {
+            let layout = map.key.as_str();
+            let track = Track::built(map);
             let laps = solo_run(&track, lapping_time(&track));
-            assert!(laps.len() >= 3, "{layout:?} {laps:?}");
+            assert!(laps.len() >= 3, "{layout} {laps:?}");
         }
     }
 
@@ -2275,9 +2276,10 @@ mod tests {
     /// crossing too, where one stretch's cars meet the other's side on.
     #[test]
     fn the_computers_cars_race_the_built_in_circuits_together() {
-        for layout in crate::track::Layout::ALL {
+        for map in crate::map::circuits() {
+            let layout = map.key.as_str();
             for reverse in [false, true] {
-                let mut track = Track::built(layout);
+                let mut track = Track::built(map);
                 if reverse {
                     track.reverse();
                 }
@@ -2291,7 +2293,7 @@ mod tests {
                     for i in 0..6 {
                         drivers[i].drive(&karts[i], &mut controls[i], &track, &mut rng, dt);
                         karts[i].advance(&controls[i], &track, dt);
-                        assert!(karts[i].pos.is_finite(), "{layout:?}");
+                        assert!(karts[i].pos.is_finite(), "{layout}");
                     }
                     for second in 1..6 {
                         let (before, after) = karts.split_at_mut(second);
@@ -2301,8 +2303,8 @@ mod tests {
                     }
                 }
                 let laps: Vec<i32> = karts.iter().map(|kart| kart.lap).collect();
-                println!("{layout:?} reversed {reverse}: laps begun {laps:?}, {bumps} bumps");
-                assert!(laps.iter().all(|&lap| lap >= 3), "{layout:?} {reverse} {laps:?}");
+                println!("{layout} reversed {reverse}: laps begun {laps:?}, {bumps} bumps");
+                assert!(laps.iter().all(|&lap| lap >= 3), "{layout} {reverse} {laps:?}");
             }
         }
     }
@@ -2313,8 +2315,9 @@ mod tests {
     /// each of them all but clear of the walls, and is never brought near a stop.
     #[test]
     fn every_corner_of_the_built_in_circuits_is_slid_round_flat_out() {
-        for layout in crate::track::Layout::ALL {
-            let track = Track::built(layout);
+        for map in crate::map::circuits() {
+            let layout = map.key.as_str();
+            let track = Track::built(map);
             let mut kart = Kart::new(&track, 0);
             let mut c = Controls {
                 hand: true,
@@ -2341,11 +2344,11 @@ mod tests {
                 }
             }
             println!(
-                "{layout:?}: {} laps begun, at a wall {touching} frames of {frames}, never slower than {slowest:.1}",
+                "{layout}: {} laps begun, at a wall {touching} frames of {frames}, never slower than {slowest:.1}",
                 kart.lap
             );
-            assert!(kart.lap >= 4, "{layout:?} {}", kart.lap);
-            assert!(touching * 100 < frames && slowest > 18.0, "{layout:?} {touching} {slowest}");
+            assert!(kart.lap >= 4, "{layout} {}", kart.lap);
+            assert!(touching * 100 < frames && slowest > 18.0, "{layout} {touching} {slowest}");
         }
     }
 
@@ -2354,9 +2357,10 @@ mod tests {
     /// one standing on the far side of the open floor, which it reaches.
     #[test]
     fn the_computer_wanders_an_arena_and_goes_for_a_car_in_sight() {
-        for layout in crate::track::Layout::ARENAS {
-            let track = Track::built(layout);
-            let plan = layout.plan().unwrap();
+        for map in crate::map::arenas() {
+            let layout = map.key.as_str();
+            let track = Track::built(map);
+            let plan = map.plan.as_ref().unwrap();
             let mut kart = Kart::new(&track, 0);
             let (mut ai, mut rng, mut c) = (Ai::new(1.0, 0), Rng(7), Controls::default());
             let (dt, mut far, mut slow) = (1.0 / 60.0, 0.0f32, 0);
@@ -2364,13 +2368,13 @@ mod tests {
             for step in 0..60 * 60 {
                 ai.drive(&kart, &mut c, &track, &mut rng, dt);
                 kart.advance(&c, &track, dt);
-                assert!(plan.open(kart.pos, 0.0), "{layout:?} off the floor at {}", kart.pos);
+                assert!(plan.open(kart.pos, 0.0), "{layout} off the floor at {}", kart.pos);
                 far += kart.pos.distance(last);
                 last = kart.pos;
                 slow += (step > 300 && kart.vel.length() < 5.0) as usize;
             }
-            println!("{layout:?}: went {far:.0} in a minute, slow for {slow} steps");
-            assert!(far > 700.0 && slow < 600, "{layout:?} {far} {slow}");
+            println!("{layout}: went {far:.0} in a minute, slow for {slow} steps");
+            assert!(far > 700.0 && slow < 600, "{layout} {far} {slow}");
             // Something to go after, in sight across the floor from the grid.
             let mut kart = Kart::new(&track, 0);
             let quarry = track.course.grid[4].0;
@@ -2386,33 +2390,35 @@ mod tests {
                 kart.advance(&c, &track, dt);
                 nearest = nearest.min(kart.pos.distance(quarry));
             }
-            assert!(nearest < 4.0, "{layout:?} came within {nearest}");
+            assert!(nearest < 4.0, "{layout} came within {nearest}");
         }
     }
 
     #[test]
     fn ai_laps_the_built_in_circuits_in_the_fastest_cars() {
-        for layout in crate::track::Layout::ALL {
-            let track = Track::built(layout);
+        for map in crate::map::circuits() {
+            let layout = map.key.as_str();
+            let track = Track::built(map);
             let laps = paced_run(&track, lapping_time(&track) / 2.0, 2.0);
-            assert!(laps.len() >= 3, "{layout:?} {laps:?}");
+            assert!(laps.len() >= 3, "{layout} {laps:?}");
         }
     }
 
     #[test]
     fn ai_laps_the_built_in_circuits_backwards() {
-        for layout in crate::track::Layout::ALL {
-            let mut track = Track::built(layout);
+        for map in crate::map::circuits() {
+            let layout = map.key.as_str();
+            let mut track = Track::built(map);
             track.reverse();
             let laps = solo_run(&track, lapping_time(&track));
-            assert!(laps.len() >= 3, "{layout:?} {laps:?}");
+            assert!(laps.len() >= 3, "{layout} {laps:?}");
         }
     }
 
     #[test]
     fn the_helter_skelters_jump_is_flown_at_speed_and_driven_out_of_without() {
         for reverse in [false, true] {
-            let mut track = Track::built(crate::track::Layout::HelterSkelter);
+            let mut track = Track::built(crate::map::named("HELTER"));
             if reverse {
                 track.reverse();
             }
@@ -2479,9 +2485,10 @@ mod tests {
 
     #[test]
     fn the_computer_takes_the_byways_when_it_has_a_mind_to_either_way_round() {
-        for layout in crate::track::Layout::ALL {
+        for map in crate::map::circuits() {
+            let layout = map.key.as_str();
             for reverse in [false, true] {
-                let mut track = Track::built(layout);
+                let mut track = Track::built(map);
                 if reverse {
                     track.reverse();
                 }
@@ -2508,12 +2515,12 @@ mod tests {
                     }
                 }
                 println!(
-                    "{layout:?} reversed {reverse}: {laps} laps begun, byways taken {taken:?}"
+                    "{layout} reversed {reverse}: {laps} laps begun, byways taken {taken:?}"
                 );
-                assert!(laps >= 3, "{layout:?} {reverse}");
+                assert!(laps >= 3, "{layout} {reverse}");
                 assert!(
                     taken.iter().all(|&times| times >= 2),
-                    "{layout:?} {reverse} {taken:?}"
+                    "{layout} {reverse} {taken:?}"
                 );
             }
         }
@@ -2523,7 +2530,7 @@ mod tests {
     /// off the road, as high as it floats, and it is back on its wheels afterwards.
     #[test]
     fn the_strongest_turbo_floats_the_car_over_the_road() {
-        let track = Track::built(crate::track::Layout::Brick);
+        let track = Track::built(crate::map::named("BRICK"));
         let mut kart = Kart::new(&track, 0);
         let (c, dt) = (Controls { throttle: 1.0, ..default() }, 1.0 / 60.0);
         let over = |kart: &Kart| {
@@ -2550,7 +2557,7 @@ mod tests {
 
     #[test]
     fn a_speed_pad_sets_a_car_off() {
-        let track = Track::built(crate::track::Layout::Brick);
+        let track = Track::built(crate::map::named("BRICK"));
         let pad = track.pads[0];
         // Set down a little before the pad, on its line, and driven straight on.
         let mut kart = Kart::new(&track, 0);
@@ -2572,7 +2579,7 @@ mod tests {
 
     #[test]
     fn the_helter_skelters_byways_are_driven_from_end_to_end_either_way() {
-        let track = Track::built(crate::track::Layout::HelterSkelter);
+        let track = Track::built(crate::map::named("HELTER"));
         let dt = 1.0 / 60.0;
         for branch in &track.branches {
             let ends = [branch.pts[0], branch.pts[branch.pts.len() - 1]];

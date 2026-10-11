@@ -1,0 +1,123 @@
+# The ring, an arena: a hill to hold. In the middle of a round floor is a square
+# of high ground with a ramp up each of its four sides and the best bricks on
+# top; round it are a ring of pillars and the wall's buttresses, to come at it
+# from behind, and against the wall north and south a gallery as high as the
+# hill, with a ramp up each end of it, that looks across at whoever holds the
+# hill.
+#
+# yard.toml says what each thing here is.
+
+name = "The Ring"
+
+# A hundred out from the middle, a corner every fifteen degrees.
+outline = [
+    [100, 0],
+    [96.59258, 25.8819],
+    [86.60254, 50],
+    [70.71068, 70.71068],
+    [50, 86.60254],
+    [25.881908, 96.592575],
+    [0, 100],
+    [-25.8819, 96.59258],
+    [-50, 86.60254],
+    [-70.71068, 70.71068],
+    [-86.60254, 50],
+    [-96.592575, 25.881908],
+    [-100, 0],
+    [-96.59258, -25.8819],
+    [-86.60254, -50],
+    [-70.71068, -70.71068],
+    [-50, -86.60254],
+    [-25.881908, -96.592575],
+    [0, -100],
+    [25.8819, -96.59258],
+    [50, -86.60254],
+    [70.71068, -70.71068],
+    [86.60254, -50],
+    [96.592575, -25.881908],
+]
+
+# The hill and the plinth on it; a ring of six pillars, 68 out; and six
+# buttresses against the wall, 95 out.
+blocks = [
+    { at = [0, 0], half = [18, 18], height = 5, colour = "tan" },
+    { at = [0, 0], half = [5, 5], height = 8, colour = "yellow" },
+    { at = [58.889725, 34], half = [4, 4], height = 7, colour = "red" },
+    { at = [0, 68], half = [4, 4], height = 7, colour = "white" },
+    { at = [-58.889725, 34], half = [4, 4], height = 7, colour = "red" },
+    { at = [-58.889725, -34], half = [4, 4], height = 7, colour = "white" },
+    { at = [0, -68], half = [4, 4], height = 7, colour = "red" },
+    { at = [58.889725, -34], half = [4, 4], height = 7, colour = "white" },
+    { at = [95, 0], half = [4, 4], height = 6, colour = "yellow" },
+    { at = [47.5, 82.272415], half = [4, 4], height = 6, colour = "yellow" },
+    { at = [-47.5, 82.272415], half = [4, 4], height = 6, colour = "yellow" },
+    { at = [-95, 0], half = [4, 4], height = 6, colour = "yellow" },
+    { at = [-47.5, -82.272415], half = [4, 4], height = 6, colour = "yellow" },
+    { at = [47.5, -82.272415], half = [4, 4], height = 6, colour = "yellow" },
+]
+
+# Slopes from the floor up to `height`, which way each `climbs`.
+ramps = [
+    { at = [30, 0], half = [12, 8], height = 5, climbs = "west" },
+    { at = [-30, 0], half = [12, 8], height = 5, climbs = "east" },
+    { at = [0, 30], half = [8, 12], height = 5, climbs = "north" },
+    { at = [0, -30], half = [8, 12], height = 5, climbs = "south" },
+    # Up each end of each gallery.
+    { at = [-30, -80], half = [10, 5], height = 5, climbs = "east" },
+    { at = [30, -80], half = [10, 5], height = 5, climbs = "west" },
+    { at = [-30, 80], half = [10, 5], height = 5, climbs = "east" },
+    { at = [30, 80], half = [10, 5], height = 5, climbs = "west" },
+]
+
+# Floors held up at `height`, driven on and under.
+decks = [
+    { at = [0, -80], half = [20, 5], height = 5 },
+    { at = [0, 80], half = [20, 5], height = 5 },
+]
+
+# Outside the ring of pillars on the east side and inside it on the west,
+# crossing it between two pillars north and south.
+line = [
+    [83, 0, 0],
+    [71.880104, 0, 41.5],
+    [33, 0, 57.157677],
+    [0, 0, 52],
+    [-26, 0, 45.03332],
+    [-45.03332, 0, 26],
+    [-52, 0, 0],
+    [-45.03332, 0, -26],
+    [-26, 0, -45.03332],
+    [0, 0, -52],
+    [33, 0, -57.157677],
+    [71.880104, 0, -41.5],
+]
+
+# Eighty out, every sixty degrees.
+grid = [
+    [80, 0],
+    [40, 69.28203],
+    [-40, 69.28203],
+    [-80, 0],
+    [-40, -69.28203],
+    [40, -69.28203],
+]
+
+# Where bricks lie besides those along the line: where the line doesn't go, to be
+# gone out of the way for.
+bricks = [
+    [12, 12],
+    [12, -12],
+    [-12, 12],
+    [-12, -12],
+    [0, 80],
+    [-72.74613, 42],
+    [-72.74613, -42],
+    [0, -80],
+]
+
+# The floor's two colours, which alternate outwards from the middle.
+floor = ["tan", "orange"]
+
+# On a plinth on the hill the ark turns and fires at whatever it finds, so that
+# nobody holds it for long.
+hazards = [{ kind = "ark", place = [0, 0] }]

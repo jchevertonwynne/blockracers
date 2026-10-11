@@ -121,7 +121,7 @@ pub struct Snapshot {
 /// How a race is to be run: what the host's `Settings` say of it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Rules {
-    /// The circuit's race folder, or the key of one of the port's own layouts.
+    /// The circuit's race folder, or the key of one of the port's own maps.
     pub circuit: String,
     pub lap_choice: u8,
     pub mirror: bool,
@@ -138,7 +138,7 @@ pub struct Rules {
 /// What a circuit is known by between games: its folder in the game's data, or
 /// for one of the port's own its name.
 pub fn key(circuit: &crate::menu::Circuit) -> &str {
-    circuit.race.as_deref().unwrap_or(circuit.layout.key())
+    circuit.key()
 }
 
 impl Rules {
@@ -165,15 +165,24 @@ impl Rules {
         }
     }
 
+    /// The circuit's map as this game has it, if it is one of the port's own: what
+    /// a host sends its players with the start.
+    pub fn map(&self, circuits: &Circuits) -> Option<String> {
+        let circuit = circuits.0.iter().find(|c| key(c) == self.circuit)?;
+        circuit.map.as_ref().map(|map| map.text.clone())
+    }
+
     pub fn mode(&self) -> Mode {
         Mode::ALL[(self.mode as usize).min(Mode::ALL.len() - 1)]
     }
 
     /// These, on a circuit they can be raced on: an arena is for a battle or a game
-    /// of tag, and a race voted onto one is run on the first circuit there is.
+    /// of tag, and a race voted onto one is run on the first circuit there is, as is
+    /// one voted onto a map that only the player who voted for it has.
     pub fn fitted(mut self, circuits: &Circuits) -> Self {
-        let arena = circuits.0.iter().any(|c| key(c) == self.circuit && c.arena());
-        if arena && !self.mode().lapless() {
+        let voted = circuits.0.iter().find(|c| key(c) == self.circuit);
+        let arena = voted.is_some_and(|c| c.arena());
+        if voted.is_none() || (arena && !self.mode().lapless()) {
             self.circuit = circuits.0.first().map(key).unwrap_or_default().to_string();
         }
         self
@@ -281,6 +290,9 @@ pub enum ToPlayer {
     Start {
         rules: Rules,
         seats: Vec<Seat>,
+        /// The circuit's map as the host has it, if it is one of the port's own:
+        /// what is raced, whatever the player's game has of that name.
+        map: Option<String>,
     },
     /// How the room stands: who is in it and what they want, the seconds until the
     /// vote closes if a clock is running, whether a race is on, how the last race
@@ -357,6 +369,40 @@ mod tests {
         let mut plain = wanted(Mode::Battle);
         plain.circuit = key(&circuits.0[0]).to_string();
         assert_eq!(plain.clone().fitted(&circuits), plain);
+    }
+
+    #[test]
+    fn a_map_of_the_port_s_own_goes_with_the_start() {
+        let circuits = Circuits::find();
+        let on = |circuit: usize| {
+            let settings = Settings {
+                circuit,
+                ..Settings::new(&circuits)
+            };
+            Rules::of(&settings, &circuits)
+        };
+        let brick = circuits.0.iter().position(|c| c.key() == "BRICK").unwrap();
+        let text = on(brick).map(&circuits).expect("the brick circuit's map");
+        assert_eq!(text, crate::map::named("BRICK").text);
+        // One of the game's own circuits is in everyone's data, and isn't sent.
+        if circuits.0[0].race.is_some() {
+            assert_eq!(on(0).map(&circuits), None);
+        }
+        // It fits in a message with the rest of the start, and comes back whole.
+        let start = encode(&ToPlayer::Start {
+            rules: on(brick),
+            seats: Vec::new(),
+            map: Some(text.clone()),
+        });
+        assert!(start.len() < 16 * 1024);
+        let Ok(ToPlayer::Start { map, .. }) = decode::<ToPlayer>(&start) else {
+            panic!("a start");
+        };
+        assert_eq!(map, Some(text));
+        // A vote for a map the host hasn't got is run on the first circuit there is.
+        let mut wish = on(brick);
+        wish.circuit = "NOWHERE".into();
+        assert_eq!(wish.fitted(&circuits).circuit, key(&circuits.0[0]));
     }
 
     #[test]

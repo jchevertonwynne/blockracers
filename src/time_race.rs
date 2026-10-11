@@ -3,7 +3,7 @@
 //! best. Follows `TimeRaceManager`.
 //!
 //! The port keeps the player's best runs between sessions, as files in
-//! `$BRICK_GHOSTS` or `~/.brick_racers_ghosts`, one for each circuit and each way of
+//! `$BRICK_GHOSTS` or `ghosts` in `home`'s folder, one for each circuit and each way of
 //! running it (mirrored, reversed).
 
 use crate::assets::tokens::{Reader, Token};
@@ -130,12 +130,7 @@ pub struct TimeRace {
 
 /// Where the player's best runs are kept.
 fn ghost_folder() -> Option<std::path::PathBuf> {
-    match std::env::var_os("BRICK_GHOSTS") {
-        Some(folder) => Some(folder.into()),
-        None => {
-            Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".brick_racers_ghosts"))
-        }
-    }
+    crate::home::kept("BRICK_GHOSTS", "ghosts")
 }
 
 /// What a circuit's best run goes by: its folder (or a built-in circuit's key),
@@ -148,7 +143,7 @@ fn run_key(circuits: &Circuits, settings: &Settings, variant: Variant) -> String
     };
     format!(
         "{}{}{pace}",
-        circuit.race.as_deref().unwrap_or(circuit.layout.key()),
+        circuit.key(),
         variant.suffix()
     )
 }

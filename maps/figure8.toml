@@ -1,0 +1,57 @@
+# The figure of eight: two lobes with a crossing on the level between them, where
+# the road meets itself at a right angle. From the start a sweeping hairpin and an
+# S lead up onto a bridge over the way to the crossing; the road comes down off it
+# round two right-handers and doubles back under it, over the crossing and a hump
+# that drops away, and out into the east lobe: a kink, a sweeping hairpin, a
+# hairpin over a rise and another back; and so over the crossing again, the other
+# way, to the start.
+#
+# brick.toml says what each thing here is.
+
+name = "Figure Eight"
+
+# [x, height, z, radius]. Where two stretches cross at one height neither has a
+# barrier across the other.
+corners = [
+    [-86, 0, -44, 0],
+    [-160, 0, -44, 22], [-160, 0, 0, 22],
+    [-114, 2, 0, 28], [-82, 6.5, 40, 28],
+    [-66, 8, 40, 0], [-14, 8, 40, 0],
+    [6, 7, 40, 20], [6, 2, 84, 20], [-84, 0, 84, 20],
+    [0, 0, 0, 0], [11, 0, -11, 0], [21, 2.6, -21, 0], [24, 0, -24, 0],
+    [44, 0, -44, 24], [72, 0, -44, 20], [90, 2, -56, 20],
+    [148, 2, -56, 20], [148, 0, -16, 20],
+    [54, 5, -16, 20], [54, 5, 24, 20],
+    [154, 0, 24, 20], [154, 0, 64, 20],
+    [64, 0, 64, 24], [-44, 0, -44, 24],
+]
+
+# Across the inside of the east lobe's middle hairpin, at a right angle to the
+# road and through a shed that hides it.
+byways = [
+    { from = 708, to = 822, road = 4, wall = 5.5, bumps = 0, covered = true, taken = 0.25 },
+]
+
+pads = [{ at = 1104 }, { at = 832 }]
+
+# The first hairpin of each lobe.
+banks = [
+    { from = 53, to = 120, tilt = 0.15 },
+    { from = 616, to = 677, tilt = 0.15 },
+]
+
+# A speedway's boards.
+walls = { wall = [0.78, 0.80, 0.82], footing = "blue", coping = "blue", cap = "yellow", battlements = false }
+
+hazards = [
+    # Over the crossing; `reach` is how near a car comes before the cannonballs begin.
+    { kind = "dragon", at = 467, reach = 70 },
+    # Set off at `at`, out of the east lobe's first hairpin, and left at one of its
+    # three `drops`, each [so far round the lap, so far right of the middle]: on
+    # the outside of the way into the second hairpin, past the mouth of the byway
+    # that goes round it. Every car that comes sets off another, so all three are
+    # on the one side of the road, and the other side is the way by.
+    { kind = "curse", at = 680, drops = [[723, 3], [728, 3], [732, 3]] },
+    # Three, each so far `apart` round the lap from the one before.
+    { kind = "stones", at = 930, apart = 20 },
+]
