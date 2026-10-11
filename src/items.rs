@@ -711,6 +711,15 @@ pub fn laid(track: &Track) -> Vec<(Option<Power>, Vec3)> {
             }
         }
     }
+    // An arena has more where its line doesn't go, each a colour of its own.
+    if let Some(plan) = track.arena {
+        for (i, &[x, z]) in plan.bricks.iter().enumerate() {
+            // On whatever is uppermost there: the floor, or the high ground.
+            let over = Vec3::new(x, 20.0, z);
+            let on = track.collision.ground(over, 40.0).map_or(over.with_y(0.0), |hit| hit.point);
+            bricks.push((Some(POWERS[i % 4]), on));
+        }
+    }
     let mut i = 0;
     let mut banks = 0;
     while i < n {
@@ -2329,8 +2338,9 @@ mod tests {
                 .spawn((kart, Controls::default(), Transform::default()))
                 .id()
         };
-        let owner = spawn(&mut world, 0, 200.0);
-        let victim = spawn(&mut world, 1, 200.0 + gap);
+        // On the start straight, with room on it either way.
+        let owner = spawn(&mut world, 0, 35.0);
+        let victim = spawn(&mut world, 1, 35.0 + gap);
         world.insert_resource(track);
         world.insert_resource(Time::<()>::default());
         world.init_resource::<Sfx>();
@@ -2579,7 +2589,7 @@ fn bricks_are_laid_where_a_circuit_s_features_are() {
             let i = track.nearest(b.1);
             track.bank[i] != 0.0 && b.1.y > track.pts[i].y + 0.3
         });
-        assert!(banked.count() >= 1, "{layout:?}");
+        assert!(banked.count() >= 1 || layout.arena(), "{layout:?}");
         // Every one of them is over ground a car can be on.
         for (_, at) in &bricks {
             assert!(

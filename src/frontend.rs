@@ -800,11 +800,11 @@ impl Art {
 }
 
 /// Which of the game's circuits a race belongs to.
-/// The circuits a race may be run on, of them all: an arena only in a battle,
-/// which is online.
+/// The circuits a race may be run on, of them all: an arena only in a battle or
+/// a game of tag, which are online.
 fn offered(circuits: &Circuits, mode: crate::menu::Mode) -> Vec<usize> {
     (0..circuits.0.len())
-        .filter(|&n| mode == crate::menu::Mode::Battle || !circuits.0[n].arena())
+        .filter(|&n| mode.lapless() || !circuits.0[n].arena())
         .collect()
 }
 
@@ -1324,68 +1324,50 @@ fn items(
             items
         }
         Page::Room => {
-            // The next race's circuit is voted for on a page of its own; what to
-            // race as is the player's own affair, and not voted on.
-            let mut items = vec![
-                plain(
-                    Vec2::new(3.0, ROOM_RACE),
-                    "NEXT RACE",
-                    Action::Go(Page::Wishes),
-                ),
-                selector(
-                    Rect::new(164.0, ROOM_RIDE, ROOM_ROWS_END, ROOM_RIDE + ICON),
-                    None,
-                    racing_as(settings, garage),
-                    Action::Car,
-                ),
-            ];
-            items.push(plain(
-                Vec2::new(3.0, ROOM_BUTTONS),
+            // One thing to a row down the left of the screen, in the order the keys
+            // go through them: what the player says of themselves, then what the
+            // host says of the race, then the race itself.
+            let mut rows = 0;
+            let mut row = |skip: usize| {
+                rows += skip;
+                let at = Vec2::new(ROOM_MENU.min.x, ROOM_TOP + ROOM_ROW * rows as f32);
+                rows += 1;
+                at
+            };
+            let mut items = vec![plain(
+                row(0),
                 if wired.room.ready {
                     "READY: YES"
                 } else {
                     "READY: NO"
                 },
                 Action::Ready,
+            )];
+            // The next race's circuit is voted for on a page of its own; what to
+            // race as is the player's own affair, and not voted on. Its row is
+            // under a row that says what it is.
+            items.push(plain(row(0), "VOTE FOR A CIRCUIT", Action::Go(Page::Wishes)));
+            let ride = row(1);
+            items.push(selector(
+                Rect::new(ride.x, ride.y, ROOM_MENU.max.x, ride.y + ICON),
+                None,
+                racing_as(settings, garage),
+                Action::Car,
             ));
-            let below = ROOM_BUTTONS + ROOM_STEP;
+            // To the garage, to build a racer or change one, and back here.
+            items.push(plain(row(0), "BUILD A RACER", Action::Go(Page::Garage)));
+            // How the race is run, its circuit apart, is the host's to say, and so
+            // is the session and when the race begins.
             if wired.role == Role::Host {
-                items.push(plain(Vec2::new(3.0, below), "START NOW", Action::Begin));
+                items.push(plain(row(0), "RACE RULES", Action::Go(Page::Rules)));
+                items.push(plain(row(0), "SESSION", Action::Go(Page::Session)));
+                items.push(plain(row(0), "START NOW", Action::Begin));
             } else if wired.room.racing {
-                items.push(plain(
-                    Vec2::new(3.0, below),
-                    "GO TO THE RACE",
-                    Action::Enter,
-                ));
+                items.push(plain(row(0), "GO TO THE RACE", Action::Enter));
             }
             if !wired.room.results.is_empty() {
-                items.push(plain(
-                    Vec2::new(155.0, below),
-                    "LAST RACE",
-                    Action::Go(Page::Results),
-                ));
+                items.push(plain(row(0), "LAST RACE", Action::Go(Page::Results)));
             }
-            if wired.role == Role::Host {
-                items.push(plain(
-                    Vec2::new(258.0, below),
-                    "SESSION",
-                    Action::Go(Page::Session),
-                ));
-            }
-            // How the race is run, its circuit apart, is the host's to say.
-            if wired.role == Role::Host {
-                items.push(plain(
-                    Vec2::new(440.0, below),
-                    "RULES",
-                    Action::Go(Page::Rules),
-                ));
-            }
-            // To the garage, to build a racer or change one, and back here.
-            items.push(plain(
-                Vec2::new(354.0, below),
-                "BUILD",
-                Action::Go(Page::Garage),
-            ));
             items.push(field(CHAT, wired.online.say.clone(), Typed::Say));
             items.push(Item {
                 widget: Widget::Button {
@@ -1476,20 +1458,31 @@ const FIELD: [Rect; 2] = [
 /// Where the room's rows begin and how far apart they are.
 const ROOM_TOP: f32 = 76.0;
 const ROOM_STEP: f32 = 32.0;
-/// Which of the room's widgets is "ready", where the room opens: after the way to
-/// the next race's settings and what to race as.
-const READY_AT: usize = 2;
+/// Which of the room's widgets is "ready", where the room opens: the first.
+const READY_AT: usize = 0;
+/// The room's widgets are in rows down its left side, this far apart, and those in
+/// it are shown on its right, with what is said of the next race under them.
+const ROOM_ROW: f32 = 30.0;
+const ROOM_MENU: Rect = Rect {
+    min: Vec2::new(3.0, ROOM_TOP),
+    max: Vec2::new(250.0, 346.0),
+};
+const ROOM_ROSTER: Rect = Rect {
+    min: Vec2::new(262.0, ROOM_TOP),
+    max: Vec2::new(636.0, 280.0),
+};
+/// Where under the roster the next race is spoken of: how the host would have it
+/// run, what the player has voted for, and how near it is to beginning.
+const ROOM_SAID: [f32; 3] = [284.0, 311.0, 338.0];
 /// Where the rows of the next race's settings end, with how many agree on each
 /// after that.
 const ROOM_ROWS_END: f32 = 440.0;
-/// In the room, how high the minifigures of those in it are, and where under them
-/// the way to the next race's settings and what to race as go.
-const FIGURE_HEIGHT: f32 = 112.0;
-const ROOM_RACE: f32 = 240.0;
-const ROOM_RIDE: f32 = 272.0;
-/// Where the room's buttons begin, under its rows; where what is to be said to it
-/// is typed; and where what has been said is shown, and how far apart its lines are.
-const ROOM_BUTTONS: f32 = 304.0;
+/// In the room, how high the minifigures of those in it are: in one row, and in
+/// two when there are more than `ROSTER_ROW` of them.
+const FIGURE_HEIGHT: [f32; 2] = [112.0, 58.0];
+const ROSTER_ROW: usize = 3;
+/// Where what is to be said to the room is typed, and where what has been said is
+/// shown, and how far apart its lines are.
 const CHAT: Rect = Rect {
     min: Vec2::new(110.0, 372.0),
     max: Vec2::new(636.0, 400.0),
@@ -1526,32 +1519,69 @@ fn map_place(n: usize, count: usize) -> Vec2 {
     )
 }
 
-/// How high a line of writing under a minifigure is, and the most of the screen's
-/// width any one of those in the room is given.
-const VOTER_LINE: f32 = 24.0;
-const VOTER_MOST: f32 = 160.0;
+/// How high a line of writing under a minifigure is.
+const VOTER_LINE: f32 = 22.0;
 
 /// Where the `n`th of `count` in the room goes: their minifigure, their name under
-/// it, and under that how long their way to the host takes. Side by side across
-/// the screen, in the middle of it.
+/// it, and under that how long their way to the host takes. In the roster, side by
+/// side, in a second row once the first is full.
 fn voter_places(n: usize, count: usize) -> (Rect, Rect, Rect) {
-    let wide = (SCREEN.x / count.max(1) as f32).min(VOTER_MOST);
-    let left = (SCREEN.x - wide * count as f32) / 2.0 + wide * n as f32;
-    let figure = FIGURE_HEIGHT * portraits::SIZE.x / portraits::SIZE.y;
-    let line = |row: f32| {
-        let top = ROOM_TOP + FIGURE_HEIGHT + row * VOTER_LINE;
+    let rows = count.div_ceil(ROSTER_ROW).max(1);
+    let high = FIGURE_HEIGHT[(rows > 1) as usize];
+    let (row, column) = (n / ROSTER_ROW, n % ROSTER_ROW);
+    // The last row may have fewer in it, and is centred all the same.
+    let across = if row + 1 == rows { count - row * ROSTER_ROW } else { ROSTER_ROW };
+    let wide = ROSTER_WIDTH / ROSTER_ROW as f32;
+    let left = ROOM_ROSTER.min.x
+        + (ROSTER_WIDTH - wide * across.max(1) as f32) / 2.0
+        + wide * column as f32;
+    let top = ROOM_ROSTER.min.y + (high + 2.0 * VOTER_LINE) * row as f32;
+    let figure = high * portraits::SIZE.x / portraits::SIZE.y;
+    let line = |under: f32| {
+        let top = top + high + under * VOTER_LINE;
         Rect::new(left, top, left + wide, top + VOTER_LINE)
     };
     (
         Rect::new(
             left + (wide - figure) / 2.0,
-            ROOM_TOP,
+            top,
             left + (wide + figure) / 2.0,
-            ROOM_TOP + FIGURE_HEIGHT,
+            top + high,
         ),
         line(0.0),
         line(1.0),
     )
+}
+const ROSTER_WIDTH: f32 = ROOM_ROSTER.max.x - ROOM_ROSTER.min.x;
+
+/// How a race is to be run, in a line: what `rules` say of it, its circuit apart.
+fn said(rules: &Rules) -> String {
+    // A battle and a game of tag aren't run by the lap.
+    let mode = rules.mode();
+    let mut said = Vec::new();
+    said.extend((rules.mode > 0).then(|| mode.label().to_uppercase()));
+    said.extend((!mode.lapless()).then(|| {
+        format!(
+            "{} LAPS",
+            LAP_CHOICES[rules.lap_choice as usize % LAP_CHOICES.len()]
+        )
+    }));
+    said.push(format!("{} OPPONENTS", rules.opponents));
+    said.extend(rules.mirror.then(|| "MIRRORED".to_string()));
+    said.extend(rules.reverse.then(|| "REVERSED".to_string()));
+    let bricks = crate::menu::BRICK_RULES.get(rules.bricks as usize);
+    said.extend(
+        bricks
+            .filter(|_| rules.bricks > 0)
+            .map(|bricks| format!("BRICKS {bricks}")),
+    );
+    let speed = crate::menu::SPEEDS.get(rules.speed as usize);
+    said.extend(
+        speed
+            .filter(|_| rules.speed > 0)
+            .map(|speed| format!("SPEED {}", speed.0)),
+    );
+    said.join(", ")
 }
 
 /// Where the rows of the last race's results begin, how far apart they are, and
@@ -1750,35 +1780,9 @@ fn notes(
             }
             // Under them, how the host has said the race is to be run.
             if let Some(rules) = room.hosts() {
-                // A battle and a game of tag aren't run by the lap.
-                let mode = rules.mode();
-                let lapped = !matches!(mode, crate::menu::Mode::Battle | crate::menu::Mode::Tag);
-                let mut said = Vec::new();
-                said.extend((rules.mode > 0).then(|| mode.label().to_uppercase()));
-                said.extend(lapped.then(|| {
-                    format!(
-                        "{} LAPS",
-                        LAP_CHOICES[rules.lap_choice as usize % LAP_CHOICES.len()]
-                    )
-                }));
-                said.push(format!("{} OPPONENTS", rules.opponents));
-                said.extend(rules.mirror.then(|| "MIRRORED".to_string()));
-                said.extend(rules.reverse.then(|| "REVERSED".to_string()));
-                let bricks = crate::menu::BRICK_RULES.get(rules.bricks as usize);
-                said.extend(
-                    bricks
-                        .filter(|_| rules.bricks > 0)
-                        .map(|bricks| format!("BRICKS {bricks}")),
-                );
-                let speed = crate::menu::SPEEDS.get(rules.speed as usize);
-                said.extend(
-                    speed
-                        .filter(|_| rules.speed > 0)
-                        .map(|speed| format!("SPEED {}", speed.0)),
-                );
                 notes.push((
                     Rect::new(320.0, MAPS_END + 8.0, 320.0, MAPS_END + 8.0 + ICON),
-                    said.join(", "),
+                    said(rules),
                     "font_ths",
                     LABEL,
                     true,
@@ -1815,27 +1819,29 @@ fn notes(
         Page::Room => {
             let room = wired.room;
             let mut notes = vec![banner(&wired.session.title)];
-            // Beside the way to the vote, the circuit the player has voted for; and
-            // what the selector under it is for.
-            let wish = wired.wish(settings, circuits);
-            let voted = match &room.ballot {
-                Some(_) => circuits.0[wish.circuit].name.as_str(),
-                None => "NONE YET",
-            };
+            // Over the selector, what it is for.
+            let ride = ROOM_TOP + ROOM_ROW * 2.0;
             notes.push((
-                Rect::new(164.0, ROOM_RACE, SCREEN.x, ROOM_RACE + ICON),
-                format!("YOUR VOTE: {voted}"),
-                "font_ths",
-                NORMAL,
-                false,
-            ));
-            notes.push((
-                Rect::new(8.0, ROOM_RIDE, 150.0, ROOM_RIDE + ICON),
+                Rect::new(ROOM_MENU.min.x + 26.0, ride, ROOM_MENU.max.x, ride + ROOM_ROW),
                 "RACING AS".to_string(),
                 "font_ths",
                 LABEL,
                 false,
             ));
+            // Under the roster, the next race: how the host would have it run, and
+            // the circuit the player has voted for.
+            let line = |n: usize| {
+                Rect::new(ROOM_ROSTER.min.x, ROOM_SAID[n], ROOM_ROSTER.max.x, ROOM_SAID[n] + 27.0)
+            };
+            let wish = wired.wish(settings, circuits);
+            let voted = match &room.ballot {
+                Some(_) => circuits.0[wish.circuit].name.as_str(),
+                None => "NONE YET",
+            };
+            if let Some(rules) = room.hosts() {
+                notes.push((line(0), said(rules), "font_ths", LABEL, true));
+            }
+            notes.push((line(1), format!("YOUR VOTE: {voted}"), "font_ths", NORMAL, true));
             // Who is here, under their minifigures: lit when ready, and under each
             // how long their way to the host takes.
             // Once anyone has scored, each has their points after their name.
@@ -1867,7 +1873,7 @@ fn notes(
                 };
                 notes.push((under, link, "font_ths", LABEL, true));
             }
-            // Beside "ready": the clock, a race that is on, how many are ready, or how
+            // Under those: the clock, a race that is on, how many are ready, or how
             // far the series has got.
             let ready = room.voters.iter().filter(|voter| voter.ready).count();
             let standing = match (room.closing, room.racing, room.series) {
@@ -1881,13 +1887,7 @@ fn notes(
                 (None, false, Some((raced, of))) => format!("RACE {} OF {of} NEXT", raced + 1),
                 (None, false, None) => String::new(),
             };
-            notes.push((
-                Rect::new(200.0, ROOM_BUTTONS, 480.0, ROOM_BUTTONS + ROOM_STEP),
-                standing,
-                "font_ths",
-                LABEL,
-                true,
-            ));
+            notes.push((line(2), standing, "font_ths", SELECTED, true));
             // What has been said, and where to say something.
             notes.push((
                 Rect::new(8.0, CHAT.min.y, CHAT.min.x, CHAT.max.y),

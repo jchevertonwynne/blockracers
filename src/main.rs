@@ -1,3 +1,4 @@
+mod arena;
 mod assets;
 mod audio;
 mod beams;
@@ -772,7 +773,9 @@ fn setup_brick_world(
         Mesh3d(meshes.add(track.build_scenery(circuits.0[settings.circuit].layout, &mut rng))),
         MeshMaterial3d(plastic.clone()),
     ));
-    if let Some(stands) = stands {
+    // Hazards that stand on nothing of ours leave nothing to draw, and a mesh of
+    // nothing is one the renderer has no room for.
+    if let Some(stands) = stands.filter(|stands| stands.0.count_vertices() > 0) {
         commands.spawn((
             Mesh3d(meshes.add(stands.0.clone())),
             MeshMaterial3d(plastic),

@@ -1,6 +1,11 @@
-//! The circuit: a closed spline resampled to evenly spaced points. Karts, projectiles and
+//! The circuit: a closed line resampled to evenly spaced points. Karts, projectiles and
 //! pickups all live in "track space" (distance along the track + lateral offset), which
 //! keeps collisions with the walls and the hills trivial.
+//!
+//! The circuits built here are laid out to be driven at the game's speeds: narrow,
+//! folded in on themselves so that one stretch runs beside, over or under another,
+//! and never straight or level for long, so that little of the road ahead is seen
+//! at once. Each is a list of corners (`cornered`).
 
 use crate::assets::materials::Surface;
 use crate::collision::Collision;
@@ -10,519 +15,137 @@ use std::collections::HashMap;
 use std::f32::consts::TAU;
 
 /// Half-width of the tarmac.
-pub const ROAD_HW: f32 = 8.0;
+pub const ROAD_HW: f32 = 6.0;
 /// Lateral offset of the inner face of the barrier.
-pub const WALL: f32 = 11.0;
+pub const WALL: f32 = 8.0;
 const KERB: f32 = 0.8;
 
-/// Control points as (x, height, z).
-const CONTROL: &[[f32; 3]] = &[
-    [0.0, 0.0, 0.0],
-    [60.0, 0.0, 0.0],
-    [120.0, 0.0, -10.0],
-    [160.0, 3.0, -50.0],
-    [150.0, 6.0, -100.0],
-    [100.0, 6.0, -120.0],
-    [60.0, 3.0, -90.0],
-    [20.0, 0.0, -110.0],
-    [-30.0, 0.0, -150.0],
-    [-90.0, 4.0, -140.0],
-    [-120.0, 8.0, -90.0],
-    [-105.0, 4.0, -50.0],
-    [-122.0, 1.0, -15.0],
-    [-108.0, 0.0, 12.0],
-    [-75.0, 0.0, 20.0],
-    [-40.0, 0.0, 6.0],
-];
-const SCALE: f32 = 1.4;
-
-/// Height of the figure of eight's bridge: more than a launched kart rises, so nothing
-/// on the road below reaches the deck.
-const DECK: f32 = 11.0;
-/// The figure of eight's control points as (x, height, z). The line runs under the
-/// bridge just after the start, round the wide east loop and up its far side, back
-/// over the bridge, and home through the kinked west loop.
-const FIGURE_EIGHT: &[[f32; 3]] = &[
-    [-30.0, 0.0, -30.0],
-    [0.0, 0.0, 0.0],
-    [60.0, 0.0, 60.0],
-    [120.0, 0.0, 85.0],
-    [180.0, 0.0, 60.0],
-    [205.0, 0.0, 0.0],
-    [180.0, 2.0, -60.0],
-    [120.0, 6.0, -85.0],
-    [60.0, DECK, -60.0],
-    [0.0, DECK, 0.0],
-    [-60.0, DECK, 60.0],
-    [-115.0, 6.0, 88.0],
-    [-175.0, 2.0, 75.0],
-    [-210.0, 0.0, 35.0],
-    [-195.0, 0.0, -10.0],
-    [-150.0, 0.0, -25.0],
-    [-140.0, 0.0, -70.0],
-    [-95.0, 0.0, -88.0],
+/// The brick circuit's corners as (x, height, z, radius): the road runs straight from
+/// each towards the next and is rounded at each to its radius, and a corner with no
+/// radius is only a height on the way (`cornered`). The first is the start. From it
+/// the road runs east under two bridges of its own, sweeps right round a corner with
+/// grass inside it, comes back round a hairpin and climbs a long S onto the first
+/// bridge; comes down round a right-hander and a hairpin to the north side, where it
+/// swings out round an island over a rise; goes round another hairpin and up onto
+/// the second bridge; and drops off the end of it into a hairpin, a left-hander over
+/// a rise and a last hairpin onto the straight.
+///
+/// No corner of these circuits is tighter than a car going flat out can be slid
+/// round (`TIGHTEST`): a hairpin is eighteen or twenty to its middle, and two bends
+/// one after the other, one each way, are gentler than that.
+const BRICK: &[[f32; 4]] = &[
+    [-52.0, 0.0, 8.0, 0.0],
+    [88.0, 0.0, 8.0, 32.0],
+    [88.0, 0.0, 92.0, 20.0], [48.0, 0.0, 92.0, 20.0],
+    [48.0, 2.5, 54.0, 24.0], [32.0, 7.0, 32.0, 24.0],
+    [32.0, 8.0, 22.0, 0.0], [32.0, 8.0, -6.0, 0.0],
+    [32.0, 7.0, -26.0, 18.0],
+    [104.0, 1.0, -26.0, 20.0], [104.0, 0.0, -66.0, 20.0],
+    [4.0, 0.0, -66.0, 18.0], [-24.0, 4.0, -98.0, 18.0], [-52.0, 0.0, -66.0, 18.0],
+    [-104.0, 0.0, -66.0, 20.0], [-104.0, 0.0, -26.0, 20.0],
+    [-16.0, 6.5, -26.0, 18.0],
+    [-16.0, 8.0, -6.0, 0.0], [-16.0, 8.0, 22.0, 0.0],
+    [-16.0, 7.6, 34.0, 0.0], [-16.0, 2.4, 46.0, 0.0],
+    [-16.0, 0.0, 92.0, 20.0], [-56.0, 0.0, 92.0, 20.0],
+    [-56.0, 3.0, 48.0, 18.0],
+    [-124.0, 0.0, 48.0, 20.0], [-124.0, 0.0, 8.0, 20.0],
 ];
 
-/// The gauntlet's control points as (x, height, z). Two long straights, and short ones
-/// between corners for the rest of the hazards to stand on (see `gauntlet`): zigzags,
-/// esses, hairpins, hills, two tunnels and a loop that climbs over its own way in.
-/// The points are close together at the corners so that the spline keeps to them.
-const GAUNTLET: &[[f32; 3]] = &[
-    [0.0, 0.0, 0.0],
-    // The start straight: the hammer and the rolling stones.
-    [9.0, 0.0, 0.0],
-    [27.0, 0.0, 0.0],
-    [63.0, 0.0, 0.0],
-    [87.0, 0.0, 0.0],
-    [123.0, 0.0, 0.0],
-    [141.0, 0.0, 0.0],
-    [150.0, 0.0, 0.0],
-    // A zigzag of two right angles.
-    [159.0, 0.0, -2.4],
-    [165.6, 0.0, -9.0],
-    [168.0, 0.0, -18.0],
-    [168.0, 0.0, -30.0],
-    [168.0, 0.0, -42.0],
-    [170.4, 0.0, -51.0],
-    [177.0, 0.0, -57.6],
-    [186.0, 0.0, -60.0],
-    // The saucer.
-    [195.0, 0.0, -60.0],
-    [213.0, 0.0, -60.0],
-    [259.0, 0.0, -60.0],
-    [277.0, 0.0, -60.0],
-    [286.0, 0.0, -60.0],
-    // Esses, then the crane.
-    [297.5, 0.0, -57.7],
-    [307.2, 0.0, -51.2],
-    [316.9, 0.0, -44.7],
-    [328.4, 0.0, -42.4],
-    [339.9, 0.0, -44.7],
-    [349.6, 0.0, -51.2],
-    [359.4, 0.0, -57.7],
-    [370.9, 0.0, -60.0],
-    [379.9, 0.0, -60.0],
-    [421.9, 0.0, -60.0],
-    [430.9, 0.0, -60.0],
-    [444.9, 0.0, -63.8],
-    [455.1, 0.0, -74.0],
-    [458.9, 0.0, -88.0],
-    [458.9, 0.0, -100.0],
-    [458.9, 0.0, -112.0],
-    // A switchback of two hairpins over a hill, which the warp pad skips.
-    [461.3, 0.8, -121.0],
-    [467.9, 1.7, -127.6],
-    [476.9, 2.5, -130.0],
-    [485.9, 3.3, -127.6],
-    [492.4, 4.2, -121.0],
-    [494.9, 5.0, -112.0],
-    [494.9, 5.0, -103.0],
-    [494.9, 5.0, -71.0],
-    [494.9, 5.0, -62.0],
-    [497.3, 4.2, -53.0],
-    [503.9, 3.3, -46.4],
-    [512.9, 2.5, -44.0],
-    [521.9, 1.7, -46.4],
-    [528.4, 0.8, -53.0],
-    [530.9, 0.0, -62.0],
-    // The cannons.
-    [530.9, 0.0, -71.0],
-    [530.9, 0.0, -89.0],
-    [530.9, 0.0, -115.0],
-    [530.9, 0.0, -133.0],
-    [530.9, 0.0, -142.0],
-    // Esses, then the lava.
-    [528.6, 0.0, -153.5],
-    [522.1, 0.0, -163.2],
-    [515.6, 0.0, -172.9],
-    [513.3, 0.0, -184.4],
-    [515.6, 0.0, -195.9],
-    [522.1, 0.0, -205.6],
-    [528.6, 0.0, -215.4],
-    [530.9, 0.0, -226.9],
-    [530.9, 0.0, -235.9],
-    [530.9, 0.0, -253.9],
-    [530.9, 0.0, -297.4],
-    [530.9, 0.0, -315.4],
-    [530.9, 0.0, -324.4],
-    [527.6, 0.0, -336.4],
-    [518.9, 0.0, -345.2],
-    [506.9, 0.0, -348.4],
-    // The force field.
-    [497.9, 0.0, -348.4],
-    [479.9, 0.0, -348.4],
-    [443.9, 0.0, -348.4],
-    [425.9, 0.0, -348.4],
-    [416.9, 0.0, -348.4],
-    // A kink, the smoke, and esses in a tunnel.
-    [407.8, 0.0, -347.0],
-    [399.6, 0.0, -343.0],
-    [392.3, 0.0, -337.8],
-    [366.1, 0.0, -319.4],
-    [358.7, 0.0, -314.3],
-    [350.5, 0.0, -310.2],
-    [341.5, 0.0, -308.8],
-    [326.7, 0.0, -312.5],
-    [315.3, 0.0, -322.5],
-    [303.8, 0.0, -332.5],
-    [289.1, 0.0, -336.1],
-    [274.3, 0.0, -332.5],
-    [262.8, 0.0, -322.5],
-    [251.4, 0.0, -312.5],
-    [236.6, 0.0, -308.8],
-    // The other long straight: the ghost and the dragon.
-    [227.6, 0.0, -308.8],
-    [209.6, 0.0, -308.8],
-    [173.6, 0.0, -308.8],
-    [129.6, 0.0, -308.8],
-    [93.6, 0.0, -308.8],
-    [75.6, 0.0, -308.8],
-    [66.6, 0.0, -308.8],
-    // A zigzag the other way, over a hump.
-    [57.6, 0.7, -311.3],
-    [51.0, 1.4, -317.8],
-    [48.6, 2.0, -326.8],
-    [48.6, 2.7, -335.8],
-    [48.6, 3.0, -357.8],
-    [48.6, 2.5, -366.8],
-    [46.2, 2.1, -375.8],
-    [39.6, 1.6, -382.4],
-    [30.6, 1.2, -384.8],
-    [21.6, 0.8, -384.8],
-    [-0.4, 0.0, -384.8],
-    [-9.4, 0.0, -384.8],
-    // Two hairpins out into the middle and back.
-    [-19.4, 0.0, -382.2],
-    [-26.7, 0.0, -374.8],
-    [-29.4, 0.0, -364.8],
-    [-29.4, 0.0, -355.8],
-    [-29.4, 0.0, -303.8],
-    [-29.4, 0.0, -294.8],
-    [-31.8, 0.0, -285.8],
-    [-38.4, 0.0, -279.3],
-    [-47.4, 0.0, -276.8],
-    [-56.4, 0.0, -279.3],
-    [-63.0, 0.0, -285.8],
-    [-65.4, 0.0, -294.8],
-    [-65.4, 0.0, -303.8],
-    [-65.4, 0.0, -355.8],
-    [-65.4, 0.0, -364.8],
-    [-68.1, 0.0, -374.8],
-    [-75.4, 0.0, -382.2],
-    [-85.4, 0.0, -384.8],
-    [-100.4, 0.0, -384.8],
-    [-115.4, 0.0, -384.8],
-    [-125.4, 0.0, -382.2],
-    [-132.7, 0.0, -374.8],
-    [-135.4, 0.0, -364.8],
-    [-135.4, 0.0, -347.3],
-    [-135.4, 0.0, -329.8],
-    [-137.8, 0.0, -320.8],
-    [-144.4, 0.0, -314.3],
-    [-153.4, 0.0, -311.8],
-    [-162.4, 0.0, -314.3],
-    [-169.0, 0.0, -320.8],
-    [-171.4, 0.0, -329.8],
-    [-171.4, 0.0, -347.3],
-    [-171.4, 0.0, -364.8],
-    [-174.1, 0.0, -374.8],
-    [-181.4, 0.0, -382.2],
-    [-191.4, 0.0, -384.8],
-    // Esses.
-    [-201.4, 0.0, -384.8],
-    [-211.4, 0.0, -384.8],
-    [-222.9, 0.0, -382.6],
-    [-232.6, 0.0, -376.1],
-    [-242.3, 0.0, -369.6],
-    [-253.8, 0.0, -367.3],
-    [-265.3, 0.0, -369.6],
-    [-275.0, 0.0, -376.1],
-    [-284.7, 0.0, -382.6],
-    [-296.2, 0.0, -384.8],
-    // Under the bridge, round a climbing loop and back over it.
-    [-305.2, 0.0, -384.8],
-    [-323.2, 0.0, -384.8],
-    [-349.1, 0.0, -384.8],
-    [-367.1, 0.0, -384.8],
-    [-376.1, 0.0, -384.8],
-    [-398.6, 1.3, -390.9],
-    [-415.1, 2.6, -407.3],
-    [-421.1, 3.9, -429.8],
-    [-415.1, 5.2, -452.3],
-    [-398.6, 6.5, -468.8],
-    [-376.1, 7.8, -474.8],
-    [-353.6, 9.1, -468.8],
-    [-337.2, 10.4, -452.3],
-    [-331.1, 11.0, -429.8],
-    [-331.1, 11.0, -420.8],
-    [-331.1, 11.0, -402.8],
-    [-331.1, 11.0, -376.8],
-    [-331.1, 11.0, -358.8],
-    [-331.1, 11.0, -349.8],
-    // Down through esses, and through more in a tunnel.
-    [-329.1, 9.5, -334.3],
-    [-323.1, 8.0, -319.8],
-    [-316.0, 6.0, -300.3],
-    [-316.0, 4.0, -279.4],
-    [-323.1, 2.0, -259.8],
-    [-329.1, 0.5, -245.4],
-    [-331.1, 0.0, -229.8],
-    [-331.1, 0.0, -217.8],
-    [-331.1, 0.0, -205.8],
-    [-333.6, 0.0, -192.2],
-    [-340.5, 0.0, -180.1],
-    [-347.4, 0.0, -168.1],
-    [-349.9, 0.0, -154.4],
-    [-347.4, 0.0, -140.7],
-    [-340.5, 0.0, -128.7],
-    [-333.6, 0.0, -116.7],
-    [-331.1, 0.0, -103.0],
-    // The barrels.
-    [-331.1, 0.0, -94.0],
-    [-331.1, 0.0, -76.0],
-    [-331.1, 0.0, -45.0],
-    [-331.1, 0.0, -27.0],
-    [-331.1, 0.0, -18.0],
-    [-328.7, 0.0, -9.0],
-    [-322.1, 0.0, -2.4],
-    [-313.1, 0.0, 0.0],
-    // The pillar.
-    [-304.1, 0.0, 0.0],
-    [-286.1, 0.0, 0.0],
-    [-260.1, 0.0, 0.0],
-    [-242.1, 0.0, 0.0],
-    [-233.1, 0.0, 0.0],
-    // Esses.
-    [-224.9, 0.0, -1.4],
-    [-217.7, 0.0, -5.6],
-    [-212.4, 0.0, -12.0],
-    [-205.7, 0.0, -19.4],
-    [-196.6, 0.0, -23.5],
-    [-186.6, 0.0, -23.5],
-    [-177.5, 0.0, -19.4],
-    [-170.8, 0.0, -12.0],
-    [-165.4, 0.0, -5.6],
-    [-158.2, 0.0, -1.4],
-    [-150.0, 0.0, 0.0],
-    // The ark and the curse, and home.
-    [-141.0, 0.0, 0.0],
-    [-123.0, 0.0, 0.0],
-    [-87.0, 0.0, 0.0],
-    [-63.0, 0.0, 0.0],
-    [-27.0, 0.0, 0.0],
-    [-9.0, 0.0, 0.0],
+/// How far over the road below a bridge's road must be: more than a launched kart
+/// rises, so nothing on the road below reaches the deck.
+const DECK: f32 = 8.0;
+/// The tightest the middle of a road is turned, but the gauntlet's, which has little
+/// that is tight: a car sliding flat out turns in a circle of eighteen
+/// (`physics::step`), and has the width of the road besides.
+#[cfg(test)]
+const TIGHTEST: f32 = 17.5;
+
+/// The figure of eight's corners, as the brick circuit's are: two lobes with a
+/// crossing on the level between them, where the road meets itself at a right angle.
+/// From the start a sweeping hairpin and an S lead up onto a bridge over the way to
+/// the crossing; the road comes down off it round two right-handers and doubles back
+/// under it, over the crossing and a hump that drops away, and out into the east
+/// lobe: a kink, a sweeping hairpin, a hairpin over a rise and another back; and so
+/// over the crossing again, the other way, to the start.
+const FIGURE_EIGHT: &[[f32; 4]] = &[
+    [-86.0, 0.0, -44.0, 0.0],
+    [-160.0, 0.0, -44.0, 22.0], [-160.0, 0.0, 0.0, 22.0],
+    [-114.0, 2.0, 0.0, 28.0], [-82.0, 6.5, 40.0, 28.0],
+    [-66.0, 8.0, 40.0, 0.0], [-14.0, 8.0, 40.0, 0.0],
+    [6.0, 7.0, 40.0, 20.0], [6.0, 2.0, 84.0, 20.0], [-84.0, 0.0, 84.0, 20.0],
+    [0.0, 0.0, 0.0, 0.0], [11.0, 0.0, -11.0, 0.0], [21.0, 2.6, -21.0, 0.0], [24.0, 0.0, -24.0, 0.0],
+    [44.0, 0.0, -44.0, 24.0], [72.0, 0.0, -44.0, 20.0], [90.0, 2.0, -56.0, 20.0],
+    [148.0, 2.0, -56.0, 20.0], [148.0, 0.0, -16.0, 20.0],
+    [54.0, 5.0, -16.0, 20.0], [54.0, 5.0, 24.0, 20.0],
+    [154.0, 0.0, 24.0, 20.0], [154.0, 0.0, 64.0, 20.0],
+    [64.0, 0.0, 64.0, 24.0], [-44.0, 0.0, -44.0, 24.0],
+];
+
+/// The gauntlet's corners, as the brick circuit's are: eight rows, a stretch in each
+/// half of a row for a hazard to stand on (see `gauntlet`), with a hairpin from each
+/// row to the next and a bend or two in the middle of every row but the first, so
+/// that the next hazard is not seen until it is come to. From the end of the last row
+/// the road climbs onto a viaduct that winds back over the western hairpins to the
+/// first. Two of the eastern hairpins are tunnels.
+const GAUNTLET: &[[f32; 4]] = &[
+    [-20.0, 0.0, -119.0, 0.0],
+    [100.0, 0.0, -119.0, 17.0], [100.0, 0.0, -85.0, 17.0],
+    [58.0, 0.0, -85.0, 30.0], [28.0, 0.0, -95.0, 30.0], [-28.0, 0.0, -75.0, 30.0], [-58.0, 0.0, -85.0, 30.0],
+    [-100.0, 0.0, -85.0, 17.0], [-100.0, 0.0, -51.0, 17.0],
+    [-58.0, 0.0, -51.0, 30.0], [-28.0, 3.5, -41.0, 30.0], [28.0, 3.5, -61.0, 30.0], [58.0, 0.0, -51.0, 30.0],
+    [100.0, 0.0, -51.0, 17.0], [100.0, 0.0, -17.0, 17.0],
+    [58.0, 0.0, -17.0, 30.0], [28.0, 0.0, -27.0, 30.0], [-28.0, 0.0, -7.0, 30.0], [-58.0, 0.0, -17.0, 30.0],
+    [-100.0, 0.0, -17.0, 17.0], [-100.0, 0.0, 17.0, 17.0],
+    [-58.0, 0.0, 17.0, 30.0], [-28.0, 0.0, 27.0, 30.0], [28.0, 0.0, 7.0, 30.0], [58.0, 0.0, 17.0, 30.0],
+    [100.0, 0.0, 17.0, 17.0], [100.0, 0.0, 51.0, 17.0],
+    [58.0, 0.0, 51.0, 30.0], [28.0, 3.5, 41.0, 30.0], [-28.0, 3.5, 61.0, 30.0], [-58.0, 0.0, 51.0, 30.0],
+    [-100.0, 0.0, 51.0, 17.0], [-100.0, 0.0, 85.0, 17.0],
+    [-58.0, 0.0, 85.0, 30.0], [-28.0, 0.0, 95.0, 30.0], [28.0, 0.0, 75.0, 30.0], [58.0, 0.0, 85.0, 30.0],
+    [100.0, 0.0, 85.0, 17.0], [100.0, 0.0, 119.0, 17.0],
+    [58.0, 0.0, 119.0, 30.0], [28.0, 0.0, 109.0, 30.0], [-28.0, 1.5, 129.0, 30.0], [-58.0, 3.5, 119.0, 30.0],
+    [-96.0, 6.5, 119.0, 14.0], [-96.0, 8.0, 102.0, 0.0],
+    [-96.0, 8.0, 60.0, 30.0], [-110.0, 9.0, 34.0, 30.0], [-110.0, 11.0, 0.0, 0.0], [-110.0, 9.0, -34.0, 30.0], [-96.0, 8.0, -60.0, 30.0],
+    [-96.0, 8.0, -102.0, 0.0], [-96.0, 6.0, -119.0, 14.0], [-44.0, 0.0, -119.0, 0.0],
 ];
 /// The gauntlet's tunnels: where each begins and ends, as (x, z).
 const GAUNTLET_TUNNELS: &[[[f32; 2]; 2]] = &[
-    [[341.5, -308.8], [236.6, -308.8]],
-    [[-331.1, -213.8], [-331.1, -95.0]],
+    [[55.0, -51.0], [55.0, -17.0]],
+    [[55.0, 85.0], [55.0, 119.0]],
 ];
 
-/// A piece of a circuit that is drawn rather than plotted, from where the last one
-/// left off.
-enum Leg {
-    /// Straight on for a length, climbing by the second.
-    Straight(f32, f32),
-    /// Round to the right through so many degrees, or to the left if they are fewer
-    /// than none, at a radius, climbing by the last.
-    Turn(f32, f32, f32),
-}
-use Leg::{Straight, Turn};
-
-/// The helter skelter, from the start line and back to it: esses, rollers, a tunnel
-/// that winds, switchbacks over a hill, a swing out round an island, a spiral of two
-/// turns up over itself, the long way down from the top of it, a jump, a tunnel with a
-/// kink in it, a crest, a chicane and a hairpin with rollers after it, and more esses
-/// on the way home. The lengths of the straights before the island and either side of
-/// the crest are what bring it back to where it began.
-const HELTER: &[Leg] = &[
-    Straight(170.0, 0.0),
-    // Esses.
-    Turn(-40.0, 34.0, 0.0),
-    Turn(80.0, 34.0, 0.0),
-    Turn(-80.0, 34.0, 0.0),
-    Turn(40.0, 34.0, 0.0),
-    // Rollers.
-    Straight(15.0, 0.0),
-    Straight(15.0, ROLLER),
-    Straight(15.0, -ROLLER),
-    Straight(15.0, ROLLER),
-    Straight(15.0, -ROLLER),
-    Straight(15.0, ROLLER),
-    Straight(15.0, -ROLLER),
-    Straight(15.0, ROLLER),
-    Straight(15.0, -ROLLER),
-    Straight(15.0, 0.0),
-    Turn(90.0, 60.0, 0.0),
-    Straight(30.0, 0.0),
-    // The winding tunnel.
-    Turn(-35.0, 55.0, 0.0),
-    Turn(70.0, 55.0, 0.0),
-    Turn(-35.0, 55.0, 0.0),
-    Straight(30.0, 0.0),
-    // Switchbacks over a hill.
-    Turn(-90.0, 22.0, 0.0),
-    Straight(70.0, 3.0),
-    Turn(180.0, 22.0, 2.0),
-    Straight(70.0, 1.0),
-    Turn(-180.0, 22.0, -1.0),
-    Straight(70.0, -3.0),
-    Turn(90.0, 22.0, -2.0),
-    Straight(110.23, 0.0),
-    // Out round the island, which the first of the byways goes straight past.
-    Turn(-50.0, 45.0, 0.0),
-    Straight(20.0, 0.0),
-    Turn(100.0, 45.0, 0.0),
-    Straight(20.0, 0.0),
-    Turn(-50.0, 45.0, 0.0),
-    Straight(40.0, 0.0),
-    Turn(90.0, 50.0, 0.0),
-    Straight(80.0, 0.0),
-    // The spiral: twice round, each turn far enough over the last to drive under.
-    Turn(720.0, 42.0, 2.0 * SPIRAL_RISE),
-    Straight(50.0, 0.0),
-    // The long way down.
-    Turn(-60.0, 70.0, -5.0),
-    Turn(150.0, 90.0, -17.0),
-    Straight(70.0, -6.0),
-    // The run up to the jump, and the landing.
-    Straight(150.0, 0.0),
-    Straight(60.0, 0.0),
-    // The tunnel with a kink in it.
-    Straight(40.0, 0.0),
-    Turn(-30.0, 60.0, 0.0),
-    Turn(30.0, 60.0, 0.0),
-    Straight(60.0, 0.0),
-    Turn(-90.0, 30.0, 0.0),
-    // A straight with a crest in the middle of it.
-    Straight(90.85, 0.0),
-    Straight(20.0, 3.0),
-    Straight(20.0, -3.0),
-    Straight(90.85, 0.0),
-    // Out through a chicane to a hairpin, whose inside the other byway cuts across,
-    // and back over rollers.
-    Turn(-90.0, 30.0, 0.0),
-    Straight(50.0, 0.0),
-    Turn(30.0, 40.0, 0.0),
-    Turn(-60.0, 40.0, 0.0),
-    Turn(30.0, 40.0, 0.0),
-    Straight(80.0, 0.0),
-    Turn(180.0, 30.0, 0.0),
-    Straight(35.0, 0.0),
-    Straight(15.0, ROLLER),
-    Straight(15.0, -ROLLER),
-    Straight(15.0, ROLLER),
-    Straight(15.0, -ROLLER),
-    Straight(15.0, 0.0),
-    // Esses, a kink, and home.
-    Turn(40.0, 36.0, 0.0),
-    Turn(-80.0, 36.0, 0.0),
-    Turn(80.0, 36.0, 0.0),
-    Turn(-40.0, 36.0, 0.0),
-    Straight(120.0, 0.0),
-    Turn(25.0, 50.0, 0.0),
-    Turn(-25.0, 50.0, 0.0),
-    Straight(30.0, 0.0),
-    Turn(90.0, 45.0, 0.0),
-    Straight(70.0, 0.0),
+/// The helter skelter's corners, as the brick circuit's are. From the start: the
+/// jump, a swing out round an island down the east side, a tunnel that winds along
+/// the south, a hairpin through another tunnel, and a road that climbs back and
+/// forth up the west side to the top of the tower, twenty-one up; then twice round the
+/// tower and down, each turn under the one before, out at the bottom, and back along
+/// the north over rollers.
+const HELTER: &[[f32; 4]] = &[
+    [-58.0, 0.0, -94.0, 0.0], [-10.0, 0.0, -94.0, 0.0], [100.0, 0.0, -94.0, 18.0],
+    [100.0, 0.0, -34.0, 18.0], [136.0, 0.0, 2.0, 18.0], [100.0, 0.0, 38.0, 18.0],
+    [100.0, 0.0, 86.0, 18.0],
+    [62.0, 0.0, 86.0, 30.0], [40.0, 0.0, 78.0, 30.0], [10.0, 0.0, 78.0, 30.0], [-12.0, 0.0, 86.0, 30.0],
+    [-100.0, 0.0, 86.0, 18.0], [-100.0, 0.0, 50.0, 18.0], [-46.0, 0.0, 50.0, 0.0],
+    [-14.0, 4.5, 50.0, 18.0], [-14.0, 6.5, 14.0, 18.0],
+    [-100.0, 12.0, 14.0, 18.0], [-100.0, 13.5, -22.0, 18.0],
+    [-56.0, 16.0, -22.0, 30.0], [-38.0, 17.6, -30.0, 30.0], [-20.0, 19.3, -30.0, 30.0], [-2.0, 20.6, -22.0, 30.0],
+    [14.0, 21.0, -22.0, 0.0], [56.0, 21.0, -22.0, 0.0],
+    [80.0, 19.688, -22.0, 24.0], [80.0, 17.063, 26.0, 24.0], [32.0, 14.438, 26.0, 24.0], [32.0, 11.813, -22.0, 24.0],
+    [80.0, 9.188, -22.0, 24.0], [80.0, 6.563, 26.0, 24.0], [32.0, 3.938, 26.0, 24.0], [32.0, 1.313, -22.0, 24.0],
+    [56.0, 0.0, -22.0, 0.0], [80.0, 0.0, -22.0, 18.0], [80.0, 0.0, -58.0, 18.0],
+    [40.0, 0.0, -58.0, 0.0], [25.0, 1.6, -58.0, 0.0], [10.0, 0.0, -58.0, 0.0], [-5.0, 1.6, -58.0, 0.0],
+    [-20.0, 0.0, -58.0, 0.0], [-35.0, 1.6, -58.0, 0.0], [-50.0, 0.0, -58.0, 0.0],
+    [-100.0, 0.0, -58.0, 18.0], [-100.0, 0.0, -94.0, 18.0],
 ];
-/// How high the helter skelter's rollers are.
-const ROLLER: f32 = 1.5;
-/// How far each turn of the helter skelter's spiral is over the one before.
-const SPIRAL_RISE: f32 = 14.0;
+/// How far each turn of the helter skelter's spiral is under the one before.
+#[cfg(test)]
+const SPIRAL_RISE: f32 = 10.5;
 /// The helter skelter's tunnels: where each begins and ends, as (x, z).
 const HELTER_TUNNELS: &[[[f32; 2]; 2]] = &[
-    [[511.1, 74.1], [511.1, 200.3]],
-    [[216.6, 426.0], [200.5, 306.0]],
+    [[72.0, 86.0], [-34.0, 86.0]],
+    [[-46.0, 86.0], [-46.0, 50.0]],
 ];
 /// Where the lip of the helter skelter's jump is, as (x, z).
-const HELTER_JUMPS: &[[f32; 2]] = &[[216.6, 496.1]];
-
-/// The arenas: short circuits for `net::modes`' battle, where what matters is how
-/// often cars meet and how far along the road a shot can be seen to go, and not how
-/// the lap is to drive. All three are flat but for what each is about.
-///
-/// The bowl's control points as (x, height, z): two short straights and two banked
-/// half circles, the smallest lap that six cars fit round, so that nobody is ever
-/// out of reach. A cut straight across its middle lets a car come out in front of
-/// whoever was behind it.
-const BOWL: &[[f32; 3]] = &[
-    [-40.0, 0.0, 0.0],
-    [40.0, 0.0, 0.0],
-    [85.0, 0.0, -15.0],
-    [100.0, 0.0, -50.0],
-    [85.0, 0.0, -85.0],
-    [40.0, 0.0, -100.0],
-    [-40.0, 0.0, -100.0],
-    [-85.0, 0.0, -85.0],
-    [-100.0, 0.0, -50.0],
-    [-85.0, 0.0, -15.0],
-];
-/// The flyover's: a small figure of eight, the road crossing itself by a bridge.
-/// Each loop is in sight of the other across the crossing, and a car is safe from
-/// those on the other level, which is somewhere to get away to.
-const FLYOVER: &[[f32; 3]] = &[
-    [-35.0, 0.0, -35.0],
-    [0.0, 0.0, 0.0],
-    [35.0, 0.0, 35.0],
-    [70.0, 0.0, 50.0],
-    [110.0, 0.0, 35.0],
-    [122.0, 0.0, 0.0],
-    [110.0, 2.0, -35.0],
-    [70.0, 6.0, -50.0],
-    [35.0, DECK, -35.0],
-    [0.0, DECK, 0.0],
-    [-35.0, DECK, 35.0],
-    [-70.0, 6.0, 50.0],
-    [-110.0, 2.0, 35.0],
-    [-122.0, 0.0, 0.0],
-    [-110.0, 0.0, -35.0],
-    [-70.0, 0.0, -50.0],
-];
-/// The switchback's: four straights side by side, joined by hairpins, and the way
-/// back round the end of them. A shot has the length of a straight to find its
-/// mark in, a car coming the other way is one barrier off, and a gap between the
-/// two middle straights lets one be swapped for the other.
-const SWITCHBACK: &[[f32; 3]] = &[
-    [-70.0, 0.0, 0.0],
-    [-42.0, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
-    [42.0, 0.0, 0.0],
-    [60.0, 0.0, 0.0],
-    [72.0, 0.0, -3.2],
-    [80.8, 0.0, -12.0],
-    [84.0, 0.0, -24.0],
-    [80.8, 0.0, -36.0],
-    [72.0, 0.0, -44.8],
-    [60.0, 0.0, -48.0],
-    [42.0, 0.0, -48.0],
-    [0.0, 0.0, -48.0],
-    [-42.0, 0.0, -48.0],
-    [-60.0, 0.0, -48.0],
-    [-72.0, 0.0, -51.2],
-    [-80.8, 0.0, -60.0],
-    [-84.0, 0.0, -72.0],
-    [-80.8, 0.0, -84.0],
-    [-72.0, 0.0, -92.8],
-    [-60.0, 0.0, -96.0],
-    [-42.0, 0.0, -96.0],
-    [0.0, 0.0, -96.0],
-    [42.0, 0.0, -96.0],
-    [60.0, 0.0, -96.0],
-    [72.0, 0.0, -99.2],
-    [80.8, 0.0, -108.0],
-    [84.0, 0.0, -120.0],
-    [80.8, 0.0, -132.0],
-    [72.0, 0.0, -140.8],
-    [60.0, 0.0, -144.0],
-    [42.0, 0.0, -144.0],
-    [0.0, 0.0, -144.0],
-    [-42.0, 0.0, -144.0],
-    [-70.0, 0.0, -144.0],
-    [-121.0, 0.0, -123.0],
-    [-142.0, 0.0, -72.0],
-    [-121.0, 0.0, -21.0],
-];
+const HELTER_JUMPS: &[[f32; 2]] = &[[14.0, -94.0]];
 
 /// A way off a circuit's road and back onto it further round, straight from one place
 /// on the racing line to another, each so far round the lap: how far its tarmac and
@@ -551,73 +174,74 @@ struct Extras {
     banks: &'static [(f32, f32, f32)],
 }
 
-/// The brick circuit's: a ridge road straight across the dip, the last corner's grass,
-/// and the hill's two sweeps banked.
+/// The brick circuit's: a way straight on where the road swings out round the island,
+/// the grass inside the first corner, and its two hairpins on the east side banked.
 const BRICK_EXTRAS: Extras = Extras {
     byways: &[Byway {
-        from: 410.0,
-        to: 524.0,
-        road: 5.0,
-        wall: 7.0,
+        from: 534.0,
+        to: 626.0,
+        road: 4.0,
+        wall: 5.5,
         bumps: 0.0,
         covered: false,
         taken: 0.4,
     }],
-    infields: &[(924.0, 996.0)],
-    pads: &[(60.0, 0.0), (570.0, 0.0)],
-    banks: &[(236.0, 330.0, 0.15), (606.0, 644.0, 0.15)],
+    infields: &[(108.0, 158.0)],
+    pads: &[(742.0, 0.0), (498.0, 0.0)],
+    banks: &[(191.0, 252.0, 0.15), (400.0, 462.0, 0.15)],
 };
-/// The figure of eight's: a cut across the west loop's kink, the grass inside that
-/// loop's far end, and the east loop banked.
+/// The figure of eight's: a way across the inside of the east lobe's middle hairpin,
+/// at a right angle to the road and through a shed that hides it, and the first
+/// hairpin of each lobe banked.
 const FIGURE_EIGHT_EXTRAS: Extras = Extras {
     byways: &[Byway {
-        from: 956.0,
-        to: 1096.0,
-        road: 5.0,
-        wall: 7.0,
+        from: 708.0,
+        to: 822.0,
+        road: 4.0,
+        wall: 5.5,
         bumps: 0.0,
-        covered: false,
-        taken: 0.4,
+        covered: true,
+        taken: 0.25,
     }],
-    infields: &[(876.0, 936.0)],
-    pads: &[(50.0, 0.0), (240.0, 0.0)],
-    banks: &[(180.0, 320.0, 0.15)],
+    infields: &[],
+    pads: &[(690.0, 0.0), (832.0, 0.0)],
+    banks: &[(53.0, 120.0, 0.15), (616.0, 677.0, 0.15)],
 };
-/// The gauntlet's: a gap between the legs of a hairpin, the grass inside the corner
-/// after the lava, and the climbing loop banked.
+/// The gauntlet's: a way across the inside of its first western hairpin, through a
+/// shed, and two of its eastern hairpins banked.
 const GAUNTLET_EXTRAS: Extras = Extras {
     byways: &[Byway {
-        from: 1970.0,
-        to: 2060.0,
-        road: 5.0,
-        wall: 6.5,
+        from: 294.0,
+        to: 414.0,
+        road: 4.0,
+        wall: 5.5,
         bumps: 0.0,
-        covered: false,
+        covered: true,
         taken: 0.3,
     }],
-    infields: &[(990.0, 1024.0)],
-    pads: &[(1904.0, 0.0), (2554.0, 0.0)],
-    banks: &[(2330.0, 2490.0, 0.15)],
+    infields: &[],
+    pads: &[(20.0, 0.0), (1070.0, 0.0)],
+    banks: &[(104.0, 155.0, 0.15), (982.0, 1033.0, 0.15)],
 };
 /// The helter skelter's. One byway goes straight on where the road swings out round
-/// the island: the shorter way, but narrow and bumpy. The other cuts across the inside
-/// of the hairpin at a right angle to the road, through a shed that hides it. The
-/// first corner and the one before the spiral have grass inside them, and the spiral
-/// and the sweep down from it are banked.
+/// the island: the shorter way, but narrow, with a bump in it. The other cuts across
+/// the inside of the hairpin half way up the climb at a right angle to the road,
+/// through a shed that hides it, and is as steep as a ramp. The corners at either end
+/// of the east side have grass inside them, and the spiral is banked.
 const HELTER_EXTRAS: Extras = Extras {
     byways: &[
         Byway {
-            from: 1279.0,
-            to: 1476.0,
-            road: 6.0,
-            wall: 8.5,
+            from: 202.0,
+            to: 310.0,
+            road: 4.0,
+            wall: 5.5,
             bumps: 1.2,
             covered: false,
             taken: 0.4,
         },
         Byway {
-            from: 3509.0,
-            to: 3653.0,
+            from: 728.0,
+            to: 808.0,
             road: 4.0,
             wall: 5.5,
             bumps: 0.0,
@@ -625,48 +249,16 @@ const HELTER_EXTRAS: Extras = Extras {
             taken: 0.25,
         },
     ],
-    infields: &[(462.0, 557.0), (1516.0, 1594.0)],
-    pads: &[(140.0, 0.0), (1200.0, 0.0), (3120.0, 0.0)],
-    banks: &[(1690.0, 2190.0, 0.12), (2335.0, 2550.0, 0.15)],
+    infields: &[(140.0, 168.0), (332.0, 360.0)],
+    pads: &[(8.0, 0.0), (1311.0, 0.0)],
+    banks: &[(950.0, 1230.0, 0.12)],
 };
-/// The bowl's: the cut across its middle, a pad on each straight and both ends banked.
-const BOWL_EXTRAS: Extras = Extras {
-    byways: &[Byway {
-        from: 20.0,
-        to: 316.0,
-        road: 5.0,
-        wall: 7.0,
-        bumps: 0.0,
-        covered: false,
-        taken: 0.25,
-    }],
-    infields: &[],
-    pads: &[(60.0, 0.0), (275.0, 0.0)],
-    banks: &[(90.0, 245.0, 0.15), (345.0, 500.0, 0.15)],
-};
-/// The flyover's: a pad on the way into each loop, and the low end of the loop the
-/// bridge is climbed from banked.
-const FLYOVER_EXTRAS: Extras = Extras {
+/// An arena's: it has no road for any of these to be on.
+const ARENA_EXTRAS: Extras = Extras {
     byways: &[],
     infields: &[],
-    pads: &[(120.0, 0.0), (610.0, 0.0)],
-    banks: &[(140.0, 228.0, 0.15)],
-};
-/// The switchback's: the gap between its two middle straights, a pad on the first
-/// straight and the last, and the way back banked.
-const SWITCHBACK_EXTRAS: Extras = Extras {
-    byways: &[Byway {
-        from: 266.0,
-        to: 460.0,
-        road: 7.5,
-        wall: 9.5,
-        bumps: 0.0,
-        covered: false,
-        taken: 0.25,
-    }],
-    infields: &[],
-    pads: &[(70.0, 0.0), (656.0, 0.0)],
-    banks: &[(750.0, 925.0, 0.12)],
+    pads: &[],
+    banks: &[],
 };
 /// How many samples a bank takes to come up to its steepest, and to go down again.
 const BANK_EASE: f32 = 12.0;
@@ -676,7 +268,7 @@ pub const PAD_WIDTH: f32 = 7.0;
 /// How long each bump of a byway is, and how far from the byway's ends they keep, so
 /// that it is level where it leaves the road and comes back to it.
 const BUMP_LENGTH: f32 = 20.0;
-const BUMP_MARGIN: f32 = 40.0;
+const BUMP_MARGIN: f32 = 30.0;
 /// How much the grass inside a corner slows a car, where the verge's is 20.
 const LAWN_DRAG: f32 = 30.0;
 /// How many samples a lap zone is kept from the ends of a byway or an infield.
@@ -689,49 +281,6 @@ const BYWAY_LIFT: f32 = 0.01;
 const SHED_INSET: f32 = 12.0;
 const SHED_HEIGHT: f32 = 6.0;
 const SHED_THICK: f32 = 1.0;
-
-/// How far apart the points of a drawn circuit are put, at most: close and even, so
-/// that the spline keeps to the straights and the arcs.
-const DRAWN_STEP: f32 = 10.0;
-
-/// The control points of a circuit drawn as `legs`, as (x, height, z): it sets off
-/// from the origin along x. The last leg's end is left to the first one's start.
-fn drawn(legs: &[Leg]) -> Vec<[f32; 3]> {
-    let (mut at, mut height, mut heading) = (Vec2::ZERO, 0.0, 0.0f32);
-    let mut points = Vec::new();
-    for leg in legs {
-        match *leg {
-            Straight(length, rise) => {
-                let count = (length / DRAWN_STEP).ceil().max(1.0);
-                let along = Vec2::from_angle(heading) * length;
-                for k in 0..count as usize {
-                    let t = k as f32 / count;
-                    let p = at + along * t;
-                    points.push([p.x, height + rise * t, p.y]);
-                }
-                (at, height) = (at + along, height + rise);
-            }
-            Turn(degrees, radius, rise) => {
-                let angle = degrees.to_radians();
-                // The centre is off to the side turned to.
-                let out =
-                    |heading: f32| Vec2::from_angle(heading).perp() * -radius * angle.signum();
-                let centre = at - out(heading);
-                let count = (angle.abs() * radius / DRAWN_STEP)
-                    .max(degrees.abs() / 30.0)
-                    .ceil();
-                for k in 0..count as usize {
-                    let t = k as f32 / count;
-                    let p = centre + out(heading + angle * t);
-                    points.push([p.x, height + rise * t, p.y]);
-                }
-                heading += angle;
-                (at, height) = (centre + out(heading), height + rise);
-            }
-        }
-    }
-    points
-}
 
 /// A jump, from the foot of its ramp: the road curves up to a lip, drops into a dip,
 /// and comes up again to a lower lip with a slope down from it to land on. The dip's
@@ -770,6 +319,34 @@ fn jump_height(along: f32) -> f32 {
     0.0
 }
 
+/// How many samples round the lap two stretches of road must be from each other to
+/// be two stretches, and not the one road going round a corner.
+const STRETCH: usize = 30;
+/// How near each other two stretches' middles are where the road crosses itself, and
+/// how many samples either side of that either road is looked at for the other.
+const CROSSING_NEAR: f32 = 1.5;
+const CROSSING_SAMPLES: usize = 16;
+/// How far apart the checkpoint gates are, about, and how far a gate reaches below
+/// the road and above it.
+const GATE_SPACING: f32 = 32.0;
+const GATE_REACH: (f32, f32) = (2.0, 6.0);
+/// How far across a lap zone is.
+const ZONE_RADIUS: f32 = WALL + 3.0;
+
+/// A corner tighter than this has a wall inside it, this high and this thick, if the
+/// wall would be this many samples long or longer; none stands this near the line.
+const SCREEN_TURN: f32 = 1.0 / 31.0;
+const SCREEN_HEIGHT: f32 = 6.0;
+const SCREEN_THICK: f32 = 1.0;
+const SCREEN_SHORTEST: usize = 6;
+const SCREEN_OFF_LINE: usize = 12;
+
+/// How many trees and bricks are scattered round a circuit, about, and how far out
+/// from its road they go, or from an arena's floor.
+const SCATTERED: usize = 520;
+const SCATTER_ROUND: f32 = 45.0;
+const ARENA_ROUND: f32 = 100.0;
+
 /// How high a tunnel's roof is over its road, and how thick its walls and roof are.
 const TUNNEL_HEIGHT: f32 = 8.5;
 const TUNNEL_THICK: f32 = 1.6;
@@ -782,18 +359,35 @@ pub enum Layout {
     FigureEight,
     Gauntlet,
     HelterSkelter,
-    /// The arenas, for a battle (`Layout::ARENAS`).
-    Bowl,
-    Flyover,
-    Switchback,
+    /// The arenas (`Layout::ARENAS`): places to fight in, laid out in `arena`.
+    Yard,
+    Crossroads,
+    Ring,
+    Town,
 }
 
 impl Layout {
-    /// The circuits made for a battle and not for racing round.
-    pub const ARENAS: [Layout; 3] = [Layout::Bowl, Layout::Flyover, Layout::Switchback];
+    /// The places made for a battle or a game of tag, and not for racing round.
+    pub const ARENAS: [Layout; 4] = [
+        Layout::Yard,
+        Layout::Crossroads,
+        Layout::Ring,
+        Layout::Town,
+    ];
 
     pub fn arena(self) -> bool {
-        Layout::ARENAS.contains(&self)
+        self.plan().is_some()
+    }
+
+    /// How it is laid out, if it is an arena.
+    pub fn plan(self) -> Option<&'static crate::arena::Plan> {
+        match self {
+            Layout::Yard => Some(&crate::arena::YARD),
+            Layout::Crossroads => Some(&crate::arena::CROSSROADS),
+            Layout::Ring => Some(&crate::arena::THE_RING),
+            Layout::Town => Some(&crate::arena::TOWN),
+            _ => None,
+        }
     }
 
     pub const ALL: [Layout; 4] = [
@@ -809,9 +403,10 @@ impl Layout {
             Layout::FigureEight => "Figure Eight",
             Layout::Gauntlet => "Gauntlet",
             Layout::HelterSkelter => "Helter Skelter",
-            Layout::Bowl => "Brick Bowl",
-            Layout::Flyover => "Flyover",
-            Layout::Switchback => "Switchback",
+            Layout::Yard => "Brick Yard",
+            Layout::Crossroads => "Crossroads",
+            Layout::Ring => "The Ring",
+            Layout::Town => "Bricktown",
         }
     }
 
@@ -822,28 +417,33 @@ impl Layout {
             Layout::FigureEight => "FIGURE8",
             Layout::Gauntlet => "GAUNTLET",
             Layout::HelterSkelter => "HELTER",
-            Layout::Bowl => "BOWL",
-            Layout::Flyover => "FLYOVER",
-            Layout::Switchback => "SWITCHBACK",
+            Layout::Yard => "YARD",
+            Layout::Crossroads => "CROSSROADS",
+            Layout::Ring => "RING",
+            Layout::Town => "TOWN",
         }
     }
 
-    fn control(self, mirror: bool) -> Vec<Vec3> {
-        let (points, scale) = match self {
-            Layout::Brick => (CONTROL.to_vec(), SCALE),
-            Layout::FigureEight => (FIGURE_EIGHT.to_vec(), 1.0),
-            Layout::Gauntlet => (GAUNTLET.to_vec(), 1.0),
-            Layout::HelterSkelter => (drawn(HELTER), 1.0),
-            Layout::Bowl => (BOWL.to_vec(), 1.0),
-            Layout::Flyover => (FLYOVER.to_vec(), 1.0),
-            Layout::Switchback => (SWITCHBACK.to_vec(), 1.0),
-        };
+    /// Its line, a point every little way, as it is unmirrored or mirrored.
+    fn line(self, mirror: bool) -> Vec<Vec3> {
         // Mirrored, the built-in circuits are turned over the same way the game's are.
         let side = if mirror { -1.0 } else { 1.0 };
-        points
-            .iter()
-            .map(|c| Vec3::new(c[0] * scale, c[1], c[2] * scale * side))
-            .collect()
+        match self {
+            Layout::Brick => cornered(BRICK, side),
+            Layout::FigureEight => cornered(FIGURE_EIGHT, side),
+            Layout::Gauntlet => cornered(GAUNTLET, side),
+            Layout::HelterSkelter => cornered(HELTER, side),
+            // An arena's is a spline through its points.
+            Layout::Yard | Layout::Crossroads | Layout::Ring | Layout::Town => {
+                let points: Vec<Vec3> = self
+                    .plan()
+                    .map_or(&[][..], |plan| plan.line)
+                    .iter()
+                    .map(|c| Vec3::new(c[0], c[1], c[2] * side))
+                    .collect();
+                splined(&points)
+            }
+        }
     }
 
     /// Where its tunnels begin and end, as (x, z) on the unmirrored circuit.
@@ -862,9 +462,7 @@ impl Layout {
             Layout::FigureEight => &FIGURE_EIGHT_EXTRAS,
             Layout::Gauntlet => &GAUNTLET_EXTRAS,
             Layout::HelterSkelter => &HELTER_EXTRAS,
-            Layout::Bowl => &BOWL_EXTRAS,
-            Layout::Flyover => &FLYOVER_EXTRAS,
-            Layout::Switchback => &SWITCHBACK_EXTRAS,
+            Layout::Yard | Layout::Crossroads | Layout::Ring | Layout::Town => &ARENA_EXTRAS,
         }
     }
 
@@ -877,27 +475,6 @@ impl Layout {
         }
     }
 
-    /// The ground the scenery is scattered over: (least x and z, greatest x and z).
-    fn grounds(self) -> (Vec2, Vec2) {
-        let (least, most) = self.plain_grounds();
-        if crate::scenery::mirror() {
-            (Vec2::new(least.x, -most.y), Vec2::new(most.x, -least.y))
-        } else {
-            (least, most)
-        }
-    }
-
-    fn plain_grounds(self) -> (Vec2, Vec2) {
-        match self {
-            Layout::Brick => (Vec2::new(-300.0, -340.0), Vec2::new(350.0, 150.0)),
-            Layout::FigureEight => (Vec2::new(-340.0, -220.0), Vec2::new(330.0, 220.0)),
-            Layout::Gauntlet => (Vec2::new(-540.0, -600.0), Vec2::new(650.0, 110.0)),
-            Layout::HelterSkelter => (Vec2::new(-260.0, -130.0), Vec2::new(790.0, 920.0)),
-            Layout::Bowl => (Vec2::new(-200.0, -200.0), Vec2::new(200.0, 100.0)),
-            Layout::Flyover => (Vec2::new(-220.0, -150.0), Vec2::new(220.0, 150.0)),
-            Layout::Switchback => (Vec2::new(-220.0, -220.0), Vec2::new(180.0, 100.0)),
-        }
-    }
 }
 
 #[derive(Resource)]
@@ -935,12 +512,41 @@ pub struct Track {
     /// The road is a stand-in: the circuit has no route of its own (the test
     /// track, `world::load_in`), and nothing of the game's is to follow this one.
     pub unrouted: bool,
+    /// How it is laid out, if it is an arena and not a circuit: there is then no
+    /// road, and the line is only something to lay bricks along (`arena`).
+    pub arena: Option<&'static crate::arena::Plan>,
     /// How steeply each sample's road is banked: how much higher it is for each unit
     /// to the right of its middle.
     pub bank: Vec<f32>,
     /// The corners with grass inside them and no barrier before it.
     pub infields: Vec<Infield>,
     pub pads: Vec<Pad>,
+    /// Where the road crosses itself on the level: the two samples that are in the
+    /// same place. Neither road has a barrier across the other there.
+    pub crossings: Vec<[usize; 2]>,
+    /// How far to the side of the stretch of road it was last on a car may be, and
+    /// how far over or under it, before it is looked for round the whole lap. On
+    /// the circuits built here that is no further than the next stretch is.
+    pub strays: (f32, f32),
+    /// The walls that stand inside its tighter corners, to hide what is round them.
+    pub screens: Vec<Screen>,
+}
+
+/// A wall inside a corner, where the barrier is, high enough that the road beyond it
+/// is not seen over it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Screen {
+    /// Its first sample, and the one after its last.
+    pub from: usize,
+    pub to: usize,
+    /// Which side of the road it is: 1 for the right, -1 for the left.
+    pub side: f32,
+}
+
+impl Screen {
+    fn stands(&self, i: usize, side: f32) -> bool {
+        (self.from..self.to).contains(&i) && side * self.side > 0.0
+    }
 }
 
 /// A stretch of the road with no barrier on one side of it, and grass beyond from one
@@ -1106,6 +712,136 @@ impl Course {
     }
 }
 
+/// A closed spline through `ctrl`, forty points to each of them.
+fn splined(ctrl: &[Vec3]) -> Vec<Vec3> {
+    let m = ctrl.len();
+    let mut dense = Vec::new();
+    for c in 0..m {
+        for t in 0..40 {
+            dense.push(catmull_rom(
+                ctrl[(c + m - 1) % m],
+                ctrl[c],
+                ctrl[(c + 1) % m],
+                ctrl[(c + 2) % m],
+                t as f32 / 40.0,
+            ));
+        }
+    }
+    dense
+}
+
+/// How far apart the points of a circuit's line are laid, before it is resampled.
+const LINE_STEP: f32 = 0.5;
+
+/// The line through a circuit's corners, each (x, height, z, radius): straight from
+/// each corner towards the next, and round each in an arc of its radius that leaves
+/// the one straight and joins the other with no kink. A corner's height is that of
+/// the middle of its arc, and from one corner to the next the height is eased so
+/// that the road has no kink in it either and is never higher or lower than both (a
+/// monotone cubic): two corners at one height have level road between them, and a
+/// corner higher than those either side of it is a crest. `side` is -1 for the
+/// circuit mirrored.
+fn cornered(corners: &[[f32; 4]], side: f32) -> Vec<Vec3> {
+    let m = corners.len();
+    let at = |i: usize| Vec2::new(corners[i % m][0], corners[i % m][2] * side);
+    // Each corner's arc: where it begins and ends, and how far round it turns.
+    let arcs: Vec<(Vec2, Vec2, f32)> = (0..m)
+        .map(|i| {
+            let (into, out) = (
+                (at(i) - at(i + m - 1)).normalize(),
+                (at(i + 1) - at(i)).normalize(),
+            );
+            let turn = into.perp_dot(out).atan2(into.dot(out));
+            let radius = corners[i][3];
+            if radius <= 0.0 || turn.abs() < 1e-3 {
+                return (at(i), at(i), 0.0);
+            }
+            let reach = radius * (turn.abs() / 2.0).tan();
+            (at(i) - into * reach, at(i) + out * reach, turn)
+        })
+        .collect();
+    // The line on the ground, how far along it each point is, and how far along it
+    // the middle of each corner is.
+    let (mut line, mut along): (Vec<Vec2>, Vec<f32>) = (Vec::new(), Vec::new());
+    let mut middles = Vec::with_capacity(m);
+    fn push(line: &mut Vec<Vec2>, along: &mut Vec<f32>, p: Vec2) {
+        match line.last() {
+            Some(&last) if last.distance(p) < 1e-4 => {}
+            Some(&last) => {
+                along.push(along[along.len() - 1] + last.distance(p));
+                line.push(p);
+            }
+            None => {
+                along.push(0.0);
+                line.push(p);
+            }
+        }
+    }
+    for i in 0..m {
+        let (start, end, turn) = arcs[i];
+        if turn == 0.0 {
+            push(&mut line, &mut along, start);
+            middles.push(along[along.len() - 1]);
+        } else {
+            let (into, radius) = ((at(i) - at(i + m - 1)).normalize(), corners[i][3]);
+            let centre = start + into.perp() * turn.signum() * radius;
+            let from = (start - centre).to_angle();
+            let steps = ((turn.abs() * radius / LINE_STEP) as usize).max(2);
+            for k in 0..=steps {
+                let angle = from + turn * k as f32 / steps as f32;
+                push(&mut line, &mut along, centre + Vec2::from_angle(angle) * radius);
+                if k == steps / 2 {
+                    middles.push(along[along.len() - 1]);
+                }
+            }
+        }
+        let next = arcs[(i + 1) % m].0;
+        let steps = ((end.distance(next) / LINE_STEP) as usize).max(1);
+        for k in 1..steps {
+            push(&mut line, &mut along, end.lerp(next, k as f32 / steps as f32));
+        }
+    }
+    let total = along[along.len() - 1] + line[line.len() - 1].distance(line[0]);
+
+    // The heights: from each corner's middle to the next's, a cubic with the slopes
+    // at its ends that keep it between the two.
+    let height = |i: usize| corners[i % m][1];
+    let span: Vec<f32> = (0..m)
+        .map(|i| (middles[(i + 1) % m] - middles[i]).rem_euclid(total))
+        .map(|span| if span > 0.0 { span } else { total })
+        .collect();
+    let rise: Vec<f32> = (0..m).map(|i| (height(i + 1) - height(i)) / span[i]).collect();
+    let slope: Vec<f32> = (0..m)
+        .map(|i| {
+            let before = (i + m - 1) % m;
+            let (a, b) = (rise[before], rise[i]);
+            if a * b <= 0.0 {
+                return 0.0;
+            }
+            let (w1, w2) = (2.0 * span[i] + span[before], span[i] + 2.0 * span[before]);
+            (w1 + w2) / (w1 / a + w2 / b)
+        })
+        .collect();
+    line.iter()
+        .zip(&along)
+        .map(|(p, &s)| {
+            let mut past = (s - middles[0]).rem_euclid(total);
+            let mut i = 0;
+            while i + 1 < m && past >= span[i] {
+                past -= span[i];
+                i += 1;
+            }
+            let t = (past / span[i]).min(1.0);
+            let (t2, t3) = (t * t, t * t * t);
+            let y = (2.0 * t3 - 3.0 * t2 + 1.0) * height(i)
+                + (t3 - 2.0 * t2 + t) * span[i] * slope[i]
+                + (3.0 * t2 - 2.0 * t3) * height(i + 1)
+                + (t3 - t2) * span[i] * slope[(i + 1) % m];
+            Vec3::new(p.x, y, p.y)
+        })
+        .collect()
+}
+
 fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
     0.5 * (2.0 * p1
         + (p2 - p0) * t
@@ -1128,7 +864,11 @@ impl Track {
 
     /// The line of a built-in circuit, with its tunnels, jumps and banks.
     fn shaped(layout: Layout, mirror: bool) -> Self {
-        let mut track = Track::from_loop(&layout.control(mirror), ROAD_HW);
+        let road = if layout.arena() { crate::arena::LINE_ROAD } else { ROAD_HW };
+        let mut track = Track::resampled(&layout.line(mirror), road);
+        if !layout.arena() {
+            track.strays = (WALL + 4.0, DECK - 1.0);
+        }
         let side = if mirror { -1.0 } else { 1.0 };
         track.tunnels = layout
             .tunnels()
@@ -1174,7 +914,67 @@ impl Track {
         track.fwd = (0..n)
             .map(|i| (track.pts[(i + 1) % n] - track.pts[(i + n - 1) % n]).normalize())
             .collect();
+        // Where two stretches meet on the level, the nearest two samples of each
+        // meeting are the crossing.
+        let mut met: Vec<(f32, [usize; 2])> = Vec::new();
+        for i in 0..n {
+            for k in i + STRETCH..n {
+                let apart = xz_dist2(track.pts[i], track.pts[k]);
+                if k - i < n - STRETCH
+                    && apart < CROSSING_NEAR * CROSSING_NEAR
+                    && (track.pts[i].y - track.pts[k].y).abs() < 1.0
+                {
+                    met.push((apart, [i, k]));
+                }
+            }
+        }
+        met.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, pair) in met {
+            let known = |crossing: &[usize; 2]| track.apart(crossing[0], pair[0]) < STRETCH;
+            if !track.crossings.iter().any(known) {
+                track.crossings.push(pair);
+            }
+        }
         track
+    }
+
+    /// How many samples apart two samples are, the shorter way round the lap.
+    fn apart(&self, a: usize, b: usize) -> usize {
+        let n = self.n();
+        ((a + n - b) % n).min((b + n - a) % n)
+    }
+
+    /// Whether a place beside sample `i` is on the other road of a level crossing,
+    /// within `reach` of its middle.
+    fn crossed(&self, i: usize, p: Vec3, reach: f32) -> bool {
+        let n = self.n();
+        self.crossings.iter().any(|pair| {
+            [(pair[0], pair[1]), (pair[1], pair[0])]
+                .into_iter()
+                .filter(|&(mine, _)| self.apart(i, mine) <= CROSSING_SAMPLES)
+                .any(|(_, other)| {
+                    (0..=2 * CROSSING_SAMPLES).any(|step| {
+                        let k = (other + n + step - CROSSING_SAMPLES) % n;
+                        let from = p - self.pts[k];
+                        from.dot(self.right[k]).abs() < reach
+                            && from.dot(self.flat[k]).abs() <= self.spacing
+                    })
+                })
+        })
+    }
+
+    /// Whether nothing on another stretch of the road comes near sample `i`'s: no
+    /// other stretch's middle is within `reach` of it and between `below` under it
+    /// and `above` over it.
+    fn alone(&self, i: usize, reach: f32, below: f32, above: f32) -> bool {
+        (0..self.n())
+            .filter(|&k| self.apart(i, k) > STRETCH)
+            .all(|k| {
+                let higher = self.pts[k].y - self.pts[i].y;
+                xz_dist2(self.pts[i], self.pts[k]) >= reach * reach
+                    || higher <= -below
+                    || higher >= above
+            })
     }
 
     /// The sample this far round the lap.
@@ -1200,9 +1000,19 @@ impl Track {
     /// One of the built-in circuits.
     pub fn built(layout: Layout) -> Self {
         let mut track = Track::shaped(layout, crate::scenery::mirror());
+        // An arena is its floor, its wall and its blocks, with nothing along the
+        // line to keep a car to it or to count it round.
+        if let Some(plan) = layout.plan() {
+            plan.collide(&mut track.collision);
+            track.course.grid = plan.grid();
+            track.clearings.push((Vec3::ZERO, plan.reach() + 12.0));
+            track.arena = Some(plan);
+            return track;
+        }
         let (n, extras) = (track.n(), layout.extras());
         // A byway runs straight from one place on the line to another, at an even
-        // slope but for its bumps.
+        // slope but for its bumps from where it leaves the one road to where it
+        // meets the other.
         track.branches = extras
             .byways
             .iter()
@@ -1223,7 +1033,10 @@ impl Track {
                     } else {
                         0.0
                     };
-                    from.y + (to.y - from.y) * at / length + bump
+                    // Across the road at either end it is as high as that road, and
+                    // all its climbing is done between the two.
+                    let climbed = ((at - WALL) / (length - 2.0 * WALL).max(1.0)).clamp(0.0, 1.0);
+                    from.y + (to.y - from.y) * climbed + bump
                 };
                 Branch {
                     pts: (0..=count as usize)
@@ -1283,6 +1096,40 @@ impl Track {
         }
 
         let (branches, infields) = (track.branches.clone(), track.infields.clone());
+        // A wall inside each of the tighter corners, where the road is on the ground
+        // with its barrier standing and nothing else is close by: not across a
+        // byway's end, an infield or a crossing, in a tunnel, beside a jump or
+        // against another stretch of the road.
+        let inside = |i: usize| -track.flat[i].cross(track.flat[(i + 1) % n]).y.signum();
+        let walled = |i: usize| {
+            let side = inside(i);
+            let barrier = track.edge(i, side * WALL);
+            let covered = |stretch: &(usize, usize)| (stretch.0..stretch.1).contains(&i);
+            track.curv[i] > SCREEN_TURN
+                && track.pts[i].y < 0.3
+                && track.apart(i, 0) > SCREEN_OFF_LINE
+                && !track.tunnels.iter().chain(&track.jumps).any(covered)
+                && !branches.iter().any(|branch| branch.holds(barrier))
+                && !infields.iter().any(|infield| infield.opens(i, side))
+                && !track.crossed(i, barrier, WALL + 2.0)
+                && track.alone(i, 2.0 * WALL + 4.0, DECK - 1.0, DECK - 1.0)
+        };
+        let (mut screens, mut i) = (Vec::new(), 0);
+        while i < n {
+            let from = i;
+            while i < n && walled(i) && inside(i) == inside(from) {
+                i += 1;
+            }
+            if i - from >= SCREEN_SHORTEST {
+                screens.push(Screen {
+                    from,
+                    to: i,
+                    side: inside(from),
+                });
+            }
+            i = i.max(from + 1);
+        }
+        track.screens = screens.clone();
         let lawns: Vec<[Vec3; 4]> = infields
             .iter()
             .flat_map(|infield| track.grass(infield))
@@ -1305,18 +1152,50 @@ impl Track {
                 quads.push((corners, surface));
             };
             strip(-ROAD_HW - KERB, ROAD_HW + KERB, Surface::default());
-            strip(-WALL, -ROAD_HW - KERB, grass);
-            strip(ROAD_HW + KERB, WALL, grass);
-            // Beside a jump they are as high as a car in the air.
-            let jump = track.jumps.iter().any(|jump| (jump.0..jump.1).contains(&i));
-            let top = Vec3::Y * if jump { JUMP_LIPS.0 + 6.0 } else { 3.0 };
+            // At a crossing the other road's tarmac is what lies where the verge was.
             for side in [-1.0, 1.0] {
-                let (a, b) = (track.edge(i, side * WALL), track.edge(j, side * WALL));
-                // There is none across the end of a byway, or before an infield.
-                if branches.iter().any(|branch| branch.holds((a + b) / 2.0))
+                let middle = track.edge(i, side * (WALL + ROAD_HW + KERB) / 2.0);
+                if !track.crossed(i, middle, WALL) {
+                    let (near, far) = (side * (ROAD_HW + KERB), side * WALL);
+                    strip(near.min(far), near.max(far), grass);
+                }
+            }
+            // Beside a jump they are as high as a car in the air, and where a wall
+            // stands as high as the wall.
+            let jump = track.jumps.iter().any(|jump| (jump.0..jump.1).contains(&i));
+            for side in [-1.0, 1.0] {
+                let top = Vec3::Y
+                    * if jump {
+                        JUMP_LIPS.0 + 6.0
+                    } else if screens.iter().any(|screen| screen.stands(i, side)) {
+                        SCREEN_HEIGHT
+                    } else {
+                        3.0
+                    };
+                let (mut a, mut b) = (track.edge(i, side * WALL), track.edge(j, side * WALL));
+                // There is none across the end of a byway, before an infield, or
+                // across the other road of a crossing. One that begins outside a
+                // byway's end runs up to the byway's own barrier and stops there,
+                // so that the two meet.
+                let held = |p: Vec3| branches.iter().any(|branch| branch.holds(p));
+                let ends = [held(a), held(b)];
+                if ends == [true, true]
                     || infields.iter().any(|infield| infield.opens(i, side))
+                    || track.crossed(i, (a + b) / 2.0, WALL)
                 {
                     continue;
+                }
+                if ends[0] != ends[1] {
+                    let (mut within, mut without) = if ends[0] { (a, b) } else { (b, a) };
+                    for _ in 0..8 {
+                        let middle = (within + without) / 2.0;
+                        if held(middle) {
+                            within = middle;
+                        } else {
+                            without = middle;
+                        }
+                    }
+                    if ends[0] { a = within } else { b = within }
                 }
                 quads.push((
                     [a - Vec3::Y, b - Vec3::Y, b + top, a + top],
@@ -1342,13 +1221,28 @@ impl Track {
                     Surface::default(),
                 ));
                 for side in [-1.0, 1.0] {
-                    let (a, b) = (p + across * side, q + across * side);
-                    // None of it stands out past the road's own barrier, where a
-                    // car going along that barrier would catch on its end.
-                    if !track.on_road(a, WALL) && !track.on_road(b, WALL) {
-                        let (low, high) = (Vec3::Y, Vec3::Y * 3.0);
-                        quads.push(([a - low, b - low, b + high, a + high], Surface::default()));
+                    let (mut a, mut b) = (p + across * side, q + across * side);
+                    let over = [track.on_road(a, WALL), track.on_road(b, WALL)];
+                    if over == [true, true] {
+                        continue;
                     }
+                    // None of it stands out past the road's own barrier, where a
+                    // car going along that barrier would catch on its end; it
+                    // begins at that barrier, and leaves no way out between them.
+                    if over[0] != over[1] {
+                        let (mut on, mut off) = if over[0] { (a, b) } else { (b, a) };
+                        for _ in 0..8 {
+                            let middle = (on + off) / 2.0;
+                            if track.on_road(middle, WALL) {
+                                on = middle;
+                            } else {
+                                off = middle;
+                            }
+                        }
+                        if over[0] { a = on } else { b = on }
+                    }
+                    let (low, high) = (Vec3::Y, Vec3::Y * 3.0);
+                    quads.push(([a - low, b - low, b + high, a + high], Surface::default()));
                 }
             }
         }
@@ -1357,12 +1251,29 @@ impl Track {
             track.collision.add([a, c, d], surface);
         }
 
-        // Sixteen evenly spaced checkpoint gates, the first on the start line.
-        const GATES: usize = 16;
-        for gate in 0..GATES {
-            let i = gate * n / GATES;
+        // Checkpoint gates at even distances round the lap, the first on the start
+        // line. One that would stand where a car on another stretch of the road
+        // could go through it, at a level crossing, stands a little further on.
+        let wanted = (track.length / GATE_SPACING).round() as usize;
+        let mut places: Vec<usize> = Vec::new();
+        for gate in 0..wanted {
+            let mut i = gate * n / wanted;
+            // Nor does one stand across a jump, for a car in the air to miss.
+            let jumped = |i: usize| track.jumps.iter().any(|jump| (jump.0..jump.1).contains(&i));
+            let reach = (GATE_REACH.0 + 1.0, GATE_REACH.1 + 1.0);
+            while gate > 0
+                && i < n
+                && (jumped(i) || !track.alone(i, 2.0 * WALL + 3.0, reach.0, reach.1))
+            {
+                i += 1;
+            }
+            if i < n && places.last().is_none_or(|&last| i > last + 4) {
+                places.push(i);
+            }
+        }
+        for (gate, &i) in places.iter().enumerate() {
             let (p, r) = (track.pts[i], track.right[i] * (WALL + 1.0));
-            let (low, high) = (Vec3::Y * -2.0, Vec3::Y * 8.0);
+            let (low, high) = (Vec3::Y * -GATE_REACH.0, Vec3::Y * GATE_REACH.1);
             let corners = [p - r + low, p + r + low, p + r + high, p - r + high];
             for tri in [
                 [corners[0], corners[1], corners[2]],
@@ -1376,12 +1287,13 @@ impl Track {
             track.course.checkpoints.push(Checkpoint {
                 normal: -track.flat[i],
                 position: p,
-                next: vec![(gate + 1) % GATES],
+                next: vec![(gate + 1) % places.len()],
                 fraction: 0.0,
             });
         }
         track.course.compute_fractions();
-        // The lap zones are on road that no byway goes round and no infield is beside.
+        // The lap zones are on road that no byway goes round and no infield is beside,
+        // and that no other stretch of the road comes near enough to be in.
         let stretches: Vec<(usize, usize)> = branches
             .iter()
             .map(|branch| (branch.ends[0], branch.ends[1]))
@@ -1394,12 +1306,19 @@ impl Track {
             if at <= last {
                 at = last + (n - last) / 2;
             }
-            while let Some(&(_, to)) = stretches.iter().find(|&&(from, to)| {
-                (from.saturating_sub(ZONE_CLEAR)..to + ZONE_CLEAR).contains(&at)
-            }) {
-                at = to + ZONE_CLEAR;
+            loop {
+                let beside = stretches.iter().find(|&&(from, to)| {
+                    (from.saturating_sub(ZONE_CLEAR)..to + ZONE_CLEAR).contains(&at)
+                });
+                if let Some(&(_, to)) = beside {
+                    at = to + ZONE_CLEAR;
+                } else if !track.alone(at, ZONE_RADIUS + WALL + 0.5, ZONE_RADIUS, ZONE_RADIUS) {
+                    at += 1;
+                } else {
+                    break;
+                }
             }
-            track.course.zones.push((track.pts[at], WALL + 3.0, zone));
+            track.course.zones.push((track.pts[at], ZONE_RADIUS, zone));
             last = at;
         }
         track
@@ -1407,19 +1326,11 @@ impl Track {
 
     /// Fits a closed spline through `ctrl` and resamples it at even spacing.
     pub fn from_loop(ctrl: &[Vec3], road: f32) -> Self {
-        let m = ctrl.len();
-        let mut dense = Vec::new();
-        for c in 0..m {
-            for t in 0..40 {
-                dense.push(catmull_rom(
-                    ctrl[(c + m - 1) % m],
-                    ctrl[c],
-                    ctrl[(c + 1) % m],
-                    ctrl[(c + 2) % m],
-                    t as f32 / 40.0,
-                ));
-            }
-        }
+        Track::resampled(&splined(ctrl), road)
+    }
+
+    /// A closed line, resampled at even spacing.
+    fn resampled(dense: &[Vec3], road: f32) -> Self {
         let d = dense.len();
         let mut cum = vec![0.0; d + 1];
         for i in 0..d {
@@ -1469,9 +1380,13 @@ impl Track {
             jumps: Vec::new(),
             branches: Vec::new(),
             unrouted: false,
+            arena: None,
             bank: vec![0.0; n],
             infields: Vec::new(),
             pads: Vec::new(),
+            crossings: Vec::new(),
+            strays: (40.0, f32::MAX),
+            screens: Vec::new(),
         }
     }
 
@@ -1576,6 +1491,16 @@ impl Track {
             *pad = Pad {
                 at: (n - pad.at) % n,
                 lat: -pad.lat,
+            };
+        }
+        for crossing in &mut self.crossings {
+            *crossing = crossing.map(|i| (n - i) % n);
+        }
+        for screen in &mut self.screens {
+            *screen = Screen {
+                from: n - screen.to,
+                to: n - screen.from,
+                side: -screen.side,
             };
         }
         // What was on the right is on the left, and as far from the line the other way.
@@ -1687,6 +1612,9 @@ impl Track {
     }
 
     pub fn build_mesh(&self) -> Mesh {
+        if let Some(plan) = self.arena {
+            return plan.mesh();
+        }
         let mut b = BrickMesh::default();
         let n = self.n();
         let up = Vec3::Y;
@@ -1711,29 +1639,65 @@ impl Track {
                 road[(i / 2) % 2]
             };
             strip(&mut b, -ROAD_HW, ROAD_HW, 0.0, surface);
-            if i % 6 < 2 {
+            // Over a crossing the road has no line down it, and neither road's kerb
+            // or verge lies across the other.
+            let middle = (p0 + p1) / 2.0;
+            if i % 6 < 2 && !self.crossed(i, middle, WALL) {
                 strip(&mut b, -0.2, 0.2, 0.02, WHITE);
             }
             let kerb = if (i / 2) % 2 == 0 { RED } else { WHITE };
-            strip(&mut b, ROAD_HW, ROAD_HW + KERB, 0.01, kerb);
-            strip(&mut b, -ROAD_HW - KERB, -ROAD_HW, 0.01, kerb);
-            strip(&mut b, ROAD_HW + KERB, WALL, 0.0, LIME);
-            strip(&mut b, -WALL, -ROAD_HW - KERB, 0.0, LIME);
+            for side in [-1.0, 1.0] {
+                let beside = middle + (r0 + r1) / 2.0 * side * (ROAD_HW + WALL) / 2.0;
+                if self.crossed(i, beside, WALL + 1.0) {
+                    continue;
+                }
+                let (near, far) = (side * ROAD_HW, side * (ROAD_HW + KERB));
+                strip(&mut b, near.min(far), near.max(far), 0.01, kerb);
+                let (near, far) = (far, side * WALL);
+                strip(&mut b, near.min(far), near.max(far), 0.0, LIME);
+            }
 
             let barrier = if (i / 3) % 2 == 0 { WHITE } else { RED };
             for side in [-1.0, 1.0] {
                 let (a0, a1) = at(side * (WALL + 0.4));
                 let rot = Transform::IDENTITY.looking_to(a1 - a0, up).rotation;
                 let mid = (a0 + a1) / 2.0;
-                // There is none across the end of a byway, or before an infield.
-                if self.branches.iter().any(|branch| branch.holds(mid))
+                // There is none across the end of a byway, before an infield, or
+                // across the other road of a crossing.
+                let (e0, e1) = at(side * WALL);
+                if self.branches.iter().any(|branch| branch.holds(e0) && branch.holds(e1))
                     || self.infields.iter().any(|infield| infield.opens(i, side))
+                    || self.crossed(i, mid, WALL)
                 {
                     continue;
                 }
                 let half = Vec3::new(0.4, 0.45, a0.distance(a1) / 2.0 + 0.05);
                 b.cuboid(mid + up * 0.45, half, rot, barrier);
                 b.cyl(mid + up * 0.9, 0.25, 0.15, rot, barrier);
+                // A wall inside a corner: two courses of bricks behind the barrier,
+                // each wall its own colour, and a white coping.
+                let screen = self.screens.iter().position(|screen| screen.stands(i, side));
+                if let Some(screen) = screen {
+                    let colours = [RED, BLUE, YELLOW, ORANGE, GREEN];
+                    let (b0, b1) = at(side * (WALL + 0.8 + SCREEN_THICK / 2.0));
+                    let (mid, long) = ((b0 + b1) / 2.0, a0.distance(a1) / 2.0 + 0.3);
+                    let course = (SCREEN_HEIGHT - 0.5) / 2.0;
+                    for level in 0..2 {
+                        let colour = if (i / 3 + level) % 2 == 0 {
+                            colours[screen % colours.len()]
+                        } else {
+                            WHITE
+                        };
+                        b.cuboid(
+                            mid + up * course * (level as f32 + 0.5),
+                            Vec3::new(SCREEN_THICK / 2.0, course / 2.0, long),
+                            rot,
+                            colour,
+                        );
+                    }
+                    let coping = Vec3::new(SCREEN_THICK / 2.0 + 0.15, 0.25, long);
+                    b.brick(mid + up * (SCREEN_HEIGHT - 0.25), coping, rot, GREY, (1, 1));
+                }
 
                 // Embankment under raised sections, visible from both sides.
                 if (p0.y > 0.05 || p1.y > 0.05) && !span(i) {
@@ -1812,6 +1776,32 @@ impl Track {
                     let half = Vec3::new(1.2, corner.y / 2.0 + 1.0, 1.2);
                     b.brick(corner.with_y(half.y), half, rot, YELLOW, (2, 2));
                 }
+            }
+        }
+
+        // A crossing is a plate over both roads, with a yellow box on it.
+        for &[first, second] in &self.crossings {
+            let (along, across) = (self.flat[first], self.flat[second]);
+            let reach = (ROAD_HW + KERB) / along.cross(across).y.abs().max(0.2);
+            let centre = (self.pts[first] + self.pts[second]) / 2.0;
+            let corner = |a: f32, c: f32, lift: f32| centre + along * a + across * c + up * lift;
+            // Seen from above, whichever way the two roads cross.
+            let turn = along.cross(across).y.signum();
+            let plate = |b: &mut BrickMesh, a: [f32; 2], c: [f32; 2], lift: f32, colour: Color| {
+                let c = if turn > 0.0 { [c[1], c[0]] } else { c };
+                b.quad(
+                    corner(a[0], c[0], lift),
+                    corner(a[1], c[0], lift),
+                    corner(a[1], c[1], lift),
+                    corner(a[0], c[1], lift),
+                    colour,
+                );
+            };
+            plate(&mut b, [-reach, reach], [-reach, reach], 0.015, road[0]);
+            let (line, inset) = (0.35, reach - 1.2);
+            for edge in [-inset, inset] {
+                plate(&mut b, [-inset - line, inset + line], [edge - line, edge + line], 0.025, YELLOW);
+                plate(&mut b, [edge - line, edge + line], [-inset, inset], 0.025, YELLOW);
             }
         }
 
@@ -1946,16 +1936,33 @@ impl Track {
     /// Brick trees and oversized bricks scattered around the outside of the circuit.
     pub fn build_scenery(&self, layout: Layout, rng: &mut Rng) -> Mesh {
         let mut b = BrickMesh::default();
-        let (least, most) = layout.grounds();
-        for _ in 0..420 {
-            let pos = Vec3::new(rng.range(least.x, most.x), 0.0, rng.range(least.y, most.y));
+        // Over the circuit's own ground and a little way round it; round an arena,
+        // whose floor it is kept off, further.
+        let (least, most) = match self.arena {
+            Some(plan) => {
+                let out = Vec3::splat(plan.reach() + ARENA_ROUND);
+                (-out, out)
+            }
+            None => {
+                let ends = (Vec3::MAX, Vec3::MIN);
+                let (least, most) = self
+                    .pts
+                    .iter()
+                    .fold(ends, |(least, most), &p| (least.min(p), most.max(p)));
+                (least - Vec3::splat(SCATTER_ROUND), most + Vec3::splat(SCATTER_ROUND))
+            }
+        };
+        for _ in 0..SCATTERED {
+            let pos = Vec3::new(rng.range(least.x, most.x), 0.0, rng.range(least.z, most.z));
             let clear = self
                 .pts
                 .iter()
                 .map(|&p| xz_dist2(p, pos))
                 .fold(f32::MAX, f32::min)
                 .sqrt();
-            if clear < WALL + 7.0
+            // How far it is to the nearest barrier: nothing is bigger than that.
+            let room = clear - WALL - 1.0;
+            if room < 1.5
                 || self
                     .clearings
                     .iter()
@@ -1964,8 +1971,9 @@ impl Track {
                 continue;
             }
             let rot = Quat::from_rotation_y(rng.range(0.0, std::f32::consts::TAU));
-            if rng.f() < 0.65 {
-                let s = rng.range(0.8, 1.7);
+            // A tree wherever there is not the room for a brick, and most other places.
+            if rng.f() < 0.65 || room < 5.0 {
+                let s = rng.range(0.8, 1.7).min(room / 2.5);
                 b.cuboid(
                     pos + Vec3::Y * 1.5 * s,
                     Vec3::new(0.6, 1.5, 0.6) * s,
@@ -1985,7 +1993,7 @@ impl Track {
                     );
                 }
             } else {
-                let s = rng.range(1.0, 2.5);
+                let s = rng.range(1.0, 2.5).min(room / 4.5);
                 let half = Vec3::new(2.0, 1.2, 4.0) * s;
                 for level in 0..if rng.f() < 0.3 { 2 } else { 1 } {
                     let colour = rng.pick(&[RED, BLUE, YELLOW, WHITE, ORANGE, GREY]);
@@ -2011,21 +2019,30 @@ mod tests {
 
     #[test]
     fn barriers_never_fold_and_track_never_touches_itself() {
-        for layout in Layout::ALL.into_iter().chain(Layout::ARENAS) {
+        for layout in Layout::ALL {
             let t = Track::built(layout);
             let n = t.n();
+            // Each takes the computer about as long to lap as the road it replaced,
+            // which is less road, there being little of it straight.
             let (shortest, longest) = match layout {
-                Layout::Gauntlet => (900.0, 3500.0),
-                Layout::HelterSkelter => (4100.0, 4400.0),
-                // An arena is a short way round, so that its cars keep meeting.
-                Layout::Bowl | Layout::Flyover | Layout::Switchback => (450.0, 1000.0),
-                _ => (900.0, 1400.0),
+                Layout::Brick => (1000.0, 1150.0),
+                Layout::FigureEight => (1100.0, 1300.0),
+                Layout::Gauntlet => (1900.0, 2100.0),
+                _ => (1450.0, 1650.0),
             };
             assert!(
                 t.length > shortest && t.length < longest,
                 "{layout:?} length {}",
                 t.length
             );
+            // Nowhere is it level and straight for long: the longest such stretch
+            // is the one the grid stands on.
+            let mut run = 0;
+            for i in 0..2 * n {
+                let level = (t.pts[(i + 1) % n].y - t.pts[i % n].y).abs() < 0.02;
+                run = if t.curv[i % n] < 0.004 && level { run + 1 } else { 0 };
+                assert!((run as f32) * t.spacing < 170.0, "{layout:?} straight to {i}");
+            }
             for i in 0..n {
                 let j = (i + 1) % n;
                 for side in [-1.0, 1.0] {
@@ -2036,22 +2053,71 @@ mod tests {
                         "{layout:?} barrier folds at {i}"
                     );
                 }
-                // Any other part of the track must be far away unless it's nearby along
-                // the lap, or passes well overhead.
-                for k in 0..n {
-                    let along = (i as i32 - k as i32)
-                        .rem_euclid(n as i32)
-                        .min((k as i32 - i as i32).rem_euclid(n as i32));
-                    let apart = xz_dist2(t.pts[i], t.pts[k]).sqrt() > 2.0 * WALL + 4.0;
+                // Any other stretch of the road is far enough off for the barriers of
+                // both to stand between them, unless it passes well overhead or
+                // underneath, or the two meet at a crossing.
+                for k in (0..n).filter(|&k| t.apart(i, k) > STRETCH) {
+                    let beside = xz_dist2(t.pts[i], t.pts[k]).sqrt() > 2.0 * (WALL + 0.8) + 0.4;
                     let level = (t.pts[i].y - t.pts[k].y).abs() < DECK - 1.0;
-                    assert!(along <= 30 || apart || !level, "{layout:?} {i} near {k}");
+                    let meet = t.crossings.iter().any(|pair| {
+                        [(pair[0], pair[1]), (pair[1], pair[0])].into_iter().any(|(a, b)| {
+                            t.apart(i, a) <= CROSSING_SAMPLES && t.apart(k, b) <= CROSSING_SAMPLES
+                        })
+                    });
+                    assert!(
+                        beside || !level || meet,
+                        "{layout:?} {i} at {} near {k} at {}",
+                        t.pts[i],
+                        t.pts[k]
+                    );
                 }
+            }
+            // No slope is too steep to be driven up either way, and no corner too
+            // tight to be slid round flat out.
+            let tightest = if layout == Layout::Gauntlet { 13.5 } else { TIGHTEST };
+            for i in 0..n {
+                let step = t.pts[(i + 1) % n] - t.pts[i];
+                assert!(step.y.abs() < step.with_y(0.0).length() * 1.1, "{layout:?} {i}");
+                assert!(t.curv[i] * tightest < 1.0, "{layout:?} {i} turns in {}", 1.0 / t.curv[i]);
             }
         }
     }
 
+    /// A gate is gone through, and a lap zone entered, only by a car on the stretch of
+    /// road it is on: not from a stretch beside it, over it, under it or across it.
     #[test]
-    fn the_figure_eight_crosses_itself_once_by_a_bridge() {
+    fn gates_and_lap_zones_belong_to_one_stretch_of_road() {
+        for layout in Layout::ALL {
+            let t = Track::built(layout);
+            let (n, lift) = (t.n(), Vec3::Y * 0.6);
+            let gates = &t.course.checkpoints;
+            assert!(gates.len() as f32 > t.length / 45.0, "{layout:?} {}", gates.len());
+            assert_eq!(t.nearest(gates[0].position), 0);
+            for pair in gates.windows(2) {
+                assert!(t.nearest(pair[0].position) < t.nearest(pair[1].position));
+            }
+            for k in 0..n {
+                for lat in [-WALL + 1.0, 0.0, WALL - 1.0] {
+                    let (from, to) = (t.edge(k, lat) + lift, t.edge((k + 1) % n, lat) + lift);
+                    if let Some(hit) = t.course.gates.any(from, to) {
+                        let at = t.nearest(gates[hit.tag].position);
+                        assert!(t.apart(at, k) <= 2, "{layout:?} gate at {at} met from {k}");
+                    }
+                }
+                for &(centre, radius, _) in &t.course.zones {
+                    let at = t.nearest(centre);
+                    assert!(
+                        t.pts[k].distance(centre) > radius + WALL || t.apart(at, k) < STRETCH,
+                        "{layout:?} zone at {at} entered from {k}"
+                    );
+                }
+            }
+            assert_eq!(t.course.zones.len(), 2);
+        }
+    }
+
+    #[test]
+    fn the_figure_eight_crosses_itself_by_a_bridge_and_on_the_level() {
         let t = Track::built(Layout::FigureEight);
         let bridged = t.bridged();
         let n = t.n();
@@ -2059,7 +2125,6 @@ mod tests {
             .filter(|&i| bridged[i] && !bridged[(i + n - 1) % n])
             .count();
         assert_eq!(starts, 1);
-        assert!(Track::new().bridged().iter().all(|b| !b));
         // On the bridge and under it, the road found is the one the racing line is on,
         // and so is the sample.
         for i in (0..n).filter(|&i| bridged[i]) {
@@ -2079,33 +2144,58 @@ mod tests {
                 assert_eq!(t.nearest(t.pts[k]), k);
             }
         }
-        // Neither level's gates or lap zones reach the other.
-        for gate in &t.course.checkpoints {
-            let i = t.nearest(gate.position);
-            assert!(!bridged[i], "gate on the bridge at {i}");
+        // The crossing: the two roads meet squarely, each is driven straight over the
+        // other with nothing in the way, and neither has grass lying across the
+        // other's tarmac. A little way off each has its barriers again.
+        let &[[first, second]] = &t.crossings[..] else {
+            panic!("{:?}", t.crossings);
+        };
+        assert!(t.flat[first].dot(t.flat[second]).abs() < 0.1);
+        let lift = Vec3::Y * 0.6;
+        for at in [first, second] {
+            let (before, after) = (t.pts[at - 12] + lift, t.pts[at + 12] + lift);
+            assert!(t.collision.wall(before, after).is_none(), "{at}");
+            for side in [-1.0, 1.0] {
+                let out = |i: usize| t.edge(i, side * (WALL + 1.0)) + lift;
+                assert!(t.collision.wall(t.pts[at] + lift, out(at)).is_none());
+                assert!(t.collision.wall(t.pts[at - 10] + lift, out(at - 10)).is_some());
+                assert!(t.collision.wall(t.pts[at + 10] + lift, out(at + 10)).is_some());
+            }
+            for step in 0..24 {
+                let s = (at + step - 12) as f32 * t.spacing;
+                for lat in [-ROAD_HW + 0.5, 0.0, ROAD_HW - 0.5] {
+                    let p = t.point(s, lat);
+                    let ground = t.collision.ground(p + Vec3::Y * 2.0, 4.0).unwrap();
+                    assert_eq!(ground.surface.rolling_resistance, 0.0, "{at} {step} {lat}");
+                }
+            }
         }
-        for &(centre, radius, _) in &t.course.zones {
-            let crossing = t.pts[(0..n).find(|&i| bridged[i]).unwrap()];
-            assert!(xz_dist2(centre, crossing).sqrt() > 2.0 * radius);
+        // Turned round it is the same crossing.
+        let mut back = Track::built(Layout::FigureEight);
+        back.reverse();
+        assert_eq!(back.crossings.len(), 1);
+        assert_eq!(back.pts[back.crossings[0][0]], t.pts[first]);
+        // No other circuit has one.
+        for layout in [Layout::Brick, Layout::Gauntlet, Layout::HelterSkelter] {
+            assert!(Track::built(layout).crossings.is_empty(), "{layout:?}");
         }
     }
 
     #[test]
-    fn the_gauntlet_has_two_tunnels_and_a_bridge_and_corners_sharper_than_the_others() {
+    fn the_gauntlet_has_two_tunnels() {
         let t = Track::built(Layout::Gauntlet);
-        let (n, bridged) = (t.n(), t.bridged());
-        assert_eq!(
-            (0..n)
-                .filter(|&i| bridged[i] && !bridged[(i + n - 1) % n])
-                .count(),
-            1
-        );
-        // Each tunnel is a good stretch of level road, clear of the bridge.
+        let bridged = t.bridged();
+        // Each tunnel is a good stretch of level road with nothing over it.
         assert_eq!(t.tunnels.len(), 2);
         for &(from, to) in &t.tunnels {
             assert!((to - from) as f32 * t.spacing > 100.0, "{from}..{to}");
             assert!((from..to).all(|i| t.pts[i].y < 1.0 && !bridged[i]));
         }
+        // The viaduct goes over each of the western hairpins.
+        let spans = (0..t.n())
+            .filter(|&i| bridged[i] && !bridged[(i + t.n() - 1) % t.n()])
+            .count();
+        assert_eq!(spans, 3);
         // Turned round, the same road is roofed.
         let mut back = Track::built(Layout::Gauntlet);
         back.reverse();
@@ -2115,40 +2205,13 @@ mod tests {
                 (t.pts[to - 1], t.pts[from])
             );
         }
-        let sharpest = |t: &Track| t.curv.iter().copied().fold(0.0, f32::max);
-        assert!(sharpest(&t) > 1.0 / 20.0 && sharpest(&t) > sharpest(&Track::new()));
-    }
-
-    #[test]
-    fn the_helter_skelter_ends_where_it_begins() {
-        // Drawn on past its last leg, it is back at the origin and going along x.
-        let mut twice: Vec<Leg> = Vec::new();
-        for leg in HELTER.iter().chain(&HELTER[..1]) {
-            twice.push(match *leg {
-                Straight(length, rise) => Straight(length, rise),
-                Turn(degrees, radius, rise) => Turn(degrees, radius, rise),
-            });
-        }
-        let (once, twice) = (drawn(HELTER), drawn(&twice));
-        let (end, next) = (
-            Vec3::from(twice[once.len()]),
-            Vec3::from(twice[once.len() + 1]),
-        );
-        assert!(end.length() < 0.1, "{end}");
-        assert!((next - end).normalize().dot(Vec3::X) > 0.9999);
-        // Its points are near enough evenly spaced.
-        for (a, b) in once.iter().zip(&once[1..]) {
-            let apart = xz_dist2(Vec3::from(*a), Vec3::from(*b)).sqrt();
-            assert!(apart > 5.0 && apart < DRAWN_STEP + 0.1, "{a:?} {b:?}");
-        }
     }
 
     #[test]
     fn the_helter_skelter_has_a_spiral_two_tunnels_and_a_jump() {
         let t = Track::built(Layout::HelterSkelter);
         let n = t.n();
-        // A whole turn of the road has another over it with room to drive under, and
-        // where the spiral begins and ends the road is three deep.
+        // A turn of the road has another over it with room to drive under.
         let over = |i: usize| {
             let mut above: Vec<f32> = (0..n)
                 .filter(|&k| k.abs_diff(i) > 30 && t.pts[k].y > t.pts[i].y + 1.0)
@@ -2161,11 +2224,10 @@ mod tests {
         };
         let stacked: Vec<usize> = (0..n).filter(|&i| !over(i).is_empty()).collect();
         assert!(
-            stacked.len() as f32 * t.spacing > 250.0,
+            stacked.len() as f32 * t.spacing > 100.0,
             "{}",
             stacked.len()
         );
-        assert!(stacked.iter().any(|&i| over(i).len() == 2));
         assert!(SPIRAL_RISE > TUNNEL_HEIGHT);
         for &i in &stacked {
             for (level, rise) in over(i).into_iter().enumerate() {
@@ -2200,10 +2262,10 @@ mod tests {
         assert!(t.pts[lip + 3].y < 0.01 && t.pts[lip + 5].y < 0.01);
         assert!(t.pts[from].y < 0.01 && t.pts[to - 1].y < 0.3 && t.pts[to].y < 0.01);
         assert!(
-            (from - 50..to + 10)
+            (from - 20..to + 10)
                 .all(|i| t.curv[i] < 1e-3 && t.tunnels.iter().all(|t| !(t.0..t.1).contains(&i)))
         );
-        assert!((from - 50..from).all(|i| t.pts[i].y < 0.1));
+        assert!((from - 20..from).all(|i| t.pts[i].y < 0.1));
         for gate in &t.course.checkpoints {
             assert!(!(from..to).contains(&t.nearest(gate.position)));
         }
@@ -2232,6 +2294,7 @@ mod tests {
             } else {
                 1
             };
+            let crossing = |i: usize, gap: Vec3| t.crossed(i, gap, WALL);
             assert_eq!(t.branches.len(), byways, "{layout:?}");
             for branch in &t.branches {
                 // Each runs between two places on the line, and is the shorter way.
@@ -2275,13 +2338,14 @@ mod tests {
                         let gap = t.edge(i, side * WALL);
                         assert!(
                             t.branches.iter().any(|b| b.holds(gap))
-                                || t.infields.iter().any(|f| f.opens(i, side)),
+                                || t.infields.iter().any(|f| f.opens(i, side))
+                                || crossing(i, gap),
                             "{layout:?} {i} {side}"
                         );
                     }
                 }
             }
-            assert!(open > 8 && open < 200, "{layout:?} {open}");
+            assert!(open > 4 && open < 200, "{layout:?} {open}");
             // Neither lap zone is on road that can be gone round, or near its ends.
             let stretches = t
                 .branches
@@ -2313,7 +2377,7 @@ mod tests {
             let (n, lift) = (t.n(), Vec3::Y * 0.6);
             let mut back = Track::built(layout);
             back.reverse();
-            assert!(!t.infields.is_empty() && t.pads.len() >= 2, "{layout:?}");
+            assert!(t.pads.len() >= 2, "{layout:?}");
             for (infield, turned) in t.infields.iter().zip(&back.infields) {
                 // The grass is slow going, inside the corner, clear of the road, and
                 // nothing stands between it and the road.
@@ -2325,7 +2389,7 @@ mod tests {
                     assert!(ground.surface.rolling_resistance >= LAWN_DRAG, "{layout:?}");
                     assert!(
                         a.distance(d) < 2.0 || !t.on_road(on, WALL - 1.0),
-                        "{layout:?}"
+                        "{layout:?} {on}"
                     );
                     assert!(t.collision.wall(t.pts[middle] + lift, on + lift).is_none());
                 }

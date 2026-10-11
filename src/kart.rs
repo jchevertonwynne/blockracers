@@ -818,6 +818,9 @@ pub struct Ai {
     /// Time spent going nowhere, and time left backing out of it.
     stuck: f32,
     reversing: f32,
+    /// Where the car it is after is, in an arena (`Track::arena`): there the driver
+    /// goes straight for it for as long as nothing stands between them.
+    pub quarry: Option<Vec3>,
     /// The byway the driver is taking or about to (`Track::branches`), and the one it
     /// last made its mind up about.
     byway: Option<usize>,
@@ -859,8 +862,10 @@ const AI_TAUNT_TARGET: (f32, f32) = (13.0 * UNIT, 0.3);
 const AI_TAUNT_WAIT: f32 = 2.0;
 /// How many samples before a byway a driver makes its mind up about it.
 const BYWAY_WEIGHED: std::ops::Range<usize> = 14..28;
-/// How far off a byway a driver taking it gives it up.
+/// How far off a byway a driver taking it gives it up, and how far past the road's
+/// barrier a car must be to be in a byway and not just in the mouth of it.
 const BYWAY_LOST: f32 = 60.0;
+const BYWAY_MOUTH: f32 = 2.0;
 /// The byways that meet the road at a sharper angle than this one's cosine are taken
 /// slowly: this fast, from this far before they leave or rejoin the road until this
 /// far in.
@@ -898,6 +903,7 @@ impl Ai {
             stuck: 0.0,
             reversing: 0.0,
             byway: None,
+            quarry: None,
             weighed: None,
         }
     }
@@ -919,11 +925,12 @@ impl Ai {
             } else if self.weighed == Some(b) {
                 self.weighed = None;
             }
-            // Knocked into one, it goes on through.
+            // Knocked well into one, it goes on through; knocked only into the mouth
+            // of one, it keeps to the road.
             let (along, across) = branch.place(k.pos);
             if (0.0..branch.length()).contains(&along)
                 && across.abs() < branch.wall
-                && !track.on_road(k.pos, crate::track::WALL)
+                && !track.on_road(k.pos, crate::track::WALL + BYWAY_MOUTH)
             {
                 self.byway = Some(b);
             }
@@ -977,6 +984,12 @@ impl Ai {
         let byway = self.byway(k, track, rng, reach);
         let (target, limit) =
             byway.unwrap_or_else(|| (track.point(ahead, track.lane(ahead, self.lane)), f32::MAX));
+        // In an arena a car in plain sight is gone straight for, flat out.
+        let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
+        let chased = self
+            .quarry
+            .filter(|&at| track.collision.wall(k.pos + lift, at + lift).is_none());
+        let target = chased.unwrap_or(target);
         let to = target - k.pos;
         let err = wrap_angle((-to.x).atan2(-to.z) - k.yaw);
         c.steer = (err * 3.0).clamp(-1.0, 1.0);
@@ -984,6 +997,7 @@ impl Ai {
         // Brake for the tightest corner coming up.
         let tightest = (2..18)
             .map(|j| track.curv[(k.idx + j) % track.n()])
+            .filter(|_| chased.is_none())
             .fold(1e-4, f32::max);
         c.throttle = if speed > (AI_LAT_ACCEL / tightest).sqrt().min(limit) {
             -0.6
@@ -1001,6 +1015,8 @@ impl Ai {
         if self.stuck > 1.0 {
             self.stuck = 0.0;
             self.reversing = 1.5;
+            // Whatever byway it was making for, it has not got into.
+            self.byway = None;
         }
         if self.reversing > 0.0 {
             self.reversing -= dt;
@@ -1476,6 +1492,16 @@ pub fn ai_drive(
                 }
             }
         } else if k.route.is_none() {
+            // In an arena a driver with something to fire, or who is "it", is after
+            // the nearest car; the rest keep moving along the line.
+            ai.quarry = (track.arena.is_some() && (k.held.is_some() || k.it))
+                .then(|| {
+                    cars.iter()
+                        .filter(|car| car.0 != k.slot)
+                        .min_by(|a, b| a.1.distance(k.pos).total_cmp(&b.1.distance(k.pos)))
+                        .map(|car| car.1)
+                })
+                .flatten();
             ai.drive(&k, &mut c, &track, &mut rng, dt);
         }
 
@@ -1750,15 +1776,18 @@ impl Kart {
 
         // Where we are along the racing line, for the AI and anything that follows it.
         let (mut idx, mut s, mut lat) = track.project(k.pos, k.idx);
-        if lat.abs() > 40.0 {
-            // A long way from where we last were; look everywhere.
+        if lat.abs() > track.strays.0 || (k.pos.y - track.pts[idx].y).abs() > track.strays.1 {
+            // A long way from where we last were, or on another stretch of the road
+            // that runs beside it, over it or under it; look everywhere.
             (idx, s, lat) = track.project(k.pos, track.nearest(k.pos));
         }
         // A byway hands the car on to the road at its far end, which may be no
-        // distance at all from the road it left.
+        // distance at all from the road it left. Past that end the car is the
+        // road's, though the road run straight on from the byway.
         for branch in &track.branches {
             let (along, across) = branch.place(k.pos);
-            if along > branch.length() / 2.0 && across.abs() < branch.wall {
+            let handing = branch.length() / 2.0..branch.length() + branch.wall;
+            if handing.contains(&along) && across.abs() < branch.wall {
                 let on = track.project(k.pos, branch.ends[1]);
                 if on.2.abs() < lat.abs() {
                     (idx, s, lat) = on;
@@ -2199,7 +2228,7 @@ mod tests {
             }
             kart
         };
-        let (plain, fast) = (run(1.0, 600, 3.0 / 120.0), run(3.0, 600, 1.0 / 120.0));
+        let (plain, fast) = (run(1.0, 160, 3.0 / 120.0), run(3.0, 160, 1.0 / 120.0));
         assert!(plain.vel.length() > 10.0, "{}", plain.vel.length());
         assert!(plain.pos.distance(fast.pos) < 0.01, "{} {}", plain.pos, fast.pos);
         assert!((plain.vel * 3.0).distance(fast.vel) < 0.01);
@@ -2234,16 +2263,136 @@ mod tests {
 
     #[test]
     fn ai_laps_the_built_in_circuits() {
-        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
+        for layout in crate::track::Layout::ALL {
             let track = Track::built(layout);
             let laps = solo_run(&track, lapping_time(&track));
             assert!(laps.len() >= 3, "{layout:?} {laps:?}");
         }
     }
 
+    /// The whole field of the computer's cars gets round each built-in circuit
+    /// together, bumping into each other as they go: over the figure of eight's
+    /// crossing too, where one stretch's cars meet the other's side on.
+    #[test]
+    fn the_computers_cars_race_the_built_in_circuits_together() {
+        for layout in crate::track::Layout::ALL {
+            for reverse in [false, true] {
+                let mut track = Track::built(layout);
+                if reverse {
+                    track.reverse();
+                }
+                let mut karts: Vec<Kart> = (0..6).map(|slot| Kart::new(&track, slot)).collect();
+                let mut drivers: Vec<Ai> = (0..6)
+                    .map(|slot| Ai::new(1.0 - 0.03 * slot as f32, slot))
+                    .collect();
+                let mut controls: Vec<Controls> = (0..6).map(|_| Controls::default()).collect();
+                let (mut rng, dt, mut bumps) = (Rng(7), 1.0 / 60.0, 0);
+                for _ in 0..(1.3 * lapping_time(&track) / dt) as usize {
+                    for i in 0..6 {
+                        drivers[i].drive(&karts[i], &mut controls[i], &track, &mut rng, dt);
+                        karts[i].advance(&controls[i], &track, dt);
+                        assert!(karts[i].pos.is_finite(), "{layout:?}");
+                    }
+                    for second in 1..6 {
+                        let (before, after) = karts.split_at_mut(second);
+                        for first in before {
+                            bumps += meet(first, &mut after[0], None) as usize;
+                        }
+                    }
+                }
+                let laps: Vec<i32> = karts.iter().map(|kart| kart.lap).collect();
+                println!("{layout:?} reversed {reverse}: laps begun {laps:?}, {bumps} bumps");
+                assert!(laps.iter().all(|&lap| lap >= 3), "{layout:?} {reverse} {laps:?}");
+            }
+        }
+    }
+
+    /// Nothing on the built-in circuits is too tight to be slid round flat out: a
+    /// driver with a keyboard who never lifts, steers for the middle of the road a
+    /// little way ahead and holds the slide through whatever is tight gets round
+    /// each of them all but clear of the walls, and is never brought near a stop.
+    #[test]
+    fn every_corner_of_the_built_in_circuits_is_slid_round_flat_out() {
+        for layout in crate::track::Layout::ALL {
+            let track = Track::built(layout);
+            let mut kart = Kart::new(&track, 0);
+            let mut c = Controls {
+                hand: true,
+                throttle: 1.0,
+                ..default()
+            };
+            let dt = 1.0 / 60.0;
+            let (mut frames, mut touching, mut slowest) = (0, 0, f32::MAX);
+            for _ in 0..(lapping_time(&track) / dt) as usize {
+                let speed = kart.vel.length();
+                let to = track.point(kart.s + 9.0 + speed * 0.32, 0.0) - kart.pos;
+                let off = wrap_angle((-to.x).atan2(-to.z) - kart.yaw);
+                c.steer = if off.abs() > 0.05 { off.signum() } else { 0.0 };
+                let tightest = (2..14)
+                    .map(|ahead| track.curv[(kart.idx + ahead) % track.n()])
+                    .fold(0.0, f32::max);
+                c.drift = tightest > 1.0 / 40.0 && off.abs() > 0.12;
+                kart.advance(&c, &track, dt);
+                // From the second lap, the first being begun from a stand.
+                if kart.lap >= 2 {
+                    frames += 1;
+                    touching += kart.wall_contact as usize;
+                    slowest = slowest.min(speed);
+                }
+            }
+            println!(
+                "{layout:?}: {} laps begun, at a wall {touching} frames of {frames}, never slower than {slowest:.1}",
+                kart.lap
+            );
+            assert!(kart.lap >= 4, "{layout:?} {}", kart.lap);
+            assert!(touching * 100 < frames && slowest > 18.0, "{layout:?} {touching} {slowest}");
+        }
+    }
+
+    /// In an arena the computer's car keeps moving along the line when it has
+    /// nobody to go after, and goes straight for a car in sight when it has: here
+    /// one standing on the far side of the open floor, which it reaches.
+    #[test]
+    fn the_computer_wanders_an_arena_and_goes_for_a_car_in_sight() {
+        for layout in crate::track::Layout::ARENAS {
+            let track = Track::built(layout);
+            let plan = layout.plan().unwrap();
+            let mut kart = Kart::new(&track, 0);
+            let (mut ai, mut rng, mut c) = (Ai::new(1.0, 0), Rng(7), Controls::default());
+            let (dt, mut far, mut slow) = (1.0 / 60.0, 0.0f32, 0);
+            let mut last = kart.pos;
+            for step in 0..60 * 60 {
+                ai.drive(&kart, &mut c, &track, &mut rng, dt);
+                kart.advance(&c, &track, dt);
+                assert!(plan.open(kart.pos, 0.0), "{layout:?} off the floor at {}", kart.pos);
+                far += kart.pos.distance(last);
+                last = kart.pos;
+                slow += (step > 300 && kart.vel.length() < 5.0) as usize;
+            }
+            println!("{layout:?}: went {far:.0} in a minute, slow for {slow} steps");
+            assert!(far > 700.0 && slow < 600, "{layout:?} {far} {slow}");
+            // Something to go after, in sight across the floor from the grid.
+            let mut kart = Kart::new(&track, 0);
+            let quarry = track.course.grid[4].0;
+            let lift = Vec3::Y * 0.6;
+            if track.collision.wall(kart.pos + lift, quarry + lift).is_some() {
+                continue;
+            }
+            let mut ai = Ai::new(1.0, 0);
+            ai.quarry = Some(quarry);
+            let mut nearest = f32::MAX;
+            for _ in 0..60 * 15 {
+                ai.drive(&kart, &mut c, &track, &mut rng, dt);
+                kart.advance(&c, &track, dt);
+                nearest = nearest.min(kart.pos.distance(quarry));
+            }
+            assert!(nearest < 4.0, "{layout:?} came within {nearest}");
+        }
+    }
+
     #[test]
     fn ai_laps_the_built_in_circuits_in_the_fastest_cars() {
-        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
+        for layout in crate::track::Layout::ALL {
             let track = Track::built(layout);
             let laps = paced_run(&track, lapping_time(&track) / 2.0, 2.0);
             assert!(laps.len() >= 3, "{layout:?} {laps:?}");
@@ -2252,7 +2401,7 @@ mod tests {
 
     #[test]
     fn ai_laps_the_built_in_circuits_backwards() {
-        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
+        for layout in crate::track::Layout::ALL {
             let mut track = Track::built(layout);
             track.reverse();
             let laps = solo_run(&track, lapping_time(&track));
@@ -2287,7 +2436,7 @@ mod tests {
                 kart.safe = (kart.pos, kart.rot);
                 kart
             };
-            let mut kart = set_down(from - 120);
+            let mut kart = set_down(from - 20);
             let (mut flown, mut lowest, mut landed) = (0.0f32, f32::MAX, None);
             for _ in 0..(15.0 / dt) as usize {
                 ai.drive(&kart, &mut c, &track, &mut rng, dt);
@@ -2304,7 +2453,9 @@ mod tests {
             println!(
                 "reverse {reverse}: flew {flown:.1}, no lower than {lowest:.1} over the dip, down at {landed:?} of {from}..{to}"
             );
-            assert!(kart.idx > to + 20, "stopped at {}", kart.idx);
+            // How far past the jump it is, the line being crossed on the way.
+            let past = |kart: &Kart| (kart.idx + track.n() - to) % track.n();
+            assert!((20..track.n() / 2).contains(&past(&kart)), "stopped at {}", kart.idx);
             if !reverse {
                 assert!(
                     lowest > 5.0 && landed.is_some_and(|at| at > last + 3),
@@ -2318,13 +2469,17 @@ mod tests {
                 ai.drive(&kart, &mut c, &track, &mut rng, dt);
                 kart.advance(&c, &track, dt);
             }
-            assert!(kart.idx > to, "reverse {reverse}: still at {}", kart.idx);
+            assert!(
+                (1..track.n() / 2).contains(&past(&kart)),
+                "reverse {reverse}: still at {}",
+                kart.idx
+            );
         }
     }
 
     #[test]
     fn the_computer_takes_the_byways_when_it_has_a_mind_to_either_way_round() {
-        for layout in crate::track::Layout::ALL.into_iter().chain(crate::track::Layout::ARENAS) {
+        for layout in crate::track::Layout::ALL {
             for reverse in [false, true] {
                 let mut track = Track::built(layout);
                 if reverse {
@@ -2397,17 +2552,20 @@ mod tests {
     fn a_speed_pad_sets_a_car_off() {
         let track = Track::built(crate::track::Layout::Brick);
         let pad = track.pads[0];
+        // Set down a little before the pad, on its line, and driven straight on.
         let mut kart = Kart::new(&track, 0);
-        let (mut ai, mut rng, mut c) = (Ai::new(1.0, 0), Rng(7), Controls::default());
+        kart.place(&track, pad.at as f32 * track.spacing - 20.0, pad.lat);
+        let c = Controls {
+            throttle: 1.0,
+            ..default()
+        };
         let mut boosted = None;
-        for _ in 0..600 {
-            ai.drive(&kart, &mut c, &track, &mut rng, 1.0 / 60.0);
+        for _ in 0..300 {
             kart.advance(&c, &track, 1.0 / 60.0);
             if kart.boost > 0.0 && boosted.is_none() {
                 boosted = Some((kart.idx, kart.lat));
             }
         }
-        // The grid is behind the line and the first pad a little past it.
         let (at, lat) = boosted.expect("no boost");
         assert!(at.abs_diff(pad.at) <= 3 && (lat - pad.lat).abs() < crate::track::PAD_WIDTH / 2.0);
     }

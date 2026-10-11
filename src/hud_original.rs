@@ -291,17 +291,25 @@ pub fn load(
 }
 
 /// How many pixels the longer side of a map drawn by `sketch` is, how much ground is
-/// left round the road, in the game's units, and how wide the road and the dark edge
-/// on either side of it are drawn, in pixels.
-const SKETCH: f32 = 128.0;
+/// left round the road, in the game's units, and how wide the road (from its middle)
+/// and the dark edge on either side of it are drawn, in pixels: about what the
+/// original's maps give theirs, at twice as many pixels to the map.
+const SKETCH: f32 = 256.0;
 const SKETCH_MARGIN: f32 = 12.0;
-const SKETCH_ROAD: f32 = 1.6;
-const SKETCH_EDGE: f32 = 1.2;
+const SKETCH_ROAD: f32 = 4.0;
+const SKETCH_EDGE: f32 = 2.0;
+const SKETCH_WHITE: Vec3 = Vec3::splat(255.0);
+const SKETCH_GREY: Vec3 = Vec3::splat(96.0);
+/// What an arena's decks and ramps are drawn in, over its floor.
+const SKETCH_DECK: Vec3 = Vec3::new(176.0, 180.0, 192.0);
+const SKETCH_RAMP: Vec3 = Vec3::new(240.0, 200.0, 60.0);
 
 /// A map of a circuit that has no picture for one: its road and byways as a white
 /// line edged in grey, as the original's maps are, with a bar across the start, and
 /// the bounds of the ground it shows as a race's definition gives them (west, north,
 /// east, south). `mirror` is whether the race is, which turns the display's map over.
+/// An arena has no road: its map is its floor in white, edged the same way, with
+/// what stands on it in grey and its decks and ramps coloured in.
 fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
     // East and north of a place, in the game's units.
     let flat = |p: &Vec3| Vec2::new(p.x, if mirror { p.z } else { -p.z }) / UNIT;
@@ -310,9 +318,16 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
     let first = lines[0][0];
     lines[0].push(first);
     lines.extend(track.branches.iter().map(|b| b.pts.iter().map(flat).collect()));
+    if let Some(plan) = track.arena {
+        let outlines = plan.outlines();
+        lines = outlines.iter().map(|line| line.iter().map(flat).collect()).collect();
+    }
     let every = || lines.iter().flatten().copied();
-    let low = every().fold(Vec2::MAX, Vec2::min) - SKETCH_MARGIN;
-    let high = every().fold(Vec2::MIN, Vec2::max) + SKETCH_MARGIN;
+    let (low, high) = (every().fold(Vec2::MAX, Vec2::min), every().fold(Vec2::MIN, Vec2::max));
+    // Room round it for the whole width of a road that runs along its edge.
+    let drawn = SKETCH_ROAD + SKETCH_EDGE + 1.0;
+    let margin = (drawn * (high - low).max_element() / (SKETCH - 2.0 * drawn)).max(SKETCH_MARGIN);
+    let (low, high) = (low - margin, high + margin);
     let range = high - low;
     let per_unit = SKETCH / range.max_element();
     let size = (range * per_unit).ceil().max(Vec2::ONE).as_uvec2();
@@ -326,23 +341,86 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
         let along = ((p - a).dot(b - a) / (b - a).length_squared().max(1e-6)).clamp(0.0, 1.0);
         p.distance(a + (b - a) * along)
     };
+    let nearest = |p: Vec2, line: &[Vec2]| {
+        line.windows(2)
+            .map(|ends| away(p, ends[0], ends[1]))
+            .fold(f32::MAX, f32::min)
+    };
+    // Whether a pixel is inside a closed line.
+    let within = |p: Vec2, line: &[Vec2]| {
+        let crossings = line.windows(2).filter(|ends| {
+            let (a, b) = (ends[0], ends[1]);
+            (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)
+        });
+        crossings.count() % 2 == 1
+    };
     // The bar across the start, square to the road there.
-    let across = (lines[0][1] - lines[0][0]).normalize_or(Vec2::X).perp() * (SKETCH_ROAD + 2.5);
+    let across = (lines[0][1] - lines[0][0]).normalize_or(Vec2::X).perp()
+        * (SKETCH_ROAD + SKETCH_EDGE + 2.0);
     let bar = (lines[0][0] - across, lines[0][0] + across);
+    // An arena's lines are its floor, then its blocks, its ramps and its decks. A
+    // block a ramp comes up to is high ground, and drawn as a deck is.
+    let kinds = track.arena.map(|plan| {
+        let blocks = 1..1 + plan.blocks.len();
+        let ramps = blocks.end..blocks.end + plan.ramps.len();
+        let high: Vec<bool> = plan
+            .blocks
+            .iter()
+            .map(|block| {
+                plan.ramps.iter().any(|ramp| {
+                    let apart = |axis: usize| {
+                        (block.at[axis] - ramp.at[axis]).abs() - block.half[axis] - ramp.half[axis]
+                    };
+                    block.height == ramp.height && apart(0) < 1.0 && apart(1) < 1.0
+                })
+            })
+            .collect();
+        (blocks, ramps, high)
+    });
     let mut rgba = vec![0; (size.x * size.y * 4) as usize];
     for (at, colour) in rgba.chunks_exact_mut(4).enumerate() {
         let p = Vec2::new((at as u32 % size.x) as f32, (at as u32 / size.x) as f32) + 0.5;
-        let road = lines
-            .iter()
-            .flat_map(|line| line.windows(2))
-            .map(|ends| away(p, ends[0], ends[1]))
-            .fold(f32::MAX, f32::min);
-        if away(p, bar.0, bar.1) < 1.0 {
+        // How far inside what is drawn the pixel is, how far inside what is drawn
+        // in `fill` and not in the edge's grey, and what that is.
+        let (inside, clear, fill) = match &kinds {
+            None => {
+                let road = lines.iter().map(|line| nearest(p, line)).fold(f32::MAX, f32::min);
+                let inside = SKETCH_ROAD + SKETCH_EDGE - road;
+                (inside, inside, SKETCH_WHITE)
+            }
+            Some((blocks, ramps, high)) => {
+                let floor = nearest(p, &lines[0]);
+                let floor = if within(p, &lines[0]) { floor } else { -floor };
+                let on = |from: usize, to: usize| {
+                    lines[from..to].iter().any(|line| within(p, line))
+                };
+                let raised = |is: bool| {
+                    blocks.clone().zip(high).filter(move |(_, high)| **high == is).map(|(i, _)| &lines[i])
+                };
+                if on(ramps.end, lines.len()) || raised(true).any(|block| within(p, block)) {
+                    (floor, floor, SKETCH_DECK)
+                } else if on(ramps.start, ramps.end) {
+                    (floor, floor, SKETCH_RAMP)
+                } else {
+                    // What stands on the floor is grey through and through.
+                    let clear = raised(false)
+                        .map(|block| {
+                            let off = nearest(p, block);
+                            if within(p, block) { -off } else { off }
+                        })
+                        .fold(floor, f32::min);
+                    (floor, clear, SKETCH_WHITE)
+                }
+            }
+        };
+        // The edge shades into the fill and into nothing over a pixel each.
+        let filled = (clear - SKETCH_EDGE + 0.5).clamp(0.0, 1.0);
+        let shown = (inside + 0.5).clamp(0.0, 1.0);
+        let shade = SKETCH_GREY.lerp(fill, filled);
+        if kinds.is_none() && away(p, bar.0, bar.1) < 1.5 {
             colour.copy_from_slice(&[0, 0, 160, 255]);
-        } else if road < SKETCH_ROAD {
-            colour.copy_from_slice(&[255; 4]);
-        } else if road < SKETCH_ROAD + SKETCH_EDGE {
-            colour.copy_from_slice(&[96, 96, 96, 255]);
+        } else if shown > 0.0 {
+            colour.copy_from_slice(&[shade.x as u8, shade.y as u8, shade.z as u8, (shown * 255.0) as u8]);
         }
     }
     let pixels = Pixels {
@@ -1252,8 +1330,16 @@ fn a_built_circuit_has_a_map_of_its_road() {
         let (map, [west, north, east, south]) = sketch(&track, false);
         assert_eq!(map.width.max(map.height), SKETCH as u32);
         let range = Vec2::new(east - west, north - south);
-        let lines = std::iter::once(&track.pts).chain(track.branches.iter().map(|b| &b.pts));
-        for p in lines.flatten() {
+        // A circuit's map is of its road; an arena's is of its floor, where its line
+        // goes and its cars start.
+        let grid: Vec<Vec3> = track.course.grid.iter().map(|place| place.0).collect();
+        let lines: Vec<&Vec<Vec3>> = match track.arena {
+            Some(_) => vec![&track.pts, &grid],
+            None => std::iter::once(&track.pts)
+                .chain(track.branches.iter().map(|b| &b.pts))
+                .collect(),
+        };
+        for p in lines.into_iter().flatten() {
             // Where the display puts a car that is here: so far from the map's
             // bottom right corner, as a share of the map.
             let from_corner = Vec2::new(p.x / UNIT - east, south + p.z / UNIT) / range;

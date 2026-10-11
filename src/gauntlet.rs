@@ -2,9 +2,12 @@
 //! hazards as can be moved. Each is borrowed from the circuit it belongs to (its models,
 //! its animation, its emitters) and stood on a stretch of a brick-built road, turned
 //! so that the stretch of its own road it was made for lies along ours. The hazards
-//! themselves are `hazards`' and behave as they do at home. Between the straights the
-//! road twists: zigzags, hairpins, hills, two tunnels and a loop over a bridge, all
-//! laid out in `track`, which leaves two long straights.
+//! themselves are `hazards`' and behave as they do at home. The road is eight rows
+//! one after another, a hairpin from each to the next, with a hazard in the middle of
+//! most rows and another at one end, a bend between them, two of the hairpins in
+//! tunnels and a viaduct back over the others to the start, all laid out in `track`,
+//! which gives each hazard no more road than it wants. Whatever stands beside a
+//! hazard's road has to fit between that row and the next.
 //!
 //! What the original circuits' own models held up is built of bricks here: the
 //! hammer's frame, the plinths of the crane, the pillar and the ark, the cannons, the
@@ -17,9 +20,9 @@
 //! and the code puzzle, whose doors want a short cut to open onto.
 //!
 //! The other circuits of the port's own have a few of the same hazards each, stood
-//! the same way: the brick circuit the hammer, the cannons and the ghost; the figure
-//! of eight the stones, the dragon and the curse; the helter skelter the hammer before
-//! its jump, the stones, the cannons and the ark.
+//! the same way: the brick circuit the hammer, the ghost and the cannons; the figure
+//! of eight the curse, the stones and the dragon; the helter skelter the ark, the
+//! hammer before its jump, the cannons and the stones.
 //!
 //! Without the game's data there is nothing to borrow, and each is a plain circuit.
 
@@ -55,6 +58,11 @@ const HELTER_BORROWED: &Borrowed = &[
     ("RACEC0R0", &["rkhamm02"], &[]),
     ("RACEC2R2", &["arktp", "dum02", "dum03", "dum04"], &[]),
 ];
+
+/// What the arenas take.
+const YARD_BORROWED: &Borrowed = &[("RACEC1R0", &["ghostly"], &["ghsttrl"])];
+const CROSSROADS_BORROWED: &Borrowed = &[("RACEC2R0", &["prntdum"], &[])];
+const RING_BORROWED: &Borrowed = &[("RACEC2R2", &["arktp"], &[])];
 
 /// What the gauntlet takes.
 const BORROWED: [(&str, &[&str], &[&str]); 10] = [
@@ -105,8 +113,13 @@ const PILLAR_WALL: usize = 3;
 /// computer's cars leave it.
 const LANE_LENGTH: f32 = 35.0;
 const LANE_WARNING: f32 = 60.0;
-/// Where the force field's gate is, as (x, z) of ours.
-const FIELD_AT: (f32, f32) = (467.0, -348.4);
+/// How far round the lap the force field's gate is.
+const FIELD_AT: f32 = 900.0;
+/// How far from the middle of the road the legs of the hammer's frame stand, the
+/// cannons' muzzles are and the ark's plinth is.
+const FRAME_OUT: f32 = WALL + 3.0;
+const CANNON_OUT: f32 = WALL + 5.0;
+const ARK_OUT: f32 = WALL + 3.5;
 
 /// The brick-built parts of the gauntlet.
 #[derive(Resource)]
@@ -123,9 +136,14 @@ struct Site {
 }
 
 impl Site {
-    /// The road nearest (`x`, `z`) of ours, `lat` to the right of its middle.
-    fn on(track: &Track, x: f32, z: f32, lat: f32) -> Site {
-        Site::sample(track, track.nearest(Vec3::new(x, 0.0, z)), lat)
+    /// A place on the ground that is on no road, as an arena's are: (`x`, `z`) of
+    /// ours, facing so far round from east.
+    fn place(x: f32, z: f32, heading: f32) -> Site {
+        Site {
+            origin: Vec3::new(x, -z, 0.0) / UNIT,
+            heading,
+            s: 0.0,
+        }
     }
 
     /// The road `s` round the lap, `lat` to the right of its middle.
@@ -304,15 +322,13 @@ impl Builder<'_> {
                 colour,
             );
         }
-        for (right, power) in [(2.5, Power::Red), (5.0, Power::Green), (7.5, Power::Yellow)] {
-            self.world
-                .bricks
-                .push((Some(power), to_world(site.at(14.0, right, BRICK_HEIGHT))));
+        for (right, power) in [(0.25, Power::Red), (0.5, Power::Green), (0.75, Power::Yellow)] {
+            let at = site.at(14.0, right * WALL, BRICK_HEIGHT);
+            self.world.bricks.push((Some(power), to_world(at)));
         }
-        for right in [3.75, 6.25] {
-            self.world
-                .bricks
-                .push((None, to_world(site.at(24.0, right, BRICK_HEIGHT))));
+        for right in [0.375, 0.625] {
+            let at = site.at(24.0, right * WALL, BRICK_HEIGHT);
+            self.world.bricks.push((None, to_world(at)));
         }
         self.keep_left(site, LANE_WARNING, LANE_LENGTH + 5.0, -2.0);
     }
@@ -350,12 +366,12 @@ impl Builder<'_> {
                 last: None,
             },
         ));
-        for side in [-14.0, 14.0] {
+        for side in [-FRAME_OUT, FRAME_OUT] {
             self.plinth(site.at(0.0, side, 18.6), 1.3, GREY);
         }
         self.beam(
-            site.at(0.0, -14.0, 18.0),
-            site.at(0.0, 14.0, 18.0),
+            site.at(0.0, -FRAME_OUT, 18.0),
+            site.at(0.0, FRAME_OUT, 18.0),
             0.8,
             DARK_GREY,
         );
@@ -388,7 +404,7 @@ impl Builder<'_> {
     /// Two cannons, one either side, each firing at the road as cars come up to it.
     fn cannons(&mut self, site: Site) {
         for (i, side) in [1.0, -1.0].into_iter().enumerate() {
-            let muzzle = site.at(-6.0 * side, 16.0 * side, 5.5);
+            let muzzle = site.at(-6.0 * side, CANNON_OUT * side, 5.5);
             let targets = [(-20.0, -4.0), (-9.0, 3.0), (3.0, -2.0), (14.0, 4.0)];
             let targets = targets
                 .iter()
@@ -431,7 +447,8 @@ impl Builder<'_> {
     }
 
     /// The knights' dragon flies up and down above the road, raining cannon balls.
-    fn dragon(&mut self, site: Site) {
+    /// `reach` is how near a car must come for the cannonballs to begin.
+    fn dragon(&mut self, site: Site, reach: f32) {
         self.place(
             &site.fit(Vec3::new(-229.0, -360.0, -88.4), -89.2, 1.0),
             &["prntdum"],
@@ -444,7 +461,7 @@ impl Builder<'_> {
                 timer: 0.0,
             },
             site.origin,
-            70.0,
+            reach,
         );
     }
 
@@ -485,8 +502,10 @@ pub fn load(
         Layout::FigureEight => FIGURE_EIGHT_BORROWED,
         Layout::Gauntlet => &BORROWED,
         Layout::HelterSkelter => HELTER_BORROWED,
-        // Nothing stands in an arena but its cars.
-        Layout::Bowl | Layout::Flyover | Layout::Switchback => &[],
+        Layout::Yard => YARD_BORROWED,
+        Layout::Crossroads => CROSSROADS_BORROWED,
+        Layout::Ring => RING_BORROWED,
+        Layout::Town => CROSSROADS_BORROWED,
     };
     let mut world = world::borrowed(circuit.unwrap_or("c0"), borrowed)?;
     // Everything is worked out on the circuit as it is unmirrored, in the game's
@@ -503,24 +522,38 @@ pub fn load(
     let at = |s: f32, lat: f32| Site::along(&plain, s, lat);
     match layout {
         Layout::Brick => {
-            b.hammer(at(40.0, 0.0));
-            b.cannons(at(570.0, 0.0));
-            b.ghost(at(1040.0, 0.0));
+            b.hammer(at(60.0, 0.0));
+            b.ghost(at(174.0, 0.0));
+            b.cannons(at(985.0, 0.0));
         }
         Layout::FigureEight => {
-            b.stones([110.0, 135.0, 160.0].map(|s| at(s, 0.0)));
-            b.dragon(at(1120.0, 0.0));
-            let drops = [(1025.0, -3.0), (1035.0, 3.0), (1045.0, 0.0)].map(|(s, lat)| at(s, lat));
-            b.curse(&mut places, at(1000.0, 0.0), drops);
+            let drops = [(24.0, -3.0), (30.0, 3.0), (36.0, 0.0)].map(|(s, lat)| at(s, lat));
+            b.curse(&mut places, at(10.0, 0.0), drops);
+            // The dragon is over the crossing.
+            b.dragon(at(467.0, 0.0), 70.0);
+            b.stones([930.0, 950.0, 970.0].map(|s| at(s, 0.0)));
         }
         Layout::Gauntlet => gauntlet(&mut b, &mut places, &plain),
         Layout::HelterSkelter => {
-            b.cannons(at(380.0, 0.0));
-            b.ark(at(1300.0, -13.5));
-            b.hammer(at(2670.0, 0.0));
-            b.stones([3860.0, 3885.0, 3910.0].map(|s| at(s, 0.0)));
+            b.hammer(at(30.0, 0.0));
+            b.stones([110.0, 122.0, 134.0].map(|s| at(s, 0.0)));
+            b.ark(at(257.0, -ARK_OUT));
+            b.cannons(at(700.0, 0.0));
         }
-        Layout::Bowl | Layout::Flyover | Layout::Switchback => {}
+        // An arena's are where its cars come on them whichever way they go: the
+        // yard's ghost in its square, the crossroads' cannons firing into its west
+        // pocket at a car on its way in and its dragon over the east one, the
+        // ring's ark on the plinth in its middle.
+        Layout::Yard => b.ghost(Site::place(0.0, 0.0, 0.0)),
+        Layout::Crossroads => {
+            b.cannons(Site::place(-116.0, 0.0, TAU / 2.0));
+            // Only a car in the pocket itself sets the dragon off.
+            b.dragon(Site::place(118.0, 0.0, 0.0), 28.0);
+        }
+        Layout::Ring => b.ark(Site::place(0.0, 0.0, 0.0)),
+        // The town's dragon is between the bus and the truck, and rains on a car
+        // that comes through there.
+        Layout::Town => b.dragon(Site::place(0.0, 0.0, 0.0), 24.0),
     }
 
     // Bricks where the circuit's own features ask for them, as without the hazards.
@@ -542,14 +575,18 @@ pub fn load(
     ))
 }
 
-/// The gauntlet's hazards, in the order the road comes to them.
+/// The gauntlet's hazards, each so far round the lap, in the order the road comes to
+/// them: one in the middle of a row, on the straight between its two bends, and
+/// another at one end of it.
 fn gauntlet(b: &mut Builder, places: &mut Places, plain: &Track) {
-    let on = |x: f32, z: f32, lat: f32| Site::on(plain, x, z, lat);
-    b.hammer(on(45.0, 0.0, 0.0));
-    b.stones([0.0, 1.0, 2.0].map(|i| on(80.0 + 25.0 * i, 0.0, 0.0)));
+    let at = |s: f32, lat: f32| Site::along(plain, s, lat);
+    // A mummy's curse waits just past the line, and the temple's stones after it.
+    let drops = [(30.0, -3.0), (38.0, 3.0), (46.0, 0.0)].map(|(s, right)| at(s, right));
+    b.curse(places, at(15.0, 0.0), drops);
+    b.stones([55.0, 77.0, 99.0].map(|s| at(s, 0.0)));
 
     // The aliens' saucer comes down the road at its lowest.
-    let site = on(236.0, -60.0, 0.0);
+    let site = at(242.0, 0.0);
     b.place(
         &site.fit(Vec3::new(-261.0, 394.0, 160.0), -65.0, 1.0),
         &["ufofly1", "beamdumy"],
@@ -563,26 +600,11 @@ fn gauntlet(b: &mut Builder, places: &mut Places, plain: &Track) {
     };
     b.hazard(UFO, grabber, site.origin, 90.0);
 
-    // The dock's crane swings its load in from the left.
-    let site = on(401.0, -60.0, 2.0);
-    let fit = site.fit(Vec3::new(-492.0, -508.0, -76.3), 139.0, 1.0);
-    b.place(&fit, &["crane"]);
-    b.hazard(CRANE, Kind::Crane { pending: true }, site.origin, 70.0);
-    b.plinth(fit.point(Vec3::new(-530.15, -569.28, -31.5)), 3.0, YELLOW);
-
-    // A warp pad on the left of the road, and where it comes out: past the switchback.
-    let (pad, out) = (on(459.0, -100.0, -5.5), on(531.0, -80.0, 0.0));
-    b.events.trigger(to_world(pad.origin), 3.5, WARP, false);
-    b.hazards.push((WARP, Kind::WarpPad));
-    (places.warp_to, places.warp_facing) =
-        (out.at(0.0, 0.0, 0.2), out.at(1.0, 0.0, 0.0) - out.origin);
-    b.disc(pad.origin, 3.2, BLUE);
-    b.disc(out.origin, 2.0, BLUE);
-
-    b.cannons(on(531.0, -120.0, 0.0));
+    b.hammer(at(314.0, 0.0));
+    b.cannons(at(466.0, 0.0));
 
     // The moon's lava leaps between three pools, two of them at the road.
-    let site = on(531.0, -275.0, 0.0);
+    let site = at(690.0, 0.0);
     let fit = site.fit(Vec3::new(550.0, -462.0, 6.0), 58.0, 1.0);
     b.place(&fit, &["mmlavbl"]);
     places.lava_pools = places.lava_pools.map(|pool| fit.point(pool));
@@ -600,9 +622,11 @@ fn gauntlet(b: &mut Builder, places: &mut Places, plain: &Track) {
         b.disc(pool, 4.0, ORANGE);
     }
 
+    b.dragon(at(764.0, 0.0), 70.0);
+
     // The moon's force field shuts a lane to all but the shielded.
-    let site = on(FIELD_AT.0, FIELD_AT.1, 0.0);
-    let gate = on(FIELD_AT.0, FIELD_AT.1, WALL / 2.0);
+    let site = at(FIELD_AT, 0.0);
+    let gate = at(FIELD_AT, WALL / 2.0);
     b.place(
         &gate.fit(Vec3::new(411.06, -116.03, 0.0), 0.0, 0.7),
         &["mmrocon", "mmrocof"],
@@ -611,22 +635,40 @@ fn gauntlet(b: &mut Builder, places: &mut Places, plain: &Track) {
     b.shut_lane(site, FIELD_WALL);
     b.surface("mmrocc", FIELD_WALL, false);
 
-    // The ice planet's craft hangs over the road letting out smoke, and it snows.
-    let site = on(379.0, -328.6, 0.0);
-    b.place(
-        &site.fit(Vec3::new(454.6, -530.6, -95.0), 21.2, 1.0),
-        &["dp_def"],
-    );
-    b.hazard(SMOKE, Kind::SmokeVent { emitter: None }, site.origin, 70.0);
-    b.events.trigger(to_world(site.origin), 100.0, SNOW, true);
-    b.hazards.push((SNOW, Kind::Snowfall { emitter: None }));
+    b.ark(at(988.0, ARK_OUT));
+    b.ghost(at(1140.0, 0.0));
 
-    b.ghost(on(192.0, -308.8, 0.0));
-    b.dragon(on(112.0, -308.8, 0.0));
+    // The desert's pillar falls across the right of the road as the first car comes.
+    let site = at(1208.0, 1.0);
+    let fit = site.fit(Vec3::new(842.0, 296.7, -60.0), 90.0, 1.0);
+    b.place(&fit, &["piltop"]);
+    b.events
+        .trigger(to_world(site.at(-60.0, 0.0, 0.0)), 15.0, PILLAR, false);
+    b.hazards.push((
+        PILLAR,
+        Kind::FallingPillar {
+            fallen: false,
+            landed: false,
+        },
+    ));
+    b.plinth(fit.point(Vec3::new(902.5, 294.0, -0.5)), 3.0, TAN);
+    // Where it lies once it has fallen.
+    let corner = |x: f32, y: f32| fit.point(Vec3::new(x, y, -60.0));
+    let corners = [
+        corner(842.0, 292.0),
+        corner(885.0, 292.0),
+        corner(885.0, 301.0),
+        corner(842.0, 301.0),
+    ];
+    for i in 0..4 {
+        b.wall(PILLAR_WALL, corners[i], corners[(i + 1) % 4], 8.0);
+    }
+    b.surface("pilcol", PILLAR_WALL, true);
+    b.keep_left(site, 45.0, 12.0, -2.5);
 
     // The dock's barrels shut a lane until a cannon, set off by a horn, clears them.
-    let site = on(-331.0, -63.0, 0.0);
-    let gate = on(-331.0, -63.0, WALL / 2.0);
+    let site = at(1350.0, 0.0);
+    let gate = at(1350.0, WALL / 2.0);
     let barrels = ["block", "barrel", "barrel01", "barrel02"];
     b.place(
         &gate.fit(Vec3::new(-402.0, 513.5, 52.5), 57.5, 0.8),
@@ -654,42 +696,36 @@ fn gauntlet(b: &mut Builder, places: &mut Places, plain: &Track) {
     b.shut_lane(site, BARREL_WALL);
     b.surface("shootme", BARREL_WALL, false);
 
-    // The desert's pillar falls across the right of the road as the first car comes.
-    let site = on(-258.0, 0.0, 1.0);
-    let fit = site.fit(Vec3::new(842.0, 296.7, -60.0), 90.0, 1.0);
-    b.place(&fit, &["piltop"]);
-    b.events
-        .trigger(to_world(site.at(-60.0, 0.0, 0.0)), 15.0, PILLAR, false);
-    b.hazards.push((
-        PILLAR,
-        Kind::FallingPillar {
-            fallen: false,
-            landed: false,
-        },
-    ));
-    b.plinth(fit.point(Vec3::new(902.5, 294.0, -0.5)), 3.0, TAN);
-    // Where it lies once it has fallen.
-    let corner = |x: f32, y: f32| fit.point(Vec3::new(x, y, -60.0));
-    let corners = [
-        corner(842.0, 292.0),
-        corner(885.0, 292.0),
-        corner(885.0, 301.0),
-        corner(842.0, 301.0),
-    ];
-    for i in 0..4 {
-        b.wall(PILLAR_WALL, corners[i], corners[(i + 1) % 4], 8.0);
-    }
-    b.surface("pilcol", PILLAR_WALL, true);
-    b.keep_left(site, 45.0, 12.0, -2.5);
+    // The dock's crane swings its load in from the left: the outside of the last row.
+    let site = at(1581.0, 2.0);
+    let fit = site.fit(Vec3::new(-492.0, -508.0, -76.3), 139.0, 1.0);
+    b.place(&fit, &["crane"]);
+    b.hazard(CRANE, Kind::Crane { pending: true }, site.origin, 70.0);
+    b.plinth(fit.point(Vec3::new(-530.15, -569.28, -31.5)), 3.0, YELLOW);
 
-    b.ark(on(-115.0, 0.0, 13.5));
-    let drops = [(-60.0, -3.0), (-50.0, 3.0), (-40.0, 0.0)].map(|(x, right)| on(x, 0.0, right));
-    b.curse(places, on(-85.0, 0.0, 0.0), drops);
+    // A warp pad on the left of the road, and where it comes out: up on the viaduct.
+    let (pad, out) = (at(1599.0, -4.0), at(1707.0, 0.0));
+    b.events.trigger(to_world(pad.origin), 3.5, WARP, false);
+    b.hazards.push((WARP, Kind::WarpPad));
+    (places.warp_to, places.warp_facing) =
+        (out.at(0.0, 0.0, 0.2), out.at(1.0, 0.0, 0.0) - out.origin);
+    b.disc(pad.origin, 3.2, BLUE);
 
-    // The island's water lies in the middle of it all, sloshing.
+    // The ice planet's craft hangs over the top of the viaduct letting out smoke, and
+    // it snows there.
+    let site = at(1805.0, 0.0);
+    b.place(
+        &site.fit(Vec3::new(454.6, -530.6, -95.0), 21.2, 1.0),
+        &["dp_def"],
+    );
+    b.hazard(SMOKE, Kind::SmokeVent { emitter: None }, site.origin, 70.0);
+    b.events.trigger(to_world(site.origin), 100.0, SNOW, true);
+    b.hazards.push((SNOW, Kind::Snowfall { emitter: None }));
+
+    // The island's water lies beside it all, to the east, sloshing.
     let middle = Site {
-        origin: Vec3::new(70.0, 130.0, 0.0) / UNIT,
-        heading: 0.0,
+        origin: Vec3::new(185.0, 0.0, 0.0) / UNIT,
+        heading: TAU / 4.0,
         s: 0.0,
     };
     b.place(
@@ -749,12 +785,12 @@ mod tests {
             );
         }
         // The computer's cars are kept out of the shut lanes, and bricks are left in them.
-        let gate = Site::on(&Track::plain(Layout::Gauntlet), FIELD_AT.0, FIELD_AT.1, 0.0);
+        let gate = Site::along(&Track::plain(Layout::Gauntlet), FIELD_AT, 0.0);
         assert_eq!(track.lane(gate.s, 5.0), -2.0);
         assert_eq!(track.lane(gate.s - 100.0, 5.0), 5.0);
         assert!(world.bricks.iter().any(|b| b.1.distance(to_world(gate.at(
             14.0,
-            5.0,
+            WALL / 2.0,
             BRICK_HEIGHT
         ))) < 0.1));
     }

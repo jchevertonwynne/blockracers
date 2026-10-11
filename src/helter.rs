@@ -1,24 +1,25 @@
 //! What stands round the helter skelter (`track::Layout::HelterSkelter`), a circuit of
 //! the port's own: the tower its spiral winds round, a grandstand by the start, a
 //! gantry at the jump, a pond, and rocks on the island the road swings out round.
+//! The tower stands in the middle of the spiral, which comes down round it.
 //! None of it is solid; all of it is off the road.
 
 use crate::meshgen::*;
 use bevy::prelude::*;
 
 /// Where each stands on the unmirrored circuit, as (x, z).
-const TOWER: [f32; 2] = [495.1, 684.1];
-const STAND: [f32; 2] = [60.0, -27.0];
-const GANTRY: [f32; 2] = [216.6, 524.0];
-const POND: [f32; 2] = [50.0, 400.0];
-const ISLAND: [f32; 2] = [648.0, 554.0];
+const TOWER: [f32; 2] = [56.0, 2.0];
+const STAND: [f32; 2] = [-20.0, -113.0];
+const GANTRY: [f32; 2] = [-10.0, -94.0];
+const POND: [f32; 2] = [0.0, 134.0];
+const ISLAND: [f32; 2] = [112.5, 2.0];
 
 /// How long the grandstand is, and how many rows it has.
 const STAND_LENGTH: f32 = 80.0;
 const STAND_ROWS: usize = 5;
-const POND_RADIUS: f32 = 34.0;
+const POND_RADIUS: f32 = 30.0;
 /// How far from the middle of the road the gantry's legs are, and how high its beam.
-const GANTRY_LEGS: f32 = 13.6;
+const GANTRY_LEGS: f32 = 10.6;
 const GANTRY_HEIGHT: f32 = 15.0;
 
 /// A place on the circuit as it is being raced, mirrored or not.
@@ -32,13 +33,13 @@ pub fn clearings() -> Vec<(Vec3, f32)> {
     let mut clearings = vec![
         (place(TOWER), 16.0),
         (place(POND), POND_RADIUS + 6.0),
-        (place(ISLAND), 12.0),
+        (place(ISLAND), 9.0),
     ];
     for along in [-0.4, -0.2, 0.0, 0.2, 0.4] {
         clearings.push((place(STAND) + Vec3::X * STAND_LENGTH * along, 22.0));
     }
     for side in [-1.0, 1.0] {
-        clearings.push((place(GANTRY) + Vec3::X * GANTRY_LEGS * side, 5.0));
+        clearings.push((place(GANTRY) + Vec3::Z * GANTRY_LEGS * side, 5.0));
     }
     clearings
 }
@@ -141,10 +142,10 @@ pub fn scenery(b: &mut BrickMesh) {
         (20, 5),
     );
 
-    // The gantry at the foot of the jump: a striped beam on two legs.
+    // The gantry at the foot of the jump: a striped beam on two legs, across the road.
     let gantry = place(GANTRY);
     for side in [-1.0, 1.0] {
-        let leg = gantry + Vec3::X * GANTRY_LEGS * side;
+        let leg = gantry + Vec3::Z * GANTRY_LEGS * side;
         let half = Vec3::new(0.9, GANTRY_HEIGHT / 2.0, 0.9);
         b.brick(leg + up * GANTRY_HEIGHT / 2.0, half, still, YELLOW, (2, 2));
     }
@@ -154,8 +155,8 @@ pub fn scenery(b: &mut BrickMesh) {
         let across = (stripe as f32 + 0.5) * wide - GANTRY_LEGS - 0.9;
         let colour = if stripe % 2 == 0 { BLACK } else { YELLOW };
         b.cuboid(
-            gantry + Vec3::X * across + up * (GANTRY_HEIGHT + 1.2),
-            Vec3::new(wide / 2.0, 1.2, 0.9),
+            gantry + Vec3::Z * across + up * (GANTRY_HEIGHT + 1.2),
+            Vec3::new(0.9, 1.2, wide / 2.0),
             still,
             colour,
         );
@@ -190,11 +191,11 @@ pub fn scenery(b: &mut BrickMesh) {
     // Rocks on the island.
     let island = place(ISLAND);
     for (rock, &(x, z, size)) in [
-        (0.0, 0.0, 3.2),
-        (5.0, 3.0, 2.2),
-        (-4.0, 5.0, 1.8),
-        (3.0, -6.0, 2.6),
-        (-3.0, -4.0, 1.4),
+        (0.0, 0.0, 2.6),
+        (2.0, 5.0, 1.8),
+        (-2.0, 8.0, 1.5),
+        (1.5, -6.0, 2.1),
+        (-1.5, -9.0, 1.2),
     ]
     .iter()
     .enumerate()

@@ -27,7 +27,8 @@ pub struct Circuit {
 }
 
 impl Circuit {
-    /// Whether it is one of the arenas, which are for a battle (`Layout::ARENAS`).
+    /// Whether it is one of the arenas, which are for a battle or a game of tag
+    /// (`Layout::ARENAS`).
     pub fn arena(&self) -> bool {
         self.race.is_none() && self.layout.arena()
     }
@@ -62,7 +63,7 @@ impl Circuits {
                 }
             })
             .collect();
-        // The arenas come last, and are raced on only in a battle online.
+        // The arenas come last, and are for a battle or a game of tag online.
         let built = Layout::ALL.into_iter().chain(Layout::ARENAS);
         circuits.extend(built.map(|layout| Circuit {
             name: layout.name().into(),
@@ -135,6 +136,12 @@ pub enum Mode {
 
 impl Mode {
     pub const ALL: [Mode; 4] = [Mode::Race, Mode::Elimination, Mode::Battle, Mode::Tag];
+
+    /// Whether laps don't end it: it is then fought out, in an arena if the room
+    /// likes (`track::Layout::ARENAS`).
+    pub fn lapless(self) -> bool {
+        matches!(self, Mode::Battle | Mode::Tag)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -406,7 +413,7 @@ impl Settings {
 
     /// Whether the race is one of those that laps don't end (`net::modes`).
     pub fn lapless(&self) -> bool {
-        matches!(self.mode, Mode::Battle | Mode::Tag)
+        self.mode.lapless()
     }
 
     /// The rule the race's bricks follow, as an index into `BRICK_RULES`.
@@ -753,7 +760,7 @@ fn single_races_are_listed_in_their_circuits_order() {
     );
     assert_eq!(listed[12], ("Rocket Racer Run", 3));
     // The built-in circuits come last, in a set of their own, and the arenas after them.
-    assert_eq!((listed.len(), listed[13].1, listed[16].1), (20, 4, 4));
+    assert_eq!((listed.len(), listed[13].1, listed[16].1), (21, 4, 4));
     let arenas: Vec<bool> = circuits.0.iter().map(Circuit::arena).collect();
     assert!(arenas[..17].iter().all(|arena| !arena) && arenas[17..].iter().all(|arena| *arena));
 }

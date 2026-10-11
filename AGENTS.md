@@ -20,15 +20,50 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   the game. Each module's header comment says which part of the original it follows.
 - **Our own circuits:** `src/track.rs` lays out the four built here (`track::Layout`) and
   what each has besides its road (`Extras`: byways, infields, speed pads and banked
-  corners, each so far round the lap). The computer's cars take the byways
+  corners, each so far round the lap). Each road is a list of corners
+  (`track::cornered`: x, height, z and the radius it is rounded to, with straights
+  between and the heights eased from one to the next), narrow, and folded in on
+  itself so that it is never straight or level for long and one stretch runs
+  beside, over or under another: stretches side by side are two barriers apart, and
+  one over another is `DECK` above it. No corner is tighter than a car going flat
+  out can be slid round: a hairpin is eighteen or twenty to its middle (seventeen
+  on the gauntlet), and a test drives every circuit that way
+  (`kart`'s `every_corner_of_the_built_in_circuits_is_slid_round_flat_out`). The
+  figure of eight also crosses itself on
+  the level (`Track::crossings`), where neither road has a barrier or a verge across
+  the other. A wall stands inside each of the tighter corners that are on the
+  ground (`Track::screens`), so that the road round it is not seen. The gates are
+  every thirty-odd units, and neither they nor the lap zones are where a car on
+  another stretch could reach them; a car that leaves its stretch is looked for on
+  the others (`Track::strays`). The distances in `Extras` and those the hazards
+  stand at are measured round the lap, and want measuring again when a road is
+  changed. The computer's cars take the byways
   (`kart::Ai::byway`), `items::laid` puts the bricks where those features are,
   `src/gauntlet.rs` stands hazards of the game's round each, and `src/helter.rs` is the
   helter skelter's scenery. They have no picture for the race display's map, so one
-  is drawn of the road (`hud::original::sketch`). Three more are arenas
-  (`Layout::ARENAS`: the bowl, the flyover and the switchback), short laps made for
-  a battle online and offered nowhere else: the room's vote lists them only when
-  the host's mode is battle (`frontend`'s `offered`), and the host runs anything
-  else voted onto one on the first circuit (`Rules::fitted`). They have no hazards.
+  is drawn of the road (`hud::original::sketch`).
+- **Arenas:** `src/arena.rs` (the port's own) lays out four places to fight in
+  (`Layout::ARENAS`: the yard, the crossroads, the ring and the town), for a battle or a game
+  of tag online and offered nowhere else: the room's vote lists them only when the
+  host's mode is one of those (`frontend`'s `offered`), and the host runs a race
+  voted onto one on the first circuit (`Rules::fitted`). An arena is a walled floor
+  with no road (`Track::arena`), built of blocks, ramps and decks that are driven
+  on and under (`arena::Plan`): the yard is three ways end to end with a bridge
+  over the middle one and catwalks from it to its buildings' roofs, each with a
+  ramp up from its end; the crossroads has a flyover across its junction, a deck
+  across that climbed from east and west, and a pocket at the end of two arms;
+  the ring a hill with a ramp up each side and a gallery against the wall north
+  and south; and the town a street with a two-floored house at each end, a bus
+  and a truck between them and a footbridge over those from the one house's
+  upper floor to the other's. There
+  are no gates, lap zones or finishing line, and the cars start apart, facing
+  the middle.
+  Its line (`arena::Plan::line`) is only where bricks are laid and where the
+  computer's cars wander when they have nobody in sight to go for (`kart::Ai::quarry`:
+  the nearest car, when they hold a power-up or are "it"). Each has a hazard or
+  two of the game's (`gauntlet::load`), and its map is of its wall and blocks.
+  Every plan is the same either side of its east-west line, so mirrored it is
+  itself; one that wasn't would need its floor and blocks mirrored too.
 - **Built cars:** `src/build.rs` has the rules of putting bricks on a chassis, the
   bytes a car is saved as and the model made of one, and a racer's minifigure;
   `src/assets/leb.rs`, `gcb.rs` and `lrs.rs` read the bricks, the minifigure's heads
@@ -219,7 +254,7 @@ menu instead. These combine with it:
 
 | Variable | Does |
 |---|---|
-| `BRICK_RACE=RACEC0R0` | which race folder to load (`TEST` is the garage's test drive; `BRICK`, `FIGURE8`, `GAUNTLET` and `HELTER` are the built-in circuits, `BOWL`, `FLYOVER` and `SWITCHBACK` the arenas; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
+| `BRICK_RACE=RACEC0R0` | which race folder to load (`TEST` is the garage's test drive; `BRICK`, `FIGURE8`, `GAUNTLET` and `HELTER` are the built-in circuits, `YARD`, `CROSSROADS`, `RING` and `TOWN` the arenas, where a demo's own car stays on the grid unless `BRICK_KEYS` drives it; the gauntlet's hazards are set off by events 101 to 119, see `src/gauntlet.rs`) |
 | `BRICK_CAM=x,y,z,tx,ty,tz` | fixed camera, in the game's coordinates |
 | `BRICK_VIEW=back,up,right` | camera placed relative to the player's car |
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
@@ -259,15 +294,17 @@ seconds or so before anything is on the road. Online the demo's cars are driven 
 `BRICK_KEYS` (`W@10+12`), not by the computer. A demo can't type, so the pages
 with something to type into are reached by `BRICK_MENU` and `BRICK_NET` and not
 through the menus; in the room, `Enter` is on "ready" to begin with. After a race
-the room opens on its results, where `Enter` is on "OK". The room's other pages
+the room opens on its results, where `Enter` is on "OK". The room is a column of
+rows down its left, in the order `Down` goes through them ("ready", the vote, what
+to race as, "build a racer", then the host's "race rules", "session" and "start
+now"), with everyone's minifigure on its right and the next race said under them. The room's other pages
 (the last race, and the host's page for the password, the player limit and putting
 a player out) are reached with `BRICK_KEYS`. In a race online the question `Escape`
 asks opens on "no": `Escape@13,Up@13.4,Enter@13.8` gives the race up. In the room
-while a race is on, `Down` then `Enter` from "ready" goes to the race. `Up` from
-"ready" is what to race as, which `Left` and `Right` change, and `Up` again is
-"next race", the page the next race's circuit is voted for on (`Enter` on a
-circuit votes for it; the rest of how the race is run is the host's, on "rules"); "build", the last of
-the buttons under "ready", opens the garage, and `Escape` there comes back.
+while a race is on, the row for it is the first under "build a racer". Two `Down`s from
+"ready" is what to race as, which `Left` and `Right` change, and one `Down` is
+"vote for a circuit", the page the next race's circuit is voted for on (`Enter` on a
+circuit votes for it; the rest of how the race is run is the host's, on "rules"); "build a racer", under what to race as, opens the garage, and `Escape` there comes back.
 
 ## Being a good guest on the user's machine
 

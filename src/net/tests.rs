@@ -232,11 +232,12 @@ fn the_other_cars_are_shown_where_they_are_about_to_be() {
     let mut pair = Pair::new(2, LOSS);
     let mut trail: Vec<Vec3> = Vec::new();
     let mut shown = Vec3::ZERO;
-    for step in 0..360 {
+    // No longer than the start straight lasts a car that isn't steered.
+    for step in 0..270 {
         press(&mut pair.host, KeyCode::KeyW, true);
         pair.step();
         trail.push(car(&mut pair.host, HOSTS).pos);
-        if step == 330 {
+        if step == 240 {
             shown = car(&mut pair.guest, HOSTS).pos;
             // Ahead of where the host has it at this moment, the way it is going.
             let (there, going) = (
@@ -256,7 +257,7 @@ fn the_other_cars_are_shown_where_they_are_about_to_be() {
     // And the host's car duly goes through where it was shown.
     let nearest = trail
         .iter()
-        .skip(330)
+        .skip(240)
         .map(|at| at.distance(shown))
         .reduce(f32::min)
         .unwrap();
@@ -290,10 +291,11 @@ fn a_cannonball_fired_on_the_host_hits_the_players_car() {
     for _ in 0..30 {
         pair.step();
     }
-    // The player's car a little way up the road, the host's behind it.
+    // The player's car a little way up the road, the host's behind it, and no gate
+    // near enough ahead of either for being knocked through it to change its place.
     let track = Track::new();
-    car_mut(&mut pair.host, GUESTS).place(&track, 30.0, 0.0);
-    car_mut(&mut pair.host, HOSTS).place(&track, 12.0, 0.0);
+    car_mut(&mut pair.host, GUESTS).place(&track, 36.0, 0.0);
+    car_mut(&mut pair.host, HOSTS).place(&track, 18.0, 0.0);
     for _ in 0..30 {
         pair.step();
     }

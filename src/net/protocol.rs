@@ -169,11 +169,11 @@ impl Rules {
         Mode::ALL[(self.mode as usize).min(Mode::ALL.len() - 1)]
     }
 
-    /// These, on a circuit they can be raced on: an arena is for a battle, and
-    /// anything else voted onto one is run on the first circuit there is.
+    /// These, on a circuit they can be raced on: an arena is for a battle or a game
+    /// of tag, and a race voted onto one is run on the first circuit there is.
     pub fn fitted(mut self, circuits: &Circuits) -> Self {
         let arena = circuits.0.iter().any(|c| key(c) == self.circuit && c.arena());
-        if arena && self.mode() != Mode::Battle {
+        if arena && !self.mode().lapless() {
             self.circuit = circuits.0.first().map(key).unwrap_or_default().to_string();
         }
         self
@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn an_arena_is_raced_on_only_in_a_battle() {
+    fn an_arena_is_for_a_battle_or_a_game_of_tag() {
         let circuits = Circuits::find();
         let settings = Settings::new(&circuits);
         let arena = circuits.0.iter().find(|c| c.arena()).expect("an arena");
@@ -347,7 +347,8 @@ mod tests {
             ..Rules::of(&settings, &circuits)
         };
         assert_eq!(wanted(Mode::Battle).fitted(&circuits).circuit, key(arena));
-        for mode in [Mode::Race, Mode::Elimination, Mode::Tag] {
+        assert_eq!(wanted(Mode::Tag).fitted(&circuits).circuit, key(arena));
+        for mode in [Mode::Race, Mode::Elimination] {
             let fitted = wanted(mode).fitted(&circuits);
             assert_eq!(fitted.circuit, key(&circuits.0[0]));
             assert_eq!(fitted.mode(), mode);
