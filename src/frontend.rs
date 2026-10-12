@@ -1525,6 +1525,18 @@ fn map_place(n: usize, count: usize) -> Vec2 {
     )
 }
 
+/// Which of `count` circuits to be voted for is beside the `n`th, in the column
+/// to its right or its left: the one on its row, or the column's last where the
+/// second column is the shorter. `None` where there is no column that way.
+fn map_beside(n: usize, count: usize, right: bool) -> Option<usize> {
+    let rows = count.div_ceil(2).max(1);
+    match (n / rows, right) {
+        (0, true) if count > rows => Some((n + rows).min(count - 1)),
+        (1, false) => Some(n - rows),
+        _ => None,
+    }
+}
+
 /// How high a line of writing under a minifigure is.
 const VOTER_LINE: f32 = 22.0;
 
@@ -2584,6 +2596,14 @@ fn input(
     }
     let mut change = pressed(&[KeyCode::ArrowRight, KeyCode::KeyD]) as i32
         - pressed(&[KeyCode::ArrowLeft, KeyCode::KeyA]) as i32;
+    // The circuits to be voted for are in two columns, which these keys go between.
+    if menu.page == Page::Wishes && change != 0 {
+        let maps = items.len() - 1;
+        if let Some(to) = map_beside(focus, maps, change > 0).filter(|_| focus < maps) {
+            focus = to;
+        }
+        change = 0;
+    }
     let mut chosen = pressed(&[KeyCode::Enter, KeyCode::Space]);
 
     // The pointer chooses whatever it is moved onto, and a click works it.
@@ -3634,6 +3654,29 @@ fn the_winner_of_a_race_online_is_who_celebrates() {
     // A race nobody finished has nobody to celebrate.
     room.results[0].time = None;
     assert_eq!(winner(&room, &jam), None);
+}
+
+#[cfg(test)]
+#[test]
+fn the_circuits_voted_for_are_gone_between_across_their_columns() {
+    for count in 1..=12 {
+        for n in 0..count {
+            let (at, right, left) = (map_place(n, count), map_beside(n, count, true), map_beside(n, count, false));
+            // Whatever is beside a circuit is in the other column, and on its row
+            // unless that column stops short of it.
+            for (to, sign) in [(right, 1.0), (left, -1.0)] {
+                let Some(to) = to else { continue };
+                let there = map_place(to, count);
+                assert!(to < count && (there.x - at.x) * sign > 0.0, "{n} of {count}");
+                assert!(there.y == at.y || (to == count - 1 && there.y < at.y), "{n} of {count}");
+            }
+            // One way or the other there is something, where there are two columns.
+            assert_eq!(right.is_some() != left.is_some(), count > 1, "{n} of {count}");
+        }
+    }
+    assert_eq!(map_beside(1, 8, true), Some(5));
+    assert_eq!(map_beside(5, 8, false), Some(1));
+    assert_eq!(map_beside(3, 7, true), Some(6));
 }
 
 #[cfg(test)]

@@ -54,6 +54,46 @@ pub enum Role {
     Client,
 }
 
+/// What this game is to its session while it is away on the garage's test drive.
+/// That is driven alone, so for as long as it lasts `Role` says the game is
+/// offline, the drive is run as a race alone is, and this keeps the session up.
+#[derive(Resource, Default)]
+pub struct Apart(Option<Role>);
+
+impl Apart {
+    /// What the game is to its session, `role` being what it is to the race.
+    pub fn role(&self, role: Role) -> Role {
+        self.0.unwrap_or(role)
+    }
+}
+
+/// Whether the game is in a session, on a test drive or not.
+fn wired(role: Res<Role>, apart: Res<Apart>) -> bool {
+    apart.role(*role) != Role::Offline
+}
+
+/// The menu left for the garage's test drive, the session is left to itself.
+fn part(settings: Res<Settings>, mut role: ResMut<Role>, mut apart: ResMut<Apart>) {
+    if settings.test_drive.is_some() && *role != Role::Offline {
+        apart.0 = Some(std::mem::take(&mut *role));
+    }
+}
+
+/// The test drive over, by coming back to the menu or by a race of the session's
+/// being loaded in its place, the game is to the race what it is to its session.
+fn rejoin(
+    screen: Res<State<Screen>>,
+    settings: Res<Settings>,
+    mut role: ResMut<Role>,
+    mut apart: ResMut<Apart>,
+) {
+    if (*screen.get() == Screen::Menu || settings.test_drive.is_none())
+        && let Some(was) = apart.0.take()
+    {
+        *role = was;
+    }
+}
+
 pub fn online(role: Res<Role>) -> bool {
     *role != Role::Offline
 }
@@ -302,9 +342,14 @@ pub struct Inbox {
 
 /// Reads what the link has brought. A message that can't be read is dropped: it is a
 /// game of another version, or not a game.
-fn pump(role: Res<Role>, wire: Option<ResMut<Wire>>, mut inbox: ResMut<Inbox>) {
+fn pump(
+    role: Res<Role>,
+    apart: Res<Apart>,
+    wire: Option<ResMut<Wire>>,
+    mut inbox: ResMut<Inbox>,
+) {
     let Some(mut wire) = wire else { return };
-    let hosting = *role == Role::Host;
+    let hosting = apart.role(*role) == Role::Host;
     while let Some(event) = wire.0.poll() {
         let read = match event {
             Event::Joined(peer) => {
@@ -500,13 +545,17 @@ pub fn leave(
     next: &mut NextState<Screen>,
 ) {
     commands.insert_resource(Role::Offline);
+    commands.insert_resource(Apart::default());
     commands.remove_resource::<Wire>();
     commands.remove_resource::<Lineup>();
     commands.insert_resource(Room::default());
     session.members.clear();
     (session.notice, session.left) = (why.map(str::to_string), true);
     if let Some(own) = session.own.take() {
+        // A test drive is still to be ended, back at the menu.
+        let driving = settings.test_drive.is_some();
         *settings = own;
+        settings.test_drive = driving.then_some(settings.circuit);
     }
     next.set(Screen::Menu);
 }
@@ -523,7 +572,7 @@ fn forget(mut circuits: ResMut<Circuits>, mut settings: ResMut<Settings>) {
 fn session(
     mut commands: Commands,
     time: Res<Time<Real>>,
-    role: Res<Role>,
+    (role, apart): (Res<Role>, Res<Apart>),
     screen: Res<State<Screen>>,
     mut circuits: ResMut<Circuits>,
     mut inbox: ResMut<Inbox>,
@@ -542,8 +591,10 @@ fn session(
             .filter_map(|(entity, _, remote)| Some((entity, remote?)))
     };
     let (inbox, room, session) = (&mut *inbox, &mut *room, &mut *session);
+    // A game on the garage's test drive is in its session all the same.
+    let role = apart.role(*role);
     // Nothing is listening for the race's own traffic outside a race.
-    if *screen.get() != Screen::Race {
+    if *screen.get() != Screen::Race || apart.0.is_some() {
         inbox.inputs.clear();
         inbox.snapshots.clear();
         inbox.scenes.clear();
@@ -551,7 +602,7 @@ fn session(
     }
     for _ in inbox.joined.drain(..) {
         // A player's game has reached its host, and says who it is.
-        if *role == Role::Client {
+        if role == Role::Client {
             wire.0.send(
                 HOST,
                 encode(&ToHost::Hello {
@@ -574,7 +625,7 @@ fn session(
         );
         return;
     }
-    if *role == Role::Host {
+    if role == Role::Host {
         for (peer, message) in inbox.to_host.drain(..) {
             match message {
                 ToHost::Hello {
@@ -871,6 +922,8 @@ fn session(
                     room.revision += 1;
                 }
                 ToPlayer::Start { rules, seats, map } => {
+                    // A player on the garage's test drive is fetched from it.
+                    circuits.end_test_drive(&mut settings);
                     // The host's map is the one raced, whatever this game has.
                     let lent = map.map(|text| circuits.lend(&rules.circuit, &text));
                     if let Some(Err(wrong)) = &lent {
@@ -998,7 +1051,7 @@ impl Auto {
 fn auto(
     mut commands: Commands,
     time: Res<Time<Real>>,
-    role: Res<Role>,
+    (role, apart): (Res<Role>, Res<Apart>),
     screen: Res<State<Screen>>,
     (mut settings, circuits, garage): (ResMut<Settings>, Res<Circuits>, Res<Garage>),
     lobby: Res<lobby::Lobby>,
@@ -1024,7 +1077,7 @@ fn auto(
         settings.car = car;
     }
     match &mut *auto {
-        Auto::Host { .. } if *role == Role::Offline => {
+        Auto::Host { .. } if apart.role(*role) == Role::Offline => {
             host_session(
                 &mut commands,
                 &mut session,
@@ -1139,6 +1192,10 @@ pub fn enter_race(
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Role>()
+        .init_resource::<Apart>()
+        .add_systems(OnExit(Screen::Menu), part)
+        .add_systems(OnEnter(Screen::Menu), rejoin)
+        .add_systems(OnEnter(Screen::Loading), rejoin)
         .init_resource::<Inbox>()
         .init_resource::<Session>()
         .init_resource::<Room>()
@@ -1165,8 +1222,8 @@ pub fn plugin(app: &mut App) {
         .add_systems(
             Update,
             (
-                session.run_if(online),
-                forget.run_if(not(online)),
+                session.run_if(wired),
+                forget.run_if(not(wired)),
                 lobby::keep,
                 auto.run_if(resource_exists::<Auto>),
             ),

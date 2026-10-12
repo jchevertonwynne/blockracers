@@ -259,6 +259,9 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   only the host has is there by name (`Circuits::promise`) until a start brings
   it. The drop-in and the countdown wait for every player's game to say it has
   the race loaded (`ToHost::Loaded`, `host`'s `LOAD_WAIT` at the longest).
+  The garage's test drive, taken from a session's room, is driven alone as it
+  is offline (`net::Apart` keeps the session while `Role` says offline); a
+  host's start fetches a player from it, and a host on it starts nothing.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 

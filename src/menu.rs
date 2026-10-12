@@ -211,13 +211,14 @@ impl Circuits {
         settings.circuit = self.0.len() - 1;
     }
 
-    /// The test drive is over: the circuit chosen before it is chosen again. Whether
-    /// there was a drive.
+    /// The test drive is over: its circuit is gone from among the others, wherever
+    /// it now is among them, and the circuit chosen before it is chosen again.
+    /// Whether there was a drive.
     pub fn end_test_drive(&mut self, settings: &mut Settings) -> bool {
         let Some(before) = settings.test_drive.take() else {
             return false;
         };
-        self.0.pop();
+        self.0.retain(|c| c.race.as_deref() != Some(TEST_TRACK));
         settings.circuit = before;
         true
     }

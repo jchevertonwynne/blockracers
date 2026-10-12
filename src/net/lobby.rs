@@ -194,7 +194,7 @@ pub fn farewell(mut closing: MessageReader<AppExit>, mut lobby: ResMut<Lobby>) {
 /// Picks up the lobby's answers, and keeps a hosted session on its list.
 pub fn keep(
     time: Res<Time<Real>>,
-    role: Res<Role>,
+    (role, apart): (Res<Role>, Res<super::Apart>),
     screen: Res<State<Screen>>,
     mut session: ResMut<Session>,
     wire: Option<Res<Wire>>,
@@ -202,6 +202,8 @@ pub fn keep(
     circuits: Res<Circuits>,
     mut lobby: ResMut<Lobby>,
 ) {
+    // A host on the garage's test drive is hosting all the same.
+    let role = apart.role(*role);
     let lobby = &mut *lobby;
     let heard: Vec<Heard> = lobby
         .heard
@@ -211,7 +213,7 @@ pub fn keep(
     for heard in heard {
         match heard {
             // A beat's answer is an empty list, and is not the list.
-            Heard::List(sessions) if *role == Role::Host => drop(sessions),
+            Heard::List(sessions) if role == Role::Host => drop(sessions),
             Heard::List(sessions) => {
                 (lobby.sessions, lobby.trouble, lobby.revision) =
                     (sessions, None, lobby.revision + 1)
@@ -232,7 +234,7 @@ pub fn keep(
             }
         }
     }
-    if *role != Role::Host {
+    if role != Role::Host {
         lobby.close();
         return;
     }

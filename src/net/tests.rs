@@ -1442,3 +1442,38 @@ fn a_built_racer_goes_over_the_wire_whole() {
         (14, 8, 514)
     );
 }
+
+#[test]
+fn a_test_drive_in_a_session_is_driven_alone_and_ended_by_a_start() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut circuits = Circuits::find();
+    let mut settings = Settings::new(&circuits);
+    let (count, chosen) = (circuits.0.len(), settings.circuit);
+    circuits.begin_test_drive(&mut settings);
+    let mut world = World::new();
+    world.insert_resource(Role::Client);
+    world.insert_resource(Apart::default());
+    world.insert_resource(State::new(Screen::Race));
+    world.insert_resource(settings);
+    // The menu left for the drive, the race is one alone and the session is kept.
+    world.run_system_once(part).unwrap();
+    assert_eq!(*world.resource::<Role>(), Role::Offline);
+    assert_eq!(world.resource::<Apart>().role(Role::Offline), Role::Client);
+    assert!(world.run_system_once(wired).unwrap() && !world.run_system_once(online).unwrap());
+    // Its own loading leaves it so.
+    world.run_system_once(rejoin).unwrap();
+    assert_eq!(*world.resource::<Role>(), Role::Offline);
+    // A map the host sends with a start comes after the test track, which is
+    // the one to go, and the race loaded is the session's.
+    let brick = circuits.0.iter().find(|c| c.key() == "BRICK").unwrap().map().text.clone();
+    circuits.promise("THEIRS", "Their Circuit", "", false);
+    assert!(circuits.end_test_drive(&mut world.resource_mut::<Settings>()));
+    assert!(circuits.lend("THEIRS", &brick).is_ok());
+    let keys: Vec<&str> = circuits.0.iter().map(|c| c.key()).collect();
+    assert!(keys.len() == count + 1 && keys[count] == "THEIRS" && !keys.contains(&crate::menu::TEST_TRACK));
+    let settings = world.resource::<Settings>();
+    assert_eq!((settings.circuit, settings.test_drive), (chosen, None));
+    world.run_system_once(rejoin).unwrap();
+    assert_eq!(*world.resource::<Role>(), Role::Client);
+    assert!(world.run_system_once(online).unwrap());
+}
