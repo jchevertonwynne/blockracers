@@ -1,10 +1,17 @@
-# The crossroads, an arena: four arms off a junction, and over the junction a
-# flyover from the north arm to the south, climbed by a ramp in each, with a deck
-# across it from east to west climbed by a ramp from either side: a crossroads
-# over the crossroads. East and west go under it, either side of those ramps. The
-# east and west arms are each shut twice by walls that leave a way round, with a
-# pocket at the end where the best bricks are: two tight turns in and the same
-# two out, so a car there is cornered.
+# The crossroads, an arena: two streets that cross between four blocks, with a
+# road round the outside that every street comes out onto, so that there is
+# always another way round a block and nothing ends anywhere. Over the crossing
+# is a platform with a ramp down into each street: the streets go under it, and
+# whoever is on it is over all four and can come off any edge of it into any of
+# them. The blocks are too high to see or to shoot over, so a car is in sight
+# along the street it is in and no further.
+#
+# The white bricks are on the platform, where four ramps meet, and nowhere else;
+# under it is one of each colour. The red ones are at the ramps' heads, looking
+# down the streets, the yellow at their feet for whoever comes after, the green
+# beside the ramps and on the road round the outside, and a shield in each
+# corner of it. Two cannons stand either side of the west ramp and fire at it as
+# a car comes to it.
 #
 # yard.toml says what each thing here is.
 
@@ -14,117 +21,168 @@ author = "Brick Racers"
 # The corners of the floor in order, each [x, z]: a wall stands round it. The floor
 # is laid from the middle, [0, 0], out to each side, so every corner is seen from there.
 outline = [
-    [38, -135],
-    [38, -38],
-    [135, -38],
-    [135, 38],
-    [38, 38],
-    [38, 135],
-    [-38, 135],
-    [-38, 38],
-    [-135, 38],
-    [-135, -38],
-    [-38, -38],
-    [-38, -135],
+    [108, -108],
+    [108, 108],
+    [-108, 108],
+    [-108, -108],
 ]
 
 # What stands on the floor, solid: its middle `at` [x, z], how far it reaches
 # either way from there (`half`), how high, and its colour. Its top is driven on
 # where a ramp or a deck comes up to it.
 blocks = [
-    # The flyover's piers, where each arm meets the junction.
-    { at = [0, -49], half = [8, 11], height = 6, colour = "yellow" },
-    { at = [0, 49], half = [8, 11], height = 6, colour = "yellow" },
-    # East and west: an island to go either side of, then a gate in the middle.
-    { at = [68, 0], half = [3, 16], height = 5, colour = "blue" },
-    { at = [100, -25], half = [3, 13], height = 5, colour = "blue" },
-    { at = [100, 25], half = [3, 13], height = 5, colour = "blue" },
-    { at = [-68, 0], half = [3, 16], height = 5, colour = "red" },
-    { at = [-100, -25], half = [3, 13], height = 5, colour = "red" },
-    { at = [-100, 25], half = [3, 13], height = 5, colour = "red" },
-    # North and south: a wall across the end of each, behind the ramp's foot,
-    # and a pillar either side of that.
-    { at = [0, -116], half = [14, 3], height = 5, colour = "white" },
-    { at = [0, 116], half = [14, 3], height = 5, colour = "white" },
-    { at = [-24, -108], half = [4, 4], height = 7, colour = "yellow" },
-    { at = [24, -108], half = [4, 4], height = 7, colour = "yellow" },
-    { at = [-24, 108], half = [4, 4], height = 7, colour = "yellow" },
-    { at = [24, 108], half = [4, 4], height = 7, colour = "yellow" },
+    # The four blocks between the streets and the road round the outside.
+    { at = [-57, -57], half = [27, 27], height = 7, colour = "red" },
+    { at = [57, -57], half = [27, 27], height = 7, colour = "blue" },
+    { at = [57, 57], half = [27, 27], height = 7, colour = "yellow" },
+    { at = [-57, 57], half = [27, 27], height = 7, colour = "green" },
+    # The posts the platform stands on.
+    { at = [-16, -16], half = [2, 2], height = 5, colour = "dark grey" },
+    { at = [16, -16], half = [2, 2], height = 5, colour = "dark grey" },
+    { at = [16, 16], half = [2, 2], height = 5, colour = "dark grey" },
+    { at = [-16, 16], half = [2, 2], height = 5, colour = "dark grey" },
+    # What the two cannons stand on.
+    { at = [-59, 15.5], half = [2, 2], height = 4, colour = "brown" },
+    { at = [-45, -15.5], half = [2, 2], height = 4, colour = "brown" },
 ]
 
-# Slopes from the floor up to `height`, which way each `climbs`.
+# Slopes from the floor up to `height`, which way each `climbs`: one up the
+# middle of each street, with a way past it either side.
 ramps = [
-    { at = [0, -80], half = [8, 20], height = 6, climbs = "south" },
-    { at = [0, 80], half = [8, 20], height = 6, climbs = "north" },
-    { at = [-40, 0], half = [10, 6], height = 6, climbs = "east" },
-    { at = [40, 0], half = [10, 6], height = 6, climbs = "west" },
+    { at = [0, -54], half = [8, 12], height = 6, climbs = "south" },
+    { at = [0, 54], half = [8, 12], height = 6, climbs = "north" },
+    { at = [54, 0], half = [12, 8], height = 6, climbs = "west" },
+    { at = [-54, 0], half = [12, 8], height = 6, climbs = "east" },
 ]
 
-# Floors held up at `height`, driven on and under.
+# Floors held up at `height`, driven on and under: the platform, and an arm of it
+# out to the head of each ramp.
 decks = [
-    { at = [0, 0], half = [8, 38], height = 6 },
-    # The deck across it, either side of the flyover.
-    { at = [-19, 0], half = [11, 6], height = 6 },
-    { at = [19, 0], half = [11, 6], height = 6 },
-    # Round the junction under the flyover, a little way into the east and west
-    # arms.
+    { at = [0, 0], half = [16, 16], height = 6, colour = "dark grey" },
+    { at = [0, -29], half = [8, 13], height = 6 },
+    { at = [0, 29], half = [8, 13], height = 6 },
+    { at = [29, 0], half = [13, 8], height = 6 },
+    { at = [-29, 0], half = [13, 8], height = 6 },
 ]
 
-# A loop through the open floor, each place [x, height, z], that nothing is made
-# to follow: bricks are laid along it, and the computer's cars wander it when
-# they have nobody in sight to go for.
+# A loop over the floor and the high ground, each place [x, height, z], that
+# nothing is made to follow: the computer's cars go round it when they have
+# nobody in sight to go for. Down the north street and over the platform to the
+# south one, round the south-west block by the outside, in by the west street
+# and over the platform again to the east one, and round the north-east block.
 line = [
-    [54, 0, -20],
-    [56, 0, 0],
-    [54, 0, 20],
-    [30, 0, 26],
-    [14, 0, 29],
-    [0, 0, 29],
-    [-14, 0, 29],
-    [-30, 0, 26],
-    [-54, 0, 20],
-    [-56, 0, 0],
-    [-54, 0, -20],
-    [-30, 0, -26],
-    [-14, 0, -29],
-    [0, 0, -29],
-    [14, 0, -29],
-    [30, 0, -26],
+    [0, 0, -70],
+    [0, 3, -54],
+    [0, 6, -42],
+    [0, 6, -22],
+    [0, 6, 0],
+    [0, 6, 22],
+    [0, 6, 42],
+    [0, 3, 54],
+    [0, 0, 70],
+    [-3.5, 0, 83],
+    [-13, 0, 92.5],
+    [-26, 0, 96],
+    [-50, 0, 96],
+    [-78, 0, 96],
+    [-90.7, 0, 90.7],
+    [-96, 0, 78],
+    [-96, 0, 50],
+    [-96, 0, 26],
+    [-92.5, 0, 13],
+    [-83, 0, 3.5],
+    [-70, 0, 0],
+    [-54, 3, 0],
+    [-42, 6, 0],
+    [-22, 6, 0],
+    [0, 6, 0],
+    [22, 6, 0],
+    [42, 6, 0],
+    [54, 3, 0],
+    [70, 0, 0],
+    [83, 0, -3.5],
+    [92.5, 0, -13],
+    [96, 0, -26],
+    [96, 0, -50],
+    [96, 0, -78],
+    [90.7, 0, -90.7],
+    [78, 0, -96],
+    [50, 0, -96],
+    [26, 0, -96],
+    [13, 0, -92.5],
+    [3.5, 0, -83],
 ]
 
-# Where the six cars start, each facing the middle.
+# Where the six cars start: on the road round the outside, each as far as the
+# rest from the street it faces along the road towards.
 grid = [
-    [84, -26],
-    [84, 26],
-    [24, 86],
-    [-84, 26],
-    [-84, -26],
-    [24, -86],
+    { at = [96, 48], faces = "north" },
+    { at = [96, -48], faces = "south" },
+    { at = [-96, 48], faces = "north" },
+    { at = [-96, -48], faces = "south" },
+    { at = [48, 96], faces = "west" },
+    { at = [-48, -96], faces = "east" },
 ]
 
-# Where bricks lie besides those along the line: where the line doesn't go, to be
-# gone out of the way for.
+# The bricks, each where it lies.
 bricks = [
-    [0, 0],
-    [120, -12],
-    [120, 12],
-    [-120, -12],
-    [-120, 12],
-    [0, -127],
-    [0, 127],
-    [84, 0],
-    [-84, 0],
-    [-24, -86],
-    [-24, 86],
+    # The white ones, on the platform.
+    { at = [0, 0], colour = "white" },
+    { at = [-8, -8], colour = "white" },
+    { at = [8, -8], colour = "white" },
+    { at = [8, 8], colour = "white" },
+    { at = [-8, 8], colour = "white" },
+    # One of each under it.
+    { at = [-6, 0], colour = "red", low = true },
+    { at = [0, -6], colour = "yellow", low = true },
+    { at = [6, 0], colour = "blue", low = true },
+    { at = [0, 6], colour = "green", low = true },
+    # Red at the head of each ramp, yellow at its foot, and green beside it, on
+    # the right going in.
+    { at = [0, -32], colour = "red" },
+    { at = [0, 32], colour = "red" },
+    { at = [32, 0], colour = "red" },
+    { at = [-32, 0], colour = "red" },
+    { at = [0, -71], colour = "yellow" },
+    { at = [0, 71], colour = "yellow" },
+    { at = [71, 0], colour = "yellow" },
+    { at = [-71, 0], colour = "yellow" },
+    { at = [-20, -56], colour = "green" },
+    { at = [20, 56], colour = "green" },
+    { at = [56, -20], colour = "green" },
+    { at = [-56, 20], colour = "green" },
+    # Between each start and its street, and green on the stretches of the
+    # outside road that nobody starts on.
+    { at = [96, 24], colour = "red" },
+    { at = [96, -24], colour = "yellow" },
+    { at = [-96, -24], colour = "red" },
+    { at = [-96, 24], colour = "yellow" },
+    { at = [24, 96], colour = "green" },
+    { at = [-24, -96], colour = "green" },
+    { at = [48, -96], colour = "green" },
+    { at = [-48, 96], colour = "green" },
+    # A shield in each corner.
+    { at = [-90.7, -90.7], colour = "blue" },
+    { at = [90.7, -90.7], colour = "blue" },
+    { at = [90.7, 90.7], colour = "blue" },
+    { at = [-90.7, 90.7], colour = "blue" },
+]
+
+rows = 0
+
+# Speed pads on the floor, each at a `place` [x, z] with its arrows pointing
+# `heading` degrees round from east to north: against the wall where each street
+# comes out, for whoever is going round the outside.
+pads = [
+    { place = [0, -104], heading = 0 },
+    { place = [104, 0], heading = 270 },
+    { place = [0, 104], heading = 180 },
+    { place = [-104, 0], heading = 90 },
 ]
 
 # The floor's two colours, which alternate outwards from the middle.
-floor = ["grey", "dark grey"]
+floor = [[0.4, 0.41, 0.43], [0.36, 0.37, 0.39]]
 
-hazards = [
-    # Cannons fire into the west pocket at a car on its way in: they stand either
-    # side of a road taken to run the way they are headed, here west.
-    { kind = "cannons", place = [-116, 0], heading = 180 },
-    # Cannonballs rain on the east pocket, on a car that is in it.
-    { kind = "dragon", place = [118, 0], reach = 28 },
-]
+# Cannons fire at the west ramp as a car comes to it from the outside road: they
+# stand either side of a road taken to run the way they are headed, here east.
+hazards = [{ kind = "cannons", place = [-52, 0], heading = 0 }]

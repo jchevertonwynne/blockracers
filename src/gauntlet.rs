@@ -89,6 +89,11 @@ pub struct Stood {
     pub out: Option<f32>,
 }
 
+/// How far under itself the ark's bolt comes from (`hazards`' `SweepCannon`), in the
+/// game's units, and how much further than the bolt reaches the computer's cars
+/// keep from there.
+const ARK_UNDER: f32 = 17.0;
+const ARK_BERTH: f32 = 2.0;
 /// How far apart the stones are, and how near the dragon is come, where a map
 /// doesn't say.
 const STONES_APART: f32 = 20.0;
@@ -571,6 +576,11 @@ impl Builder<'_> {
         };
         self.hazard(ARK, ark, site.origin, 50.0);
         self.plinth(fit.point(Vec3::new(540.35, -495.04, -45.1)), 3.2, TAN);
+        // Its bolt comes from under it and reaches as far as a car's does.
+        let stood = self.world.props.iter().find(|def| def.name() == "arktp");
+        if let Some(from) = stood.map(|def| to_world(def.position() - Vec3::Z * ARK_UNDER)) {
+            self.track.perils.push((from, crate::items::LIGHTNING_RANGE + ARK_BERTH));
+        }
     }
 
     /// A mummy's curse is left on the road ahead of whoever comes first to where
@@ -906,6 +916,44 @@ mod tests {
             }
             // The bricks are the ones the circuit has without its hazards.
             assert_eq!(world.bricks.len(), crate::items::laid(&track).len());
+        }
+    }
+
+    /// Needs the original game data; silently passes without it.
+    #[test]
+    fn an_arena_s_hazard_is_found_and_stood_on_its_floor() {
+        for map in crate::map::arenas() {
+            let layout = map.key.as_str();
+            let mut track = Track::built(map);
+            let Some((world, ..)) = load(map, &mut track, None) else {
+                return;
+            };
+            let plan = map.plan.as_ref().unwrap();
+            assert_eq!(map.hazards.len(), 1, "{layout}");
+            assert_eq!(world.props.len(), wanted(map).len(), "{layout}");
+            // A model is about its arena, wherever its own circuit had it; what it
+            // carries along its animation may be some way from where it is itself.
+            for prop in &world.props {
+                let at = to_world(prop.position());
+                assert!(at.with_y(0.0).length() < plan.reach() + 100.0, "{layout} {} is at {at}", prop.name());
+            }
+            assert_eq!(world.bricks.len(), crate::items::laid(&track).len());
+            // The ring's ark fires from under itself as far as a bolt reaches: at
+            // the white bricks round it, and at nothing on the roundabout the
+            // computer's cars go round, nor on the floor.
+            let Some(ark) = world.props.iter().find(|prop| prop.name() == "arktp") else {
+                continue;
+            };
+            let from = to_world(ark.position() - Vec3::Z * ARK_UNDER);
+            let reach = crate::items::LIGHTNING_RANGE;
+            assert_eq!(track.perils, [(from, reach + ARK_BERTH)], "{layout}");
+            for &p in &track.pts {
+                assert!(p.distance(from) > reach + 2.0, "{layout} the ark reaches the line at {p}");
+            }
+            let whites = crate::items::laid(&track).into_iter().filter(|brick| brick.0.is_none());
+            for (_, at) in whites {
+                assert!(at.distance(from) < reach, "{layout} the white brick at {at} is out of the ark's reach");
+            }
         }
     }
 

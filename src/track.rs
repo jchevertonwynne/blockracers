@@ -230,6 +230,16 @@ const BACKDROP_TURN: f32 = 1.0 / 45.0;
 const SCATTERED: usize = 520;
 const SCATTER_ROUND: f32 = 45.0;
 const ARENA_ROUND: f32 = 100.0;
+/// A car in an arena is off its line when it is this far to one side of it, or
+/// this far above or below it, which is on other ground: under a deck the line goes
+/// over, or on one it goes under.
+const ARENA_STRAYS: (f32, f32) = (14.0, 3.0);
+/// How far above or below a car a sample of an arena's line may be and be on its
+/// level; and of the samples that are, nearest first, every which one is looked at
+/// for a clear way to it, and how many.
+const REJOIN_LEVEL: f32 = 2.5;
+const REJOIN_STEP: usize = 4;
+const REJOIN_TRIES: usize = 16;
 /// How far from a road's barrier one of the scattered bricks keeps.
 const BRICK_ROOM: f32 = 14.0;
 /// How far from the low wall inside a corner, or from a low wall of `roadside`'s,
@@ -279,6 +289,9 @@ pub struct Track {
     pub lanes: Vec<Lane>,
     /// Ground the scattered scenery is kept off: centres and radii.
     pub clearings: Vec<(Vec3, f32)>,
+    /// Where a hazard fires from at whatever comes near, and how far: the
+    /// computer's cars in an arena don't go through there after another car.
+    pub perils: Vec<(Vec3, f32)>,
     /// The stretches that run through a tunnel: the first sample of each and the one
     /// after its last.
     pub tunnels: Vec<(usize, usize)>,
@@ -291,8 +304,11 @@ pub struct Track {
     /// track, `world::load_in`), and nothing of the game's is to follow this one.
     pub unrouted: bool,
     /// How it is laid out, if it is an arena and not a circuit: there is then no
-    /// road, and the line is only something to lay bricks along (`arena`).
+    /// road, and the line is only where the computer's cars go when they have
+    /// nobody to go after (`arena`).
     pub arena: Option<crate::arena::Plan>,
+    /// An arena's ways back to its line over its floor (`arena::Ways`).
+    pub ways: Option<crate::arena::Ways>,
     /// How steeply each sample's road is banked: how much higher it is for each unit
     /// to the right of its middle.
     pub bank: Vec<f32>,
@@ -813,8 +829,10 @@ impl Track {
         if let Some(plan) = &map.plan {
             let plan = if mirror { plan.mirrored() } else { plan.clone() };
             plan.collide(&mut track.collision);
+            track.strays = ARENA_STRAYS;
             track.course.grid = plan.grid();
             track.clearings.push((Vec3::ZERO, plan.reach() + 12.0));
+            track.ways = Some(crate::arena::Ways::found(&track.collision, plan.reach(), &track.pts));
             track.arena = Some(plan);
             return track;
         }
@@ -1194,11 +1212,13 @@ impl Track {
             surfaces: HashMap::new(),
             lanes: Vec::new(),
             clearings: Vec::new(),
+            perils: Vec::new(),
             tunnels: Vec::new(),
             jumps: Vec::new(),
             branches: Vec::new(),
             unrouted: false,
             arena: None,
+            ways: None,
             bank: vec![0.0; n],
             infields: Vec::new(),
             pads: Vec::new(),
@@ -1380,6 +1400,22 @@ impl Track {
                     .total_cmp(&self.pts[b].distance_squared(pos))
             })
             .unwrap()
+    }
+
+    /// Where on an arena's line a car that has left it is to make for: the nearest
+    /// sample of those on the car's own level that nothing stands between it and;
+    /// failing that the nearest on its level, and failing that the nearest.
+    pub fn rejoined(&self, pos: Vec3) -> usize {
+        let lift = Vec3::Y * crate::physics::BODY_POINT_HEIGHT;
+        let mut level: Vec<usize> = (0..self.n())
+            .filter(|&i| (self.pts[i].y - pos.y).abs() < REJOIN_LEVEL)
+            .collect();
+        level.sort_by(|&a, &b| xz_dist2(self.pts[a], pos).total_cmp(&xz_dist2(self.pts[b], pos)));
+        // At the car's own height: a place up a ramp is seen over the ramp's side,
+        // and is not got at from there.
+        let seen = |&&i: &&usize| self.collision.wall(pos + lift, self.pts[i].with_y(pos.y) + lift).is_none();
+        let in_sight = level.iter().step_by(REJOIN_STEP).take(REJOIN_TRIES).find(seen);
+        in_sight.or(level.first()).copied().unwrap_or_else(|| self.nearest(pos))
     }
 
     /// Whether a place is on the road proper: within `reach` of the racing line to

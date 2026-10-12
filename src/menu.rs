@@ -246,16 +246,15 @@ pub enum Mode {
     Elimination,
     /// Every car has a few lives, and a hit takes one; the last car left wins.
     Battle,
-    /// One car is "it" and its clock runs down until it bumps another, which is
-    /// "it" then; the game ends when a clock runs out.
+    /// One car is "it" until it bumps another, which is "it" then; the car that is
+    /// when the clock runs out is out, and the last car left wins.
     Tag,
 }
 
 impl Mode {
     pub const ALL: [Mode; 4] = [Mode::Race, Mode::Elimination, Mode::Battle, Mode::Tag];
 
-    /// Whether laps don't end it: it is then fought out, in an arena if the room
-    /// likes (`arena`).
+    /// Whether laps don't end it: it is then fought out, and in an arena (`arena`).
     pub fn lapless(self) -> bool {
         matches!(self, Mode::Battle | Mode::Tag)
     }
@@ -304,6 +303,16 @@ pub struct Settings {
     pub quick_steering: bool,
     /// Which of `SPEEDS` the cars go at.
     pub speed: usize,
+    /// A battle online, as its host has it: the lives each car begins with, and
+    /// which of `BATTLE_TIMES` it is fought for and of `SPARES` a car that has
+    /// lost a life is spared another for.
+    pub lives: usize,
+    pub battle_time: usize,
+    pub spared: usize,
+    /// A game of tag online: which of `TAG_LEASTS` is the least on the clock for a
+    /// car just caught, and of `TAG_BACKS` how long it can't catch another.
+    pub tag_least: usize,
+    pub tag_back: usize,
     pub vsync: bool,
     pub fullscreen: bool,
     /// Edges smoothed by multisampling.
@@ -341,6 +350,30 @@ pub const RANDOM_BRICKS: usize = 6;
 
 /// How fast the cars may be, the computer's among them, the original's being one
 /// (`Kart::pace`).
+/// The most lives a car may begin a battle with.
+pub const MAX_LIVES: usize = 9;
+/// How long a battle may be fought for, in seconds; the last is for as long as it
+/// takes.
+pub const BATTLE_TIMES: [f32; 7] = [60.0, 120.0, 180.0, 240.0, 300.0, 600.0, f32::INFINITY];
+/// How long a car that has just lost a life may be spared another, in seconds.
+pub const SPARES: [f32; 6] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0];
+/// The least there may be on the clock for a car just made "it" by a bump, in
+/// seconds: with less, the clock is put up to it. None leaves the clock alone.
+pub const TAG_LEASTS: [f32; 6] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+/// How long a car just made "it" may be kept from making another so, in seconds.
+pub const TAG_BACKS: [f32; 6] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+
+/// A number of seconds as the menus show it: "Off" for none, "No limit" for no
+/// end, minutes for whole ones and seconds otherwise.
+fn seconds(time: f32) -> String {
+    match time {
+        time if time <= 0.0 => "Off".to_string(),
+        time if time.is_infinite() => "No limit".to_string(),
+        time if time >= 60.0 => format!("{} min", time / 60.0),
+        time => format!("{time} s"),
+    }
+}
+
 pub const SPEEDS: [(&str, f32); 5] = [
     ("Original", 1.0),
     ("1.25x", 1.25),
@@ -360,6 +393,12 @@ pub enum Extra {
     Mode,
     Steering,
     Speed,
+    /// The host's too: how a battle is fought and a game of tag played.
+    Lives,
+    BattleTime,
+    Spared,
+    TagLeast,
+    TagBack,
     VSync,
     Fullscreen,
     Smoothing,
@@ -376,6 +415,15 @@ impl Extra {
     ];
     pub const VIDEO: [Extra; 3] = [Extra::VSync, Extra::Fullscreen, Extra::Smoothing];
 
+    /// What the host says of a race that is won as `mode` is, and of no other.
+    pub fn of(mode: Mode) -> &'static [Extra] {
+        match mode {
+            Mode::Battle => &[Extra::Lives, Extra::BattleTime, Extra::Spared],
+            Mode::Tag => &[Extra::TagLeast, Extra::TagBack],
+            Mode::Race | Mode::Elimination => &[],
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Extra::Mirror => "Mirrored",
@@ -385,6 +433,11 @@ impl Extra {
             Extra::Mode => "Mode",
             Extra::Steering => "Steering",
             Extra::Speed => "Car speed",
+            Extra::Lives => "Lives",
+            Extra::BattleTime => "Time limit",
+            Extra::Spared => "Spared",
+            Extra::TagLeast => "Late catch",
+            Extra::TagBack => "No catch back",
             Extra::VSync => "Frame rate",
             Extra::Fullscreen => "Full screen",
             Extra::Smoothing => "Smooth edges",
@@ -419,6 +472,11 @@ impl Settings {
             rivals: None,
             quick_steering: false,
             speed: 0,
+            lives: 3,
+            battle_time: 3,
+            spared: 3,
+            tag_least: 3,
+            tag_back: 2,
             vsync: true,
             fullscreen: false,
             smoothing: true,
@@ -446,6 +504,11 @@ impl Settings {
             ("elimination", on(self.elimination)),
             ("steering", on(self.quick_steering)),
             ("speed", self.speed),
+            ("lives", self.lives),
+            ("battle_time", self.battle_time),
+            ("spared", self.spared),
+            ("tag_least", self.tag_least),
+            ("tag_back", self.tag_back),
             ("vsync", on(self.vsync)),
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
@@ -494,6 +557,11 @@ impl Settings {
                 "elimination" => self.elimination = on,
                 "steering" => self.quick_steering = on,
                 "speed" if value < SPEEDS.len() => self.speed = value,
+                "lives" if (1..=MAX_LIVES).contains(&value) => self.lives = value,
+                "battle_time" if value < BATTLE_TIMES.len() => self.battle_time = value,
+                "spared" if value < SPARES.len() => self.spared = value,
+                "tag_least" if value < TAG_LEASTS.len() => self.tag_least = value,
+                "tag_back" if value < TAG_BACKS.len() => self.tag_back = value,
                 "vsync" => self.vsync = on,
                 "fullscreen" => self.fullscreen = on,
                 "smoothing" => self.smoothing = on,
@@ -538,9 +606,31 @@ impl Settings {
         if self.single() { self.bricks } else { 0 }
     }
 
+    /// How long a battle is fought for, and a car that has lost a life is spared
+    /// another; the least on the clock for a car caught in a game of tag, and how
+    /// long it can't catch another. In seconds.
+    pub fn battle_time(&self) -> f32 {
+        BATTLE_TIMES[self.battle_time.min(BATTLE_TIMES.len() - 1)]
+    }
+
+    pub fn spared(&self) -> f32 {
+        SPARES[self.spared.min(SPARES.len() - 1)]
+    }
+
+    pub fn tag_least(&self) -> f32 {
+        TAG_LEASTS[self.tag_least.min(TAG_LEASTS.len() - 1)]
+    }
+
+    pub fn tag_back(&self) -> f32 {
+        TAG_BACKS[self.tag_back.min(TAG_BACKS.len() - 1)]
+    }
+
     /// Steps an extra setting on or back.
     pub fn turn(&mut self, extra: Extra, change: i32) {
         let flip = |on: &mut bool| *on = !*on;
+        let step = |at: &mut usize, of: usize| {
+            *at = (*at as i32 + change).rem_euclid(of as i32) as usize
+        };
         match extra {
             Extra::Mirror => flip(&mut self.mirror),
             Extra::Reverse => flip(&mut self.reverse),
@@ -558,6 +648,14 @@ impl Settings {
             Extra::Speed => {
                 self.speed = (self.speed as i32 + change).rem_euclid(SPEEDS.len() as i32) as usize
             }
+            // From one life to the most, and round.
+            Extra::Lives => {
+                self.lives = (self.lives as i32 - 1 + change).rem_euclid(MAX_LIVES as i32) as usize + 1
+            }
+            Extra::BattleTime => step(&mut self.battle_time, BATTLE_TIMES.len()),
+            Extra::Spared => step(&mut self.spared, SPARES.len()),
+            Extra::TagLeast => step(&mut self.tag_least, TAG_LEASTS.len()),
+            Extra::TagBack => step(&mut self.tag_back, TAG_BACKS.len()),
             Extra::VSync => flip(&mut self.vsync),
             Extra::Fullscreen => flip(&mut self.fullscreen),
             Extra::Smoothing => flip(&mut self.smoothing),
@@ -580,6 +678,11 @@ impl Settings {
             }
             .to_string(),
             Extra::Speed => SPEEDS[self.speed].0.to_string(),
+            Extra::Lives => self.lives.to_string(),
+            Extra::BattleTime => seconds(self.battle_time()),
+            Extra::Spared => seconds(self.spared()),
+            Extra::TagLeast => seconds(self.tag_least()),
+            Extra::TagBack => seconds(self.tag_back()),
             Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
             Extra::Fullscreen => on(self.fullscreen),
             Extra::Smoothing => on(self.smoothing),

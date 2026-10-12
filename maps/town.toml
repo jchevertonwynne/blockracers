@@ -1,14 +1,18 @@
-# The town, an arena: a short street with a house at each end, facing each other,
-# and a bus and a truck left in the middle of it so that neither house sees the
-# other's door. A footbridge runs down the middle of the street from the one
-# house's upper floor to the other's, over the bus and the truck: the quick way
-# across, in plain sight, with the street to fall into either side. Each house is
-# driven through, front to back, and has an upper floor reached by a ramp up
-# either side from its back yard, open at the front: a car up there looks down
-# the street, and comes off the edge into it. The cars start in the back yards,
-# three behind each house, and a path goes round each side of each house for
-# whoever would rather not go through it. Small enough that nobody is out of it
-# for long.
+# The town, an arena: eight houses round a square, a narrow street between each
+# two of them from the square out to the road round the outside. The houses'
+# roofs are driven on, with a plank from each to the next over the street
+# between, so that there is a way right round up there, looking down into the
+# square on one side and onto the outside road on the other; a ramp goes up to
+# it from each side of the square. So there are three ways round, one inside
+# another, the middle one over the other two, and a car is never far from any of
+# them: down off any edge, up by the square. Streets and houses hide a car on
+# the floor from all but its own street; the roofs see each other and the square.
+#
+# The white bricks are in the middle of the square and nowhere else, under every
+# roof and under the dragon, whose cannonballs fall there, with a yellow one at
+# the foot of each ramp out of it. The red ones are on the roofs over the square
+# and at the corners of the outside road, a shield on each corner roof, and in
+# each street, under its plank, something to leave behind or to get away with.
 #
 # yard.toml says what each thing here is.
 
@@ -18,142 +22,176 @@ author = "Brick Racers"
 # The corners of the floor in order, each [x, z]: a wall stands round it. The floor
 # is laid from the middle, [0, 0], out to each side, so every corner is seen from there.
 outline = [
-    [150, -75],
-    [150, 75],
-    [-150, 75],
-    [-150, -75],
+    [100, -100],
+    [100, 100],
+    [-100, 100],
+    [-100, -100],
 ]
 
 # What stands on the floor, solid: its middle `at` [x, z], how far it reaches
 # either way from there (`half`), how high, and its colour. Its top is driven on
 # where a ramp or a deck comes up to it.
 blocks = [
-    # The bus and the truck.
-    { at = [-14, 0], half = [4, 14], height = 5, colour = "yellow" },
-    { at = [14, 0], half = [4, 11], height = 5, colour = "blue" },
-    # The signs at the sides of the street.
-    { at = [0, -60], half = [14, 2], height = 4, colour = "white" },
-    { at = [0, 60], half = [14, 2], height = 4, colour = "white" },
-    # The west house: its front and back walls, each with a way through the
-    # middle, and its two sides.
-    { at = [-71, -19], half = [1.5, 9], height = 6, colour = "yellow" },
-    { at = [-71, 19], half = [1.5, 9], height = 6, colour = "yellow" },
-    { at = [-119, -19], half = [1.5, 9], height = 6, colour = "yellow" },
-    { at = [-119, 19], half = [1.5, 9], height = 6, colour = "yellow" },
-    { at = [-95, -27.5], half = [22.5, 1.5], height = 6, colour = "yellow" },
-    { at = [-95, 27.5], half = [22.5, 1.5], height = 6, colour = "yellow" },
-    # Its sheds, the fences between its side yards and the street, and the
-    # cars parked in front of it.
-    { at = [-100, -67], half = [7, 5], height = 5, colour = "brown" },
-    { at = [-100, 67], half = [7, 5], height = 5, colour = "brown" },
-    { at = [-70, -58], half = [1.5, 10], height = 4, colour = "white" },
-    { at = [-70, 58], half = [1.5, 10], height = 4, colour = "white" },
-    { at = [-34, -52], half = [6, 3], height = 3, colour = "blue" },
-    { at = [-34, 52], half = [6, 3], height = 3, colour = "orange" },
-    # The east house: its front and back walls, each with a way through the
-    # middle, and its two sides.
-    { at = [71, -19], half = [1.5, 9], height = 6, colour = "green" },
-    { at = [71, 19], half = [1.5, 9], height = 6, colour = "green" },
-    { at = [119, -19], half = [1.5, 9], height = 6, colour = "green" },
-    { at = [119, 19], half = [1.5, 9], height = 6, colour = "green" },
-    { at = [95, -27.5], half = [22.5, 1.5], height = 6, colour = "green" },
-    { at = [95, 27.5], half = [22.5, 1.5], height = 6, colour = "green" },
-    # Its sheds, the fences between its side yards and the street, and the
-    # cars parked in front of it.
-    { at = [100, -67], half = [7, 5], height = 5, colour = "brown" },
-    { at = [100, 67], half = [7, 5], height = 5, colour = "brown" },
-    { at = [70, -58], half = [1.5, 10], height = 4, colour = "white" },
-    { at = [70, 58], half = [1.5, 10], height = 4, colour = "white" },
-    { at = [34, -52], half = [6, 3], height = 3, colour = "red" },
-    { at = [34, 52], half = [6, 3], height = 3, colour = "white" },
+    # The houses at the corners.
+    { at = [-59, -59], half = [18, 18], height = 6, colour = "yellow" },
+    { at = [59, -59], half = [18, 18], height = 6, colour = "green" },
+    { at = [59, 59], half = [18, 18], height = 6, colour = "blue" },
+    { at = [-59, 59], half = [18, 18], height = 6, colour = "orange" },
+    # And those between them, one at each side of the square.
+    { at = [0, -59], half = [18, 18], height = 6, colour = "red" },
+    { at = [59, 0], half = [18, 18], height = 6, colour = "white" },
+    { at = [0, 59], half = [18, 18], height = 6, colour = "red" },
+    { at = [-59, 0], half = [18, 18], height = 6, colour = "white" },
+    # A chimney on the outside corner of each corner house.
+    { at = [-72, -72], half = [3, 3], height = 10, colour = "dark grey" },
+    { at = [72, -72], half = [3, 3], height = 10, colour = "dark grey" },
+    { at = [72, 72], half = [3, 3], height = 10, colour = "dark grey" },
+    { at = [-72, 72], half = [3, 3], height = 10, colour = "dark grey" },
+    # The bus and two trucks, left in the outside road with a way past either side.
+    { at = [-88.5, 0], half = [4, 11], height = 5, colour = "yellow" },
+    { at = [-59, -88.5], half = [10, 4], height = 5, colour = "blue" },
+    { at = [-59, 88.5], half = [10, 4], height = 5, colour = "blue" },
 ]
 
-# Slopes from the floor up to `height`, which way each `climbs`.
+# Slopes from the floor up to `height`, which way each `climbs`: from the
+# square up to the roof at each side of it.
 ramps = [
-    { at = [-116, -36], half = [12, 7], height = 6, climbs = "east" },
-    { at = [-116, 36], half = [12, 7], height = 6, climbs = "east" },
-    { at = [116, -36], half = [12, 7], height = 6, climbs = "west" },
-    { at = [116, 36], half = [12, 7], height = 6, climbs = "west" },
+    { at = [0, -29], half = [8, 12], height = 6, climbs = "north" },
+    { at = [0, 29], half = [8, 12], height = 6, climbs = "south" },
+    { at = [29, 0], half = [12, 8], height = 6, climbs = "east" },
+    { at = [-29, 0], half = [12, 8], height = 6, climbs = "west" },
 ]
 
-# Floors held up at `height`, driven on and under.
+# Floors held up at `height`, driven on and under: the planks from roof to roof,
+# each over a street.
 decks = [
-    # Each house's upper floor, and the landing at the head of each ramp.
-    { at = [-95, 0], half = [24, 29], height = 6 },
-    { at = [-96, -36], half = [8, 7], height = 6 },
-    { at = [-96, 36], half = [8, 7], height = 6 },
-    { at = [95, 0], half = [24, 29], height = 6 },
-    { at = [96, -36], half = [8, 7], height = 6 },
-    { at = [96, 36], half = [8, 7], height = 6 },
-    # The footbridge between them.
-    { at = [0, 0], half = [71, 4], height = 6 },
-    # Through the west house, up the north side of the street, through the east
-    # house, round its back yard and south side, down the south side of the
-    # street, and round the west house's south side and back yard.
+    { at = [-29.5, -59], half = [11.5, 8], height = 6, colour = "brown" },
+    { at = [29.5, -59], half = [11.5, 8], height = 6, colour = "brown" },
+    { at = [59, -29.5], half = [8, 11.5], height = 6, colour = "brown" },
+    { at = [59, 29.5], half = [8, 11.5], height = 6, colour = "brown" },
+    { at = [29.5, 59], half = [11.5, 8], height = 6, colour = "brown" },
+    { at = [-29.5, 59], half = [11.5, 8], height = 6, colour = "brown" },
+    { at = [-59, 29.5], half = [8, 11.5], height = 6, colour = "brown" },
+    { at = [-59, -29.5], half = [8, 11.5], height = 6, colour = "brown" },
 ]
 
-# A loop through the open floor, each place [x, height, z], that nothing is made
-# to follow: bricks are laid along it, and the computer's cars wander it when
-# they have nobody in sight to go for.
+# A loop over the floor and the high ground, each place [x, height, z], that
+# nothing is made to follow: the computer's cars go round it when they have
+# nobody in sight to go for. In by a street from the south, across the square
+# and up onto the north roof; round the roofs to the east one and down into the
+# square again; across it and up onto the west roof, round to the south one and
+# down; out by a street to the north, and back by the outside road.
 line = [
-    [-95, 0, 0],
-    [-66, 0, 0],
-    [-50, 0, -10],
-    [-30, 0, -26],
-    [0, 0, -30],
-    [30, 0, -26],
-    [50, 0, -10],
-    [66, 0, 0],
-    [95, 0, 0],
-    [124, 0, 0],
-    [138, 0, 10],
-    [141, 0, 32],
-    [130, 0, 51],
-    [100, 0, 51],
-    [70, 0, 38],
-    [50, 0, 34],
-    [20, 0, 32],
-    [0, 0, 30],
-    [-20, 0, 32],
-    [-50, 0, 34],
-    [-70, 0, 38],
-    [-100, 0, 51],
-    [-130, 0, 51],
-    [-141, 0, 32],
-    [-138, 0, 10],
-    [-124, 0, 0],
+    [29.5, 0, 60],
+    [29.5, 0, 44],
+    [24, 0, 26],
+    [13, 0, 12.5],
+    [4, 0, -4],
+    [0, 0, -17],
+    [0, 3, -29],
+    [0, 6, -41],
+    [5.3, 6, -53.7],
+    [18, 6, -59],
+    [29.5, 6, -59],
+    [41, 6, -59],
+    [53.7, 6, -53.7],
+    [59, 6, -41],
+    [59, 6, -29.5],
+    [59, 6, -18],
+    [53.7, 6, -5.3],
+    [41, 6, 0],
+    [29, 3, 0],
+    [17, 0, 0],
+    [0, 0, 0],
+    [-17, 0, 0],
+    [-29, 3, 0],
+    [-41, 6, 0],
+    [-53.7, 6, 5.3],
+    [-59, 6, 18],
+    [-59, 6, 29.5],
+    [-59, 6, 41],
+    [-53.7, 6, 53.7],
+    [-41, 6, 59],
+    [-29.5, 6, 59],
+    [-18, 6, 59],
+    [-5.3, 6, 53.7],
+    [0, 6, 41],
+    [0, 3, 29],
+    [0, 0, 17],
+    [4, 0, 4],
+    [13, 0, -12.5],
+    [24, 0, -26],
+    [29.5, 0, -44],
+    [29.5, 0, -60],
+    [29.5, 0, -74.5],
+    [33.6, 0, -84.4],
+    [43.5, 0, -88.5],
+    [70, 0, -88.5],
+    [83.1, 0, -83.1],
+    [88.5, 0, -70],
+    [88.5, 0, -30],
+    [88.5, 0, 30],
+    [88.5, 0, 70],
+    [83.1, 0, 83.1],
+    [70, 0, 88.5],
+    [43.5, 0, 88.5],
+    [33.6, 0, 84.4],
+    [29.5, 0, 74.5],
 ]
 
-# Where the six cars start, each facing the middle.
+# Where the six cars start, each facing the middle: at the outside end of a
+# street, as far from the square as the rest.
 grid = [
-    [-138, -48],
-    [-141, 0],
-    [-138, 48],
-    [138, 48],
-    [141, 0],
-    [138, -48],
+    [-88.5, -29.5],
+    [-88.5, 29.5],
+    [88.5, -29.5],
+    [88.5, 29.5],
+    [-29.5, -88.5],
+    [29.5, 88.5],
 ]
 
-# Where bricks lie besides those along the line: where the line doesn't go, to be
-# gone out of the way for.
+# The bricks, each where it lies.
 bricks = [
-    [0, 0],
-    [-95, -16],
-    [-95, 16],
-    [95, -16],
-    [95, 16],
-    [-76, 0],
-    [76, 0],
-    [-142, -68],
-    [142, -68],
-    [0, -68],
-    [0, 68],
-    [-84, -64],
-    [84, -64],
+    # The white ones, in the middle of the square, and a yellow one at the foot
+    # of each ramp out of it.
+    { at = [-7, -7], colour = "white" },
+    { at = [7, -7], colour = "white" },
+    { at = [7, 7], colour = "white" },
+    { at = [-7, 7], colour = "white" },
+    { at = [0, -18], colour = "yellow" },
+    { at = [18, 0], colour = "yellow" },
+    { at = [0, 18], colour = "yellow" },
+    { at = [-18, 0], colour = "yellow" },
+    # Red on the roofs over the square, and a shield on each corner roof.
+    { at = [5.3, -53.7], colour = "red" },
+    { at = [53.7, -5.3], colour = "red" },
+    { at = [-5.3, 53.7], colour = "red" },
+    { at = [-53.7, 5.3], colour = "red" },
+    { at = [-53.7, -53.7], colour = "blue" },
+    { at = [53.7, -53.7], colour = "blue" },
+    { at = [53.7, 53.7], colour = "blue" },
+    { at = [-53.7, 53.7], colour = "blue" },
+    # In each street, under its plank: yellow in those north and south, green
+    # in those east and west.
+    { at = [-29.5, -59], colour = "yellow", low = true },
+    { at = [29.5, -59], colour = "yellow", low = true },
+    { at = [29.5, 59], colour = "yellow", low = true },
+    { at = [-29.5, 59], colour = "yellow", low = true },
+    { at = [59, -29.5], colour = "green", low = true },
+    { at = [59, 29.5], colour = "green", low = true },
+    { at = [-59, 29.5], colour = "green", low = true },
+    { at = [-59, -29.5], colour = "green", low = true },
+    # Red at each corner of the outside road, with a straight ahead of it.
+    { at = [-83, -83], colour = "red" },
+    { at = [83, -83], colour = "red" },
+    { at = [83, 83], colour = "red" },
+    { at = [-83, 83], colour = "red" },
 ]
+
+rows = 0
 
 # The floor's two colours, which alternate outwards from the middle.
-floor = ["grey", "dark grey"]
+floor = [[0.5, 0.47, 0.45], [0.46, 0.43, 0.41]]
 
-# Cannonballs rain between the bus and the truck on a car that goes that way.
-hazards = [{ kind = "dragon", place = [0, 0], reach = 24 }]
+# Cannonballs rain on the square while a car is in it.
+hazards = [{ kind = "dragon", place = [0, 0], reach = 40 }]

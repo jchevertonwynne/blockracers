@@ -800,18 +800,24 @@ impl Art {
 }
 
 /// Which of the game's circuits a race belongs to.
-/// The circuits a race may be run on, of them all: an arena only in a battle or
-/// a game of tag, which are online; and in a session someone else hosts, only the
-/// host's (`hosts`, what each is known by), in the host's order.
+/// The circuits a race may be run on, of them all: the arenas and nothing else in
+/// a battle or a game of tag, which are online, and never an arena otherwise; and
+/// in a session someone else hosts, only the host's (`hosts`, what each is known
+/// by), in the host's order. With no arena to be had, a battle has the circuits.
 fn offered(circuits: &Circuits, mode: crate::menu::Mode, hosts: &[String]) -> Vec<usize> {
     let own = 0..circuits.0.len();
     let listed = hosts
         .iter()
         .filter_map(|key| circuits.0.iter().position(|c| c.key() == key));
     let all: Vec<usize> = if hosts.is_empty() { own.collect() } else { listed.collect() };
-    all.into_iter()
-        .filter(|&n| mode.lapless() || !circuits.0[n].arena())
-        .collect()
+    let fit = |arena: bool| -> Vec<usize> {
+        let fits = |&n: &usize| circuits.0[n].arena() == arena;
+        all.iter().copied().filter(fits).collect()
+    };
+    match fit(mode.lapless()) {
+        none if none.is_empty() && mode.lapless() => fit(false),
+        fit => fit,
+    }
 }
 
 fn group(circuits: &Circuits, index: usize) -> usize {
@@ -1323,7 +1329,9 @@ fn items(
                 selector(row(0), None, wish.laps().to_string(), Action::Laps),
                 selector(row(1), None, wish.opponents.to_string(), Action::Opponents),
             ];
-            items.extend(VOTED.iter().enumerate().map(|(n, &extra)| {
+            // And, under those, what is said only of the kind of race it is.
+            let voted = VOTED.iter().chain(Extra::of(wish.mode));
+            items.extend(voted.enumerate().map(|(n, &extra)| {
                 selector(row(2 + n), None, wish.shown(extra), Action::Extra(extra))
             }));
             items.push(way_back(art, Page::Room));
@@ -1584,6 +1592,7 @@ fn said(rules: &Rules) -> String {
             LAP_CHOICES[rules.lap_choice as usize % LAP_CHOICES.len()]
         )
     }));
+    said.extend((mode == crate::menu::Mode::Battle).then(|| format!("{} LIVES", rules.lives)));
     said.push(format!("{} OPPONENTS", rules.opponents));
     said.extend(rules.mirror.then(|| "MIRRORED".to_string()));
     said.extend(rules.reverse.then(|| "REVERSED".to_string()));
@@ -1826,9 +1835,11 @@ fn notes(
             };
             notes.push(label(0, "LAPS"));
             notes.push(label(1, "OPPONENTS"));
+            let mode = wired.wish(settings, circuits).mode;
             notes.extend(
                 VOTED
                     .iter()
+                    .chain(Extra::of(mode))
                     .enumerate()
                     .map(|(n, extra)| label(2 + n, extra.label())),
             );
@@ -3693,6 +3704,14 @@ fn a_player_votes_among_the_host_s_circuits() {
     circuits.promise("THEIRS", "Their Circuit", "", false);
     let listed: Vec<&str> = offered(&circuits, race, &hosts).into_iter().map(|n| circuits.0[n].key()).collect();
     assert_eq!(listed, ["HELTER", "THEIRS", "BRICK"]);
-    let fought = offered(&circuits, crate::menu::Mode::Battle, &hosts);
-    assert_eq!(fought.len(), 4);
+    // A battle or a game of tag is fought in an arena, and nowhere else.
+    for mode in [crate::menu::Mode::Battle, crate::menu::Mode::Tag] {
+        let fought = offered(&circuits, mode, &[]);
+        assert!(fought.len() == 4 && fought.iter().all(|&n| circuits.0[n].arena()));
+        let fought: Vec<&str> =
+            offered(&circuits, mode, &hosts).into_iter().map(|n| circuits.0[n].key()).collect();
+        assert_eq!(fought, ["YARD"]);
+        // A host with no arena has its circuits to fight on.
+        assert_eq!(offered(&circuits, mode, &hosts[..2]).len(), 2);
+    }
 }

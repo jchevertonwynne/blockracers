@@ -219,6 +219,11 @@ mod tests {
             speed: 0,
             opponents: 2,
             difficulty: 1,
+            lives: 3,
+            battle_time: 3,
+            spared: 3,
+            tag_least: 3,
+            tag_back: 2,
         }
     }
 

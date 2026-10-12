@@ -1005,8 +1005,8 @@ fn a_race_run_is_told_to_everyone_with_its_times() {
 }
 
 /// A game of tag is the host's to run: the player's game is told who is "it" and
-/// what each clock has left, and the clock that runs out ends it for everyone, the
-/// car that was "it" last.
+/// what the clock has left, and the clock running out on one of two ends it for
+/// everyone, the car that was "it" last.
 #[test]
 fn a_game_of_tag_is_told_to_the_player_and_ends_in_the_room() {
     let mut pair = Pair::new(0, 0.0);
@@ -1024,11 +1024,12 @@ fn a_game_of_tag_is_told_to_the_player_and_ends_in_the_room() {
     for app in [&mut pair.host, &mut pair.guest] {
         assert!(car(app, it).it && !car(app, other).it);
         assert!(car(app, it).stake < modes::TAG_TIME);
-        assert_eq!(car(app, other).stake, modes::TAG_TIME);
+        let clock = car(app, it).stake;
+        assert_eq!(car(app, other).stake, clock);
         // And is driven the quicker on both.
         assert!(car(app, it).pace > car(app, other).pace);
     }
-    // Its clock all but run out.
+    // The clock all but run out.
     car_mut(&mut pair.host, it).stake = 0.2;
     for _ in 0..400 {
         pair.step();
@@ -1070,8 +1071,8 @@ fn a_battles_lives_are_told_to_the_player() {
         pair.step();
     }
     for app in [&mut pair.host, &mut pair.guest] {
-        assert_eq!(car(app, GUESTS).stake, modes::LIVES - 1.0);
-        assert_eq!(car(app, HOSTS).stake, modes::LIVES);
+        assert_eq!(car(app, GUESTS).stake, 2.0);
+        assert_eq!(car(app, HOSTS).stake, 3.0);
         assert!(car(app, GUESTS).finished.is_none());
     }
     // Its last life gone, it is out, and the host's car, the only one left, has won.
@@ -1117,8 +1118,8 @@ fn a_cannonball_takes_one_life_in_a_battle() {
         press(&mut pair.host, KeyCode::Space, false);
     }
     for app in [&mut pair.host, &mut pair.guest] {
-        assert_eq!(car(app, GUESTS).stake, modes::LIVES - 1.0);
-        assert_eq!(car(app, HOSTS).stake, modes::LIVES);
+        assert_eq!(car(app, GUESTS).stake, 2.0);
+        assert_eq!(car(app, HOSTS).stake, 3.0);
     }
 }
 
@@ -1476,4 +1477,276 @@ fn a_test_drive_in_a_session_is_driven_alone_and_ended_by_a_start() {
     world.run_system_once(rejoin).unwrap();
     assert_eq!(*world.resource::<Role>(), Role::Client);
     assert!(world.run_system_once(online).unwrap());
+}
+
+/// A host alone in an arena with five of the computer's cars, its own car the
+/// computer's to drive too, as a demo's is.
+fn fought(map: &crate::map::Map, mode: crate::menu::Mode, seed: u32) -> App {
+    let mut app = App::new();
+    let circuits = Circuits::find();
+    let mut settings = Settings::new(&circuits);
+    // With lives enough that a battle is not over before it has been looked at.
+    (settings.mode, settings.lives) = (mode, crate::menu::MAX_LIVES);
+    let players = [(HOST, "Host".to_string(), Ride::Slot)];
+    app.add_plugins((MinimalPlugins, StatesPlugin, plugin))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            Time::<Fixed>::from_hz(TICKS).timestep(),
+        ))
+        .insert_state(Screen::Race)
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<crate::input::Actions>()
+        .init_resource::<crate::input::Devices>()
+        .add_systems(PreUpdate, crate::input::read)
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<StandardMaterial>>()
+        .init_resource::<Assets<Image>>()
+        .init_resource::<crate::audio::Sfx>()
+        .init_resource::<crate::variant::Variant>()
+        .init_resource::<crate::cheats::Raced>()
+        .init_resource::<Pause>()
+        .init_resource::<crate::replay::Photo>()
+        .insert_resource(Track::made(map, false))
+        .insert_resource(crate::meshgen::Rng(seed))
+        .insert_resource(Race {
+            phase: Phase::Intro,
+            intro: 0.0,
+            countdown: 0.0,
+            time: 0.0,
+            demo: true,
+            quick: true,
+        })
+        .insert_resource(circuits)
+        .insert_resource(settings)
+        .insert_resource(Role::Host)
+        .insert_resource(Wire(Box::new(Hub::new(0, 0.0).host())))
+        .insert_resource(Session {
+            name: "Me".into(),
+            you: HOST,
+            ..default()
+        })
+        .insert_resource(Room {
+            voters: vec![Voter {
+                peer: HOST,
+                name: "Me".into(),
+                ready: false,
+                ballot: None,
+                link: None,
+                points: 0,
+            }],
+            ..default()
+        })
+        .insert_resource(Lineup {
+            seats: Lineup::seat(&players, 5),
+            you: HOST,
+        })
+        .add_systems(Startup, (kart::spawn_karts, items::setup_items).chain());
+    app.register_required_components::<items::Pickup, Visibility>();
+    app
+}
+
+/// What came of a game among the computer's cars.
+#[derive(Debug, Default)]
+struct Played {
+    /// How long it went on, and whether it was over by then.
+    time: f32,
+    over: bool,
+    /// Lives taken, in a battle.
+    hits: u32,
+    /// Times "it" was passed on by a bump, in a game of tag, and when each car
+    /// went out.
+    passes: u32,
+    outs: Vec<f32>,
+    /// The share of the cars' time spent on high ground, and going nowhere.
+    high: f32,
+    slow: f32,
+    /// The share of the open floor some car went over.
+    covered: f32,
+    /// How far each car was from the nearest other, on the whole.
+    apart: f32,
+    /// Where the cars went nowhere, a place ten across and how many steps, the
+    /// worst first.
+    stops: Vec<((i32, i32, i32), u32)>,
+}
+
+fn played(map: &crate::map::Map, mode: crate::menu::Mode, seed: u32, seconds: f32) -> Played {
+    let plan = map.plan.as_ref().expect("an arena");
+    let mut app = fought(map, mode, seed);
+    let reach = plan.reach();
+    const CELL: f32 = 10.0;
+    let side = (2.0 * reach / CELL).ceil() as usize + 1;
+    let cell = |p: Vec3| {
+        let (x, z) = (((p.x + reach) / CELL) as usize, ((p.z + reach) / CELL) as usize);
+        (x.min(side - 1), z.min(side - 1))
+    };
+    let mut open = vec![false; side * side];
+    for x in 0..side {
+        for z in 0..side {
+            let middle = Vec3::new((x as f32 + 0.5) * CELL - reach, 0.0, (z as f32 + 0.5) * CELL - reach);
+            open[x * side + z] = plan.open(middle, 2.0);
+        }
+    }
+    let mut been = vec![false; side * side];
+    let mut out = Played::default();
+    let (mut car_steps, mut high, mut slow, mut apart) = (0u32, 0u32, 0u32, 0.0f64);
+    let mut it: Option<usize> = None;
+    let mut lives: Option<f32> = None;
+    let steps = (seconds * TICKS as f32) as usize;
+    for _ in 0..steps {
+        app.update();
+        if *app.world().resource::<State<Screen>>().get() != Screen::Race {
+            out.over = true;
+            break;
+        }
+        let race = app.world().resource::<Race>();
+        if !matches!(race.phase, Phase::Racing | Phase::Finished) {
+            continue;
+        }
+        out.time = race.time;
+        let now = race.time;
+        let world = app.world_mut();
+        let cars: Vec<(usize, Vec3, f32, bool, bool, f32)> = world
+            .query::<&Kart>()
+            .iter(world)
+            .map(|k| (k.slot, k.pos, k.vel.length(), k.it, k.out.is_some() || k.finished.is_some(), k.stake))
+            .collect();
+        let playing: Vec<_> = cars.iter().filter(|car| !car.4).collect();
+        if playing.len() < 2 {
+            out.over = true;
+            break;
+        }
+        for car in &playing {
+            car_steps += 1;
+            high += (car.1.y > 2.0) as u32;
+            slow += (car.2 < 5.0) as u32;
+            if car.2 < 5.0 {
+                let place = ((car.1.x / 10.0).round() as i32 * 10, (car.1.y / 3.0).round() as i32 * 3, (car.1.z / 10.0).round() as i32 * 10);
+                match out.stops.iter_mut().find(|stop| stop.0 == place) {
+                    Some(stop) => stop.1 += 1,
+                    None => out.stops.push((place, 1)),
+                }
+            }
+            let (x, z) = cell(car.1);
+            been[x * side + z] = true;
+            let nearest = playing
+                .iter()
+                .filter(|other| other.0 != car.0)
+                .map(|other| other.1.distance(car.1))
+                .fold(f32::MAX, f32::min);
+            apart += nearest as f64;
+        }
+        match mode {
+            crate::menu::Mode::Battle => {
+                let left: f32 = cars.iter().map(|car| car.5).sum();
+                if let Some(before) = lives {
+                    out.hits += (before - left).max(0.0) as u32;
+                }
+                lives = Some(left);
+            }
+            _ => {
+                let now_it = cars.iter().find(|car| car.3).map(|car| car.0);
+                if let (Some(was), Some(is)) = (it, now_it)
+                    && was != is
+                {
+                    let gone = cars.iter().any(|car| car.0 == was && car.4);
+                    if gone {
+                        out.outs.push(now);
+                    } else {
+                        out.passes += 1;
+                    }
+                }
+                it = now_it.or(it);
+            }
+        }
+    }
+    let floor = open.iter().filter(|open| **open).count().max(1);
+    let trodden = open.iter().zip(&been).filter(|(open, been)| **open && **been).count();
+    out.covered = trodden as f32 / floor as f32;
+    let car_steps = car_steps.max(1) as f32;
+    (out.high, out.slow, out.apart) =
+        (high as f32 / car_steps, slow as f32 / car_steps, (apart / car_steps as f64) as f32);
+    out
+}
+
+/// What an arena is laid out for, as far as the computer's cars can show it in a
+/// minute of a battle and a minute of a game of tag among themselves: they are on
+/// its high ground a fair part of the time and over a fair part of its floor, they
+/// are seldom stopped, lives are taken and "it" is passed on.
+fn fought_over(key: &str) {
+    let map = crate::map::named(key);
+    for mode in [crate::menu::Mode::Battle, crate::menu::Mode::Tag] {
+        let game = played(map, mode, 7, 60.0);
+        assert!(game.time > 30.0, "{key} {mode:?} was over in {}s", game.time);
+        assert!(game.high > 0.08, "{key} {mode:?}: {} of the time on high ground", game.high);
+        assert!(game.covered > 0.25, "{key} {mode:?}: over {} of the floor", game.covered);
+        assert!(game.slow < 0.15, "{key} {mode:?}: stopped {} of the time", game.slow);
+        let done = game.hits.max(game.passes) as f32 * 60.0 / game.time;
+        assert!(done >= 2.0, "{key} {mode:?}: {done} a minute");
+    }
+}
+
+#[test]
+fn the_yard_is_fought_all_over() {
+    fought_over("YARD");
+}
+
+#[test]
+fn the_crossroads_is_fought_all_over() {
+    fought_over("CROSSROADS");
+}
+
+#[test]
+fn the_ring_is_fought_all_over() {
+    fought_over("RING");
+}
+
+#[test]
+fn the_town_is_fought_all_over() {
+    fought_over("TOWN");
+}
+
+/// What the arenas are like to fight in, as the computer's cars find them over
+/// several whole games: not a test of anything, but something to read while one is
+/// laid out. `BRICK_OLD` is a folder of other files of the same names to measure
+/// beside them.
+#[test]
+#[ignore]
+fn the_arenas_as_the_computers_cars_find_them() {
+    let old = std::env::var("BRICK_OLD").ok();
+    for map in crate::map::arenas() {
+        let was = old.as_ref().and_then(|folder| {
+            let file = format!("{folder}/{}.toml", map.key.to_lowercase());
+            crate::map::Map::read(&map.key, &std::fs::read_to_string(file).ok()?).ok()
+        });
+        for (which, map) in [("old", was.as_ref()), ("new", Some(map))] {
+            let Some(map) = map else { continue };
+            for mode in [crate::menu::Mode::Battle, crate::menu::Mode::Tag] {
+                let seeds = [7, 11, 23, 31, 43, 57];
+                let games: Vec<Played> = seeds.iter().map(|&seed| played(map, mode, seed, 240.0)).collect();
+                let count = games.len() as f32;
+                let mean = |of: &dyn Fn(&Played) -> f32| games.iter().map(of).sum::<f32>() / count;
+                let minutes = games.iter().map(|p| p.time).sum::<f32>() / 60.0;
+                let mut stops: Vec<((i32, i32, i32), u32)> = Vec::new();
+                for stop in games.iter().flat_map(|p| &p.stops) {
+                    match stops.iter_mut().find(|known| known.0 == stop.0) {
+                        Some(known) => known.1 += stop.1,
+                        None => stops.push(*stop),
+                    }
+                }
+                stops.sort_by_key(|stop| std::cmp::Reverse(stop.1));
+                stops.truncate(6);
+                println!(
+                    "{:10} {which} {:6?}: {:4.0}s a game, {:4.1} hits and {:4.1} passes a minute, high {:.2} slow {:.2} covered {:.2} apart {:.0}, stopped most at {stops:?}",
+                    map.key,
+                    mode,
+                    mean(&|p| p.time),
+                    games.iter().map(|p| p.hits).sum::<u32>() as f32 / minutes,
+                    games.iter().map(|p| p.passes).sum::<u32>() as f32 / minutes,
+                    mean(&|p| p.high),
+                    mean(&|p| p.slow),
+                    mean(&|p| p.covered),
+                    mean(&|p| p.apart),
+                );
+            }
+        }
+    }
 }

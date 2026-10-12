@@ -53,6 +53,10 @@ const LIVES_REACH: f32 = 150.0;
 /// The colour of what is said of the car that is "it" in a game of tag, and of a
 /// car's last life in a battle.
 const IT: Color = Color::srgb(1.0, 0.25, 0.2);
+/// How far in from the edge of the screen the car that is "it" is pointed to while
+/// it is out of the picture, and the size it is written at there.
+const IT_INSET: f32 = 6.0;
+const IT_ASIDE: f32 = 0.8;
 /// The side of the square the player's arrow is drawn in.
 const ARROW_SPAN: f32 = 20.0;
 /// A change of place makes the number swell to twice its size and back.
@@ -359,19 +363,20 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
         * (SKETCH_ROAD + SKETCH_EDGE + 2.0);
     let bar = (lines[0][0] - across, lines[0][0] + across);
     // An arena's lines are its floor, then its blocks, its ramps and its decks. A
-    // block a ramp comes up to is high ground, and drawn as a deck is.
+    // block a ramp comes up to, or a deck across to, is high ground, and drawn as
+    // a deck is.
     let kinds = track.arena.as_ref().map(|plan| {
         let blocks = 1..1 + plan.blocks.len();
         let ramps = blocks.end..blocks.end + plan.ramps.len();
+        let onto = plan.ramps.iter().map(|ramp| (ramp.at, ramp.half, ramp.height));
+        let onto: Vec<_> = onto.chain(plan.decks.iter().map(|deck| (deck.at, deck.half, deck.height))).collect();
         let high: Vec<bool> = plan
             .blocks
             .iter()
             .map(|block| {
-                plan.ramps.iter().any(|ramp| {
-                    let apart = |axis: usize| {
-                        (block.at[axis] - ramp.at[axis]).abs() - block.half[axis] - ramp.half[axis]
-                    };
-                    block.height == ramp.height && apart(0) < 1.0 && apart(1) < 1.0
+                onto.iter().any(|&(at, half, height)| {
+                    let apart = |axis: usize| (block.at[axis] - at[axis]).abs() - block.half[axis] - half[axis];
+                    block.height == height && apart(0) < 1.0 && apart(1) < 1.0
                 })
             })
             .collect();
@@ -513,6 +518,22 @@ fn place(at: Vec2, size: Vec2) -> Node {
         height: Val::Px(size.y),
         ..default()
     }
+}
+
+/// Where on the edge of a `screen` to point to something at `at` that the camera at
+/// `eye` hasn't in its picture: the way to it from the middle of the screen while it
+/// is in front, and behind as a map would have it, with straight behind at the foot.
+fn beside(eye: &Transform, at: Vec3, screen: Vec2) -> Vec2 {
+    let from = eye.rotation.inverse() * (at - eye.translation);
+    let way = if from.z < 0.0 {
+        Vec2::new(from.x, -from.y)
+    } else {
+        Vec2::new(from.x, from.z)
+    };
+    let way = way.try_normalize().unwrap_or(Vec2::Y);
+    let half = screen / 2.0;
+    let reach = (half / way.abs().max(Vec2::splat(1e-6))).min_element();
+    half + way * reach
 }
 
 impl Frame<'_> {
@@ -725,7 +746,16 @@ pub fn draw(
     }) {
         let above = shown.translation + Vec3::Y * TAG_HEIGHT;
         let away = above.distance(eye.translation);
-        let Ok(at) = lens.world_to_viewport(&GlobalTransform::from(*eye), above) else {
+        let screen = Vec2::new(width, HEIGHT);
+        let seen = lens
+            .world_to_viewport(&GlobalTransform::from(*eye), above)
+            .ok()
+            .map(|at| at / fit)
+            .filter(|at| at.cmpge(Vec2::ZERO).all() && at.cmple(screen).all());
+        // The car that is "it" and out of the picture is said at the edge of the
+        // screen nearest to where it is.
+        let aside = (kart.it && seen.is_none()).then(|| beside(eye, above, screen));
+        let Some(at) = seen.or(aside) else {
             continue;
         };
         let reach = if battle { LIVES_REACH } else { TAG_REACH };
@@ -742,8 +772,19 @@ pub fn draw(
             (false, false, _) => (kart.name.to_string(), Color::WHITE),
         };
         let colour = if battle && lives <= 1 { IT } else { colour };
-        let size = (TAG_NEAR / away).clamp(0.4, 0.8);
-        let at = at / fit - Vec2::new(frame.width("font_ths", &words, size) / 2.0, line * size);
+        let size = match aside {
+            Some(_) => IT_ASIDE,
+            None => (TAG_NEAR / away).clamp(0.4, 0.8),
+        };
+        let extent = Vec2::new(frame.width("font_ths", &words, size), line * size);
+        let at = at - Vec2::new(extent.x / 2.0, extent.y);
+        let at = match aside {
+            Some(_) => {
+                let inset = Vec2::splat(IT_INSET);
+                at.max(inset).min((screen - extent - inset).max(inset))
+            }
+            None => at,
+        };
         frame.write("font_ths", &words, at, size, colour);
     }
 

@@ -1,12 +1,20 @@
 # The yard, an arena: a place to fight in, for a battle or a game of tag online,
-# with no road. Three ways from one end to the other. The middle one is the short
-# one and goes under a bridge; the two outside it are longer, behind buildings,
-# and each has a ramp up onto that bridge, which crosses the middle way and looks
-# along it both ways. The buildings' roofs are as high as the bridge and joined to
-# it by catwalks, with a ramp up to each from its end of the yard, so that there
-# is a way round up there too, over the gaps the ways below are crossed by, and
-# off any edge of it onto whoever is underneath. The cars start in the open ends,
-# three at each.
+# with no road. Three ways from one end to the other on the floor, and two more
+# over them: the roofs of the buildings between the ways are streets of their
+# own, joined to each other by a bridge over the middle way, with a ramp up to
+# each roof from its end of the yard and one up to each end of the bridge from the
+# way beside it. Whoever is up there is over all three ways and can come down
+# off any edge onto any of them; whoever is below gets up by one of six ramps or
+# goes under by one of four passages. Everything comes round: nothing ends
+# anywhere.
+#
+# The white bricks, which make whatever a car fires the stronger, are on the
+# bridge and nowhere else, where everybody sees who takes them. Under the bridge
+# is one of each colour, and the ghost. The red ones, which want a clear line,
+# are on the roofs and at the ends of the long ways; the yellow, which are left
+# for whoever follows, at the foot of each roof's ramp and in the passages under
+# the roofs; the green in the outside ways, to run with; and a shield at each
+# end, by the starts.
 #
 # A map is an arena if it has an `outline`, and a circuit if it has `corners`
 # (brick.toml). Everything is in the game's units: x runs east, z south, and a
@@ -28,118 +36,215 @@ outline = [
 # either way from there (`half`), how high, and its colour. Its top is driven on
 # where a ramp or a deck comes up to it.
 blocks = [
-    # The bridge's two piers, either side of the way under it.
-    { at = [0, -22], half = [12, 8], height = 6, colour = "yellow" },
-    { at = [0, 22], half = [12, 8], height = 6, colour = "yellow" },
-    # The buildings between the middle way and the outside ones.
-    { at = [-62, -30], half = [22, 8], height = 6, colour = "red" },
-    { at = [62, -30], half = [22, 8], height = 6, colour = "blue" },
-    { at = [-62, 30], half = [22, 8], height = 6, colour = "red" },
-    { at = [62, 30], half = [22, 8], height = 6, colour = "blue" },
-    # A chimney on each roof, and a stack of crates in each outside way.
-    { at = [-76, -34], half = [3, 3], height = 10, colour = "dark grey" },
-    { at = [76, -34], half = [3, 3], height = 10, colour = "dark grey" },
-    { at = [-76, 34], half = [3, 3], height = 10, colour = "dark grey" },
-    { at = [76, 34], half = [3, 3], height = 10, colour = "dark grey" },
-    { at = [-30, -48], half = [3, 3], height = 4, colour = "brown" },
-    { at = [30, -48], half = [3, 3], height = 4, colour = "brown" },
-    { at = [-30, 48], half = [3, 3], height = 4, colour = "brown" },
-    { at = [30, 48], half = [3, 3], height = 4, colour = "brown" },
-    # Something to be behind in the middle way, and on the outside ones.
-    { at = [-45, 0], half = [4, 6], height = 4, colour = "white" },
-    { at = [45, 0], half = [4, 6], height = 4, colour = "white" },
-    { at = [-42, -79], half = [4, 4], height = 4, colour = "white" },
-    { at = [42, -79], half = [4, 4], height = 4, colour = "white" },
-    { at = [-42, 79], half = [4, 4], height = 4, colour = "white" },
-    { at = [42, 79], half = [4, 4], height = 4, colour = "white" },
-    # And between the ends and the middle way, so that a car starting isn't
-    # looking straight down it.
-    { at = [-96, 0], half = [3, 9], height = 5, colour = "red" },
-    { at = [96, 0], half = [3, 9], height = 5, colour = "blue" },
+    # The buildings between the middle way and the outside ones, whose roofs
+    # are the streets over them.
+    { at = [-56, -30], half = [22, 8], height = 6, colour = "red" },
+    { at = [56, -30], half = [22, 8], height = 6, colour = "blue" },
+    { at = [-56, 30], half = [22, 8], height = 6, colour = "red" },
+    { at = [56, 30], half = [22, 8], height = 6, colour = "blue" },
+    # The piers at the ends of the bridge, where it meets those streets.
+    { at = [0, -30], half = [12, 8], height = 6, colour = "yellow" },
+    { at = [0, 30], half = [12, 8], height = 6, colour = "yellow" },
+    # A chimney at the outside edge of each roof.
+    { at = [-56, -37], half = [3, 1], height = 9, colour = "dark grey" },
+    { at = [56, -37], half = [3, 1], height = 9, colour = "dark grey" },
+    { at = [-56, 37], half = [3, 1], height = 9, colour = "dark grey" },
+    { at = [56, 37], half = [3, 1], height = 9, colour = "dark grey" },
+    # Between each end and the middle way, so that a car starting isn't looking
+    # straight down it, and something to be behind half way along it.
+    { at = [-90, 0], half = [3, 9], height = 5, colour = "red" },
+    { at = [90, 0], half = [3, 9], height = 5, colour = "blue" },
+    { at = [-42, 0], half = [4, 6], height = 4, colour = "white" },
+    { at = [42, 0], half = [4, 6], height = 4, colour = "white" },
+    # Crates in the outside ways: against the buildings, and against the wall
+    # further on.
+    { at = [-56, -46], half = [5, 4], height = 4, colour = "brown" },
+    { at = [56, -46], half = [5, 4], height = 4, colour = "brown" },
+    { at = [-56, 46], half = [5, 4], height = 4, colour = "brown" },
+    { at = [56, 46], half = [5, 4], height = 4, colour = "brown" },
+    { at = [-88, -81], half = [5, 4], height = 4, colour = "brown" },
+    { at = [88, -81], half = [5, 4], height = 4, colour = "brown" },
+    { at = [-88, 81], half = [5, 4], height = 4, colour = "brown" },
+    { at = [88, 81], half = [5, 4], height = 4, colour = "brown" },
 ]
 
 # Slopes from the floor up to `height`, which way each `climbs`.
 ramps = [
-    { at = [0, -42], half = [12, 12], height = 6, climbs = "south" },
-    { at = [0, 42], half = [12, 12], height = 6, climbs = "north" },
+    # Up to each end of the bridge from the way beside it.
+    { at = [0, -50], half = [12, 12], height = 6, climbs = "south" },
+    { at = [0, 50], half = [12, 12], height = 6, climbs = "north" },
     # Up onto each roof from its end of the yard.
-    { at = [-96, -30], half = [12, 8], height = 6, climbs = "east" },
-    { at = [96, -30], half = [12, 8], height = 6, climbs = "west" },
-    { at = [-96, 30], half = [12, 8], height = 6, climbs = "east" },
-    { at = [96, 30], half = [12, 8], height = 6, climbs = "west" },
+    { at = [-90, -30], half = [12, 8], height = 6, climbs = "east" },
+    { at = [90, -30], half = [12, 8], height = 6, climbs = "west" },
+    { at = [-90, 30], half = [12, 8], height = 6, climbs = "east" },
+    { at = [90, 30], half = [12, 8], height = 6, climbs = "west" },
 ]
 
-# Floors held up at `height`, driven on and under.
+# Floors held up at `height`, driven on and under. One may say its `colour`.
 decks = [
-    { at = [0, 0], half = [12, 14], height = 6 },
-    # The catwalks from the bridge's piers to the roofs.
-    { at = [-26, -26], half = [14, 4], height = 6 },
-    { at = [26, -26], half = [14, 4], height = 6 },
-    { at = [-26, 26], half = [14, 4], height = 6 },
-    { at = [26, 26], half = [14, 4], height = 6 },
-    # Along the north way, round the east end, back along the south way and home
-    # over the bridge.
+    # The bridge over the middle way.
+    { at = [0, 0], half = [12, 22], height = 6, colour = "yellow" },
+    # From each pier to each roof, over the passages between the ways.
+    { at = [-23, -30], half = [11, 8], height = 6 },
+    { at = [23, -30], half = [11, 8], height = 6 },
+    { at = [-23, 30], half = [11, 8], height = 6 },
+    { at = [23, 30], half = [11, 8], height = 6 },
 ]
 
-# A loop through the open floor, each place [x, height, z], that nothing is made
-# to follow: bricks are laid along it, and the computer's cars wander it when
-# they have nobody in sight to go for.
+# A loop over the floor and the high ground, each place [x, height, z], that
+# nothing is made to follow: the computer's cars go round it when they have
+# nobody in sight to go for. This one goes along the north way, round the east
+# end and up onto the roofs there, back along them and over the bridge to the
+# other side, down at the west end; and then the same from the south way, over
+# the bridge the other way.
 line = [
-    [16, 0, -68],
-    [60, 0, -64],
-    [100, 0, -56],
-    [114, 0, -28],
-    [116, 0, 0],
-    [114, 0, 28],
-    [100, 0, 56],
-    [60, 0, 64],
-    [20, 0, 66],
-    [5, 0, 61],
-    [0, 0.5, 52],
-    [0, 3, 42],
-    [0, 5.5, 32],
+    [-84, 0, -62],
+    [-50, 0, -62],
+    [-22, 0, -69],
+    [0, 0, -73],
+    [22, 0, -69],
+    [50, 0, -62],
+    [84, 0, -60],
+    [96, 0, -59],
+    [109, 0, -58],
+    [118.9, 0, -53.9],
+    [123, 0, -44],
+    [118.9, 0, -34.1],
+    [109, 0, -30],
+    [102, 0, -30],
+    [90, 3, -30],
+    [78, 6, -30],
+    [60, 6, -30],
+    [36, 6, -30],
+    [16, 6, -30],
+    [10, 6, -30],
+    [3, 6, -27],
+    [0, 6, -20],
+    [0, 6, 0],
+    [0, 6, 20],
+    [-3, 6, 27],
+    [-10, 6, 30],
+    [-16, 6, 30],
+    [-36, 6, 30],
+    [-60, 6, 30],
+    [-78, 6, 30],
+    [-90, 3, 30],
+    [-102, 0, 30],
+    [-109, 0, 30],
+    [-118.9, 0, 34.1],
+    [-123, 0, 44],
+    [-118.9, 0, 53.9],
+    [-109, 0, 58],
+    [-96, 0, 59],
+    [-84, 0, 60],
+    [-50, 0, 62],
+    [-22, 0, 69],
+    [0, 0, 73],
+    [22, 0, 69],
+    [50, 0, 62],
+    [84, 0, 60],
+    [96, 0, 59],
+    [109, 0, 58],
+    [118.9, 0, 53.9],
+    [123, 0, 44],
+    [118.9, 0, 34.1],
+    [109, 0, 30],
+    [102, 0, 30],
+    [90, 3, 30],
+    [78, 6, 30],
+    [60, 6, 30],
+    [36, 6, 30],
+    [16, 6, 30],
+    [10, 6, 30],
+    [3, 6, 27],
     [0, 6, 20],
     [0, 6, 0],
     [0, 6, -20],
-    [0, 5.5, -32],
-    [0, 3, -42],
-    [0, 0.5, -52],
-    [4, 0, -62],
+    [-3, 6, -27],
+    [-10, 6, -30],
+    [-16, 6, -30],
+    [-36, 6, -30],
+    [-60, 6, -30],
+    [-78, 6, -30],
+    [-90, 3, -30],
+    [-102, 0, -30],
+    [-109, 0, -30],
+    [-118.9, 0, -34.1],
+    [-123, 0, -44],
+    [-118.9, 0, -53.9],
+    [-109, 0, -58],
+    [-96, 0, -59],
 ]
 
-# Where the six cars start, each facing the middle.
+# Where the six cars start. Each faces the middle, unless it says which way it
+# `faces` instead: `{ at = [x, z], faces = "north" }` (crossroads.toml).
 grid = [
-    [-114, -52],
+    [-116, -54],
     [-116, 0],
-    [-114, 52],
-    [114, 52],
+    [-116, 54],
+    [116, 54],
     [116, 0],
-    [114, -52],
+    [116, -54],
 ]
 
-# Where bricks lie besides those along the line: where the line doesn't go, to be
-# gone out of the way for.
+# The bricks, each where it lies, [x, z], on whatever is uppermost there. One
+# may say its `colour` (white, red, yellow, blue or green; without, each is a
+# colour of its own), and that it is `low`: on the floor, though something is over it.
 bricks = [
-    [-7, 0],
-    [7, 0],
-    [-70, 0],
-    [-22, 0],
-    [24, 0],
-    [70, 0],
-    [-70, -62],
-    [-70, 62],
-    [-26, -36],
-    [-26, 36],
-    [26, -36],
-    [26, 36],
-    [-56, -28],
-    [-56, 28],
-    [56, -28],
-    [56, 28],
+    # The white ones, on the bridge and its piers.
+    { at = [0, -10], colour = "white" },
+    { at = [0, 10], colour = "white" },
+    { at = [-7, 0], colour = "white" },
+    { at = [7, 0], colour = "white" },
+    { at = [0, -34], colour = "white" },
+    { at = [0, 34], colour = "white" },
+    # One of each under it, across the middle way.
+    { at = [0, -9], colour = "red", low = true },
+    { at = [0, -3], colour = "yellow", low = true },
+    { at = [0, 3], colour = "blue", low = true },
+    { at = [0, 9], colour = "green", low = true },
+    # Red on the roofs, and at the ends of the outside ways.
+    { at = [-56, -30], colour = "red" },
+    { at = [56, -30], colour = "red" },
+    { at = [-56, 30], colour = "red" },
+    { at = [56, 30], colour = "red" },
+    { at = [-84, -61], colour = "red" },
+    { at = [84, -60], colour = "red" },
+    { at = [-84, 60], colour = "red" },
+    { at = [84, 60], colour = "red" },
+    # Yellow at the foot of each roof's ramp, and in the passages under the roofs.
+    { at = [-102, -30], colour = "yellow" },
+    { at = [102, -30], colour = "yellow" },
+    { at = [-102, 30], colour = "yellow" },
+    { at = [102, 30], colour = "yellow" },
+    { at = [-23, -30], colour = "yellow", low = true },
+    { at = [23, -30], colour = "yellow", low = true },
+    { at = [-23, 30], colour = "yellow", low = true },
+    { at = [23, 30], colour = "yellow", low = true },
+    # Green half way along the outside ways.
+    { at = [-50, -62], colour = "green" },
+    { at = [50, -62], colour = "green" },
+    { at = [-50, 62], colour = "green" },
+    { at = [50, 62], colour = "green" },
+    # And by the starts, a shield either side and a green one for the middle way.
+    { at = [-123, -44], colour = "blue" },
+    { at = [-123, 44], colour = "blue" },
+    { at = [123, -44], colour = "blue" },
+    { at = [123, 44], colour = "blue" },
+    { at = [-102, 0], colour = "green" },
+    { at = [102, 0], colour = "green" },
 ]
 
-# The floor's two colours, which alternate outwards from the middle.
-floor = ["tan", "grey"]
+# How many rows of bricks lie across the line besides, coloured and white by
+# turns: as many as a circuit as long would have, if this isn't said.
+rows = 0
+
+# Speed pads on the floor, `pads`, each at a `place` [x, z] with its arrows
+# pointing `heading` degrees round from east to north (ring.toml has some).
+
+# The floor's two colours, which alternate outwards from the middle: each a
+# colour's name or its [red, green, blue].
+floor = [[0.45, 0.42, 0.36], [0.41, 0.38, 0.33]]
 
 # The game's hazards stood in it (brick.toml lists them), each at a `place`
 # [x, z], an arena having no road for one to be so far round. A ghost keeps the

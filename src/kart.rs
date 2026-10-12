@@ -818,9 +818,18 @@ pub struct Ai {
     /// Time spent going nowhere, and time left backing out of it.
     stuck: f32,
     reversing: f32,
+    /// Where the car was a little while ago, in an arena, and how long ago.
+    since: (Vec3, f32),
     /// Where the car it is after is, in an arena (`Track::arena`): there the driver
     /// goes straight for it for as long as nothing stands between them.
     pub quarry: Option<Vec3>,
+    /// Where the car it was after was when it last saw it, where that car was
+    /// making for, and how long it goes on going there.
+    seen: Option<(Vec3, Vec3, f32)>,
+    /// It goes round an arena's line the other way: a car goes whichever way it is
+    /// heading as it comes to the line, so some go one way and some the other, and
+    /// they meet.
+    against: bool,
     /// The byway the driver is taking or about to (`Track::branches`), and the one it
     /// last made its mind up about.
     byway: Option<usize>,
@@ -874,6 +883,31 @@ const BYWAY_CRAWL: f32 = 19.0;
 const BYWAY_SLOWING: (f32, f32) = (30.0, 6.0);
 /// The field is not paced against the player until the race is this old (`RaceSetup`).
 const RUBBER_BAND_DELAY: f32 = 15.0;
+/// How far above or below it a car may be for a driver in an arena to go after it:
+/// much further and it is on other ground, up a ramp or down off an edge.
+const QUARRY_LEVEL: f32 = 2.5;
+/// How high a car may be and be on an arena's floor, to be shown the floor's way
+/// back to the line (`arena::Ways`), and how fast it goes that way.
+const WAY_FLOOR: f32 = 1.5;
+const WAY_PACE: f32 = 22.0;
+/// How far round a car in an arena is to turn, in radians, before it slows to do
+/// it, and how fast it goes while it does: slowly enough to turn in its own length.
+const ABOUT_TURN: f32 = 1.2;
+const ABOUT_PACE: f32 = 9.0;
+/// How far to one side of an arena's line a car is that has left it, and how slow
+/// one that has been stopped.
+const LINE_LEFT: f32 = 6.0;
+const LINE_STOPPED: f32 = 4.0;
+/// A car in an arena that is no further than this from where it was this long ago
+/// is getting nowhere.
+const NOWHERE: f32 = 3.0;
+const NOWHERE_TIME: f32 = 1.5;
+/// How far on from where the car it is after was last seen, the way that car was
+/// going, a driver makes for, how long it keeps on for there, and how near it
+/// comes before it gives that up.
+const QUARRY_LEAD: f32 = 12.0;
+const QUARRY_KEPT: f32 = 2.5;
+const QUARRY_REACHED: f32 = 4.0;
 
 impl Ai {
     /// Takes the driver's habits from the game's table.
@@ -902,8 +936,11 @@ impl Ai {
             started: false,
             stuck: 0.0,
             reversing: 0.0,
+            since: (Vec3::ZERO, 0.0),
             byway: None,
             quarry: None,
+            seen: None,
+            against: false,
             weighed: None,
         }
     }
@@ -976,27 +1013,49 @@ impl Ai {
             self.lane_timer = rng.range(2.0, 5.0);
         }
 
-        // Steer at a point a little way up the road.
+        // Steer at a point a little way up the road: back along it, for a car that
+        // goes round an arena the other way.
         let speed = k.vel.length() / k.pace;
+        // A car that has left an arena's line, or been stopped on it, goes round it
+        // whichever way it is heading by the time it is back.
+        if track.arena.is_some() && (k.lat.abs() > LINE_LEFT || speed < LINE_STOPPED) {
+            self.against = track.flat[k.idx].dot(k.rot * Vec3::NEG_Z) < 0.0;
+        }
+        let against = self.against && track.arena.is_some();
         // Where part of the road is shut, the open part is steered for.
         let reach = 8.0 + speed * 0.4;
-        let ahead = k.s + reach;
+        let ahead = k.s + if against { -reach } else { reach };
         let byway = self.byway(k, track, rng, reach);
         let (target, limit) =
             byway.unwrap_or_else(|| (track.point(ahead, track.lane(ahead, self.lane)), f32::MAX));
         // In an arena a car in plain sight is gone straight for, flat out.
         let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
-        let chased = self
-            .quarry
-            .filter(|&at| track.collision.wall(k.pos + lift, at + lift).is_none());
-        let target = chased.unwrap_or(target);
+        // What a car can get at is what nothing stands between at its own height: a
+        // place up a ramp is plain to see over the ramp's side, and is not got at
+        // from there.
+        let hidden = |at: Vec3| track.collision.wall(k.pos + lift, at.with_y(k.pos.y) + lift).is_some();
+        let chased = self.quarry.filter(|&at| !hidden(at));
+        // A car on an arena's floor that can't see where it is to go along the line,
+        // having left it, goes round whatever is in the way by the floor's own way
+        // back, and not fast.
+        let back = track.ways.as_ref().filter(|_| k.pos.y < WAY_FLOOR && chased.is_none() && hidden(target));
+        let back = back.and_then(|ways| ways.back(k.pos, |at| !hidden(at)));
+        let (target, limit) = match back {
+            Some(way) => (way, WAY_PACE),
+            None => (chased.unwrap_or(target), limit),
+        };
         let to = target - k.pos;
         let err = wrap_angle((-to.x).atan2(-to.z) - k.yaw);
         c.steer = (err * 3.0).clamp(-1.0, 1.0);
+        // In an arena, where it may be to go any way, a car that is to turn most of
+        // the way round slows to do it, and is round in less room.
+        let about = track.arena.is_some() && err.abs() > ABOUT_TURN;
+        let limit = if about { limit.min(ABOUT_PACE) } else { limit };
 
         // Brake for the tightest corner coming up.
+        let n = track.n();
         let tightest = (2..18)
-            .map(|j| track.curv[(k.idx + j) % track.n()])
+            .map(|j| track.curv[(k.idx + if against { n - j } else { j }) % n])
             .filter(|_| chased.is_none())
             .fold(1e-4, f32::max);
         c.throttle = if speed > (AI_LAT_ACCEL / tightest).sqrt().min(limit) {
@@ -1012,6 +1071,19 @@ impl Ai {
         } else {
             0.0
         };
+        // In an arena, where a car may be nose on to something, what it is against
+        // can shuffle it about without its getting anywhere: it backs out of that
+        // as well.
+        if track.arena.is_some() {
+            self.since.1 += dt;
+        }
+        if self.since.1 > NOWHERE_TIME {
+            let nowhere = k.pos.distance(self.since.0) < NOWHERE && k.spin <= 0.0;
+            self.since = (k.pos, 0.0);
+            if nowhere && self.reversing <= 0.0 {
+                self.stuck = 2.0;
+            }
+        }
         if self.stuck > 1.0 {
             self.stuck = 0.0;
             self.reversing = 1.5;
@@ -1410,15 +1482,15 @@ pub fn ai_drive(
         .map(|x| x.0.progress)
         .reduce(f32::max)
         .unwrap_or(0.0);
-    let cars: Vec<(usize, Vec3)> = q
+    let cars: Vec<(usize, Vec3, Vec3)> = q
         .iter()
         .filter(|x| x.0.out.is_none())
-        .map(|x| (x.0.slot, x.0.pos))
+        .map(|x| (x.0.slot, x.0.pos, x.0.vel))
         .collect();
     // The nearest other car between two distances inside a cone ahead.
     let ahead = |k: &Kart, (min, max, cone): (f32, f32, f32)| {
         let forward = k.rot * Vec3::NEG_Z;
-        cars.iter().any(|&(slot, at)| {
+        cars.iter().any(|&(slot, at, _)| {
             let to = at - k.pos;
             let distance = to.length();
             slot != k.slot && (min..=max).contains(&distance) && to.dot(forward) >= cone * distance
@@ -1493,15 +1565,43 @@ pub fn ai_drive(
             }
         } else if k.route.is_none() {
             // In an arena a driver with something to fire, or who is "it", is after
-            // the nearest car; the rest keep moving along the line.
-            ai.quarry = (track.arena.is_some() && (k.held.is_some() || k.it))
-                .then(|| {
-                    cars.iter()
-                        .filter(|car| car.0 != k.slot)
-                        .min_by(|a, b| a.1.distance(k.pos).total_cmp(&b.1.distance(k.pos)))
-                        .map(|car| car.1)
+            // the nearest car it can get at: one on its own level, with nothing
+            // standing between them. The rest keep moving along the line, which
+            // takes them up and down.
+            let lift = Vec3::Y * physics::BODY_POINT_HEIGHT;
+            // And not by way of where a hazard would fire at it.
+            let fired_at = |at: Vec3| {
+                track.perils.iter().any(|&(from, reach)| {
+                    let way = at - k.pos;
+                    let along = ((from - k.pos).dot(way) / way.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                    from.distance(k.pos + way * along) < reach
                 })
-                .flatten();
+            };
+            let clear = |at: Vec3| {
+                track.collision.wall(k.pos + lift, at.with_y(k.pos.y) + lift).is_none() && !fired_at(at)
+            };
+            let hunting = track.arena.is_some() && (k.held.is_some() || k.it);
+            let sighted = cars
+                .iter()
+                .filter(|car| hunting && car.0 != k.slot)
+                .filter(|car| (car.1.y - k.pos.y).abs() < QUARRY_LEVEL && clear(car.1))
+                .min_by(|a, b| a.1.distance(k.pos).total_cmp(&b.1.distance(k.pos)));
+            ai.quarry = match sighted {
+                Some(&(_, at, vel)) => {
+                    let on = at + vel.with_y(0.0).normalize_or_zero() * QUARRY_LEAD;
+                    ai.seen = Some((at, on, QUARRY_KEPT));
+                    Some(at)
+                }
+                // One that has gone out of sight, round a corner or off an edge, is
+                // followed to where it went, for a moment: there it may be seen again.
+                None => {
+                    let kept = |&(at, _, left): &(Vec3, Vec3, f32)| {
+                        hunting && left > 0.0 && at.distance(k.pos) > QUARRY_REACHED
+                    };
+                    ai.seen = ai.seen.filter(kept).map(|(at, on, left)| (at, on, left - dt));
+                    ai.seen.and_then(|(at, on, _)| [on, at].into_iter().find(|&place| clear(place)))
+                }
+            };
             ai.drive(&k, &mut c, &track, &mut rng, dt);
         }
 
@@ -1778,8 +1878,14 @@ impl Kart {
         let (mut idx, mut s, mut lat) = track.project(k.pos, k.idx);
         if lat.abs() > track.strays.0 || (k.pos.y - track.pts[idx].y).abs() > track.strays.1 {
             // A long way from where we last were, or on another stretch of the road
-            // that runs beside it, over it or under it; look everywhere.
-            (idx, s, lat) = track.project(k.pos, track.nearest(k.pos));
+            // that runs beside it, over it or under it; look everywhere. In an arena,
+            // whose line goes over its high ground and under it, for the nearest of
+            // it on the car's own level.
+            let from = match track.arena {
+                Some(_) => track.rejoined(k.pos),
+                None => track.nearest(k.pos),
+            };
+            (idx, s, lat) = track.project(k.pos, from);
         }
         // A byway hands the car on to the road at its far end, which may be no
         // distance at all from the road it left. Past that end the car is the
@@ -1802,7 +1908,9 @@ impl Kart {
             past.abs() < crate::track::PAD_LENGTH / 2.0
                 && (k.lat - pad.lat).abs() < crate::track::PAD_WIDTH / 2.0
         };
-        if k.contacts > 0 && k.boost <= 0.0 && k.route.is_none() && track.pads.iter().any(padded) {
+        let on_pad = track.pads.iter().any(padded)
+            || track.arena.as_ref().is_some_and(|plan| plan.padded(k.pos));
+        if k.contacts > 0 && k.boost <= 0.0 && k.route.is_none() && on_pad {
             k.start_boost(0);
         }
 
@@ -2394,6 +2502,52 @@ mod tests {
         }
     }
 
+    /// Beside the head of a ramp, where the ramp's side meets whatever it leads up
+    /// to, a car has the line right over it and no way straight to it. One of the
+    /// computer's left there, nose to the corner, backs out and is round the ramp
+    /// and on the line again before long.
+    #[test]
+    fn the_computer_gets_out_of_the_corner_beside_a_ramp() {
+        for (map, mirror) in crate::map::arenas().flat_map(|map| [(map, false), (map, true)]) {
+            let layout = map.key.as_str();
+            let track = Track::made(map, mirror);
+            let plan = track.arena.as_ref().unwrap();
+            let mut tried = 0;
+            for ramp in &plan.ramps {
+                let up = Vec3::new(ramp.climbs[0], 0.0, ramp.climbs[1]);
+                let across = Vec3::new(-up.z, 0.0, up.x);
+                let reach = |way: Vec3| (way.x * ramp.half[0]).abs() + (way.z * ramp.half[1]).abs();
+                let middle = Vec3::new(ramp.at[0], 0.0, ramp.at[1]);
+                for side in [-1.0, 1.0] {
+                    let from = middle + up * (reach(up) - 3.0) + across * side * (reach(across) + 3.0);
+                    let floor = track.collision.ground(from + Vec3::Y * 2.0, 4.0);
+                    if !plan.open(from, 1.5) || floor.is_none_or(|floor| floor.point.y > 0.5) {
+                        continue;
+                    }
+                    tried += 1;
+                    let mut kart = Kart::new(&track, 0);
+                    (kart.pos, kart.rot) = (from, Transform::IDENTITY.looking_to(up, Vec3::Y).rotation);
+                    (kart.facing, kart.safe) = (up, (from, kart.rot));
+                    let (mut ai, mut rng, mut c) = (Ai::new(1.0, 0), Rng(7), Controls::default());
+                    let (dt, mut far) = (1.0 / 60.0, 0.0f32);
+                    for _ in 0..60 * 25 {
+                        ai.drive(&kart, &mut c, &track, &mut rng, dt);
+                        kart.advance(&c, &track, dt);
+                        far = far.max(kart.pos.distance(from));
+                    }
+                    let on = track.pts[kart.idx];
+                    assert!(
+                        far > 30.0 && kart.lat.abs() < 8.0 && (kart.pos.y - on.y).abs() < 2.0,
+                        "{layout}: from {from} it is at {} after 25s, {} off the line",
+                        kart.pos,
+                        kart.lat
+                    );
+                }
+            }
+            assert!(tried > 0 || plan.ramps.is_empty(), "{layout}");
+        }
+    }
+
     #[test]
     fn ai_laps_the_built_in_circuits_in_the_fastest_cars() {
         for map in crate::map::circuits() {
@@ -2696,3 +2850,4 @@ mod tests {
         assert!(failed.is_empty(), "{failed:#?}");
     }
 }
+

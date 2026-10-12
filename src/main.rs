@@ -449,6 +449,7 @@ fn main() {
         .init_resource::<time_race::TimeRace>()
         .insert_resource(championship)
         .insert_resource(progress)
+        .add_plugins(MaterialPlugin::<net::modes::Seen>::default())
         .add_plugins((
             menu::plugin,
             frontend::plugin,
@@ -559,6 +560,7 @@ fn main() {
                 )
                     .chain(),
                 kart::sync_karts,
+                net::modes::glow.after(kart::sync_karts),
                 kart::sync_wheels,
                 cheats::hide_parts,
                 cheats::fast_forward,

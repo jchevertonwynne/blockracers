@@ -1093,7 +1093,7 @@ fn auto(
                 !*started && session.members.len() + 1 >= *players && *screen.get() == Screen::Menu
             }) {
                 *started = true;
-                let rules = Rules::of(&settings, &circuits);
+                let rules = Rules::of(&settings, &circuits).fitted(&circuits);
                 start(
                     &mut commands,
                     &mut session,

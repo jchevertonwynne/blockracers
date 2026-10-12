@@ -12,7 +12,12 @@
 //! is a plain shape; `item_models` puts the original's models and particles on it.
 //!
 //! The port's own: under the random rule (`menu::RANDOM_BRICKS`) a coloured brick is
-//! any colour each time it appears.
+//! any colour each time it appears. A race that puts the last car out each lap
+//! (`Settings::eliminating`) has more coloured bricks than the circuit's own
+//! (`more`), and each of those is a colour for the car that is coming to it next:
+//! red or green, more often than not, for one in the back half of the field, to
+//! catch up with, and yellow or blue for one in the front half, to keep its place
+//! with (`for_place`).
 
 use crate::audio::{Emitter, Sfx, id};
 use crate::events::TrackEvents;
@@ -131,7 +136,7 @@ const HOOK_RETRACT_SPEED: f32 = 250.0 * UNIT;
 const HOOK_RETRACT_NEAR: f32 = 6.0 * UNIT;
 const LIGHTNING_TIME: f32 = 7.0;
 pub const LIGHTNING_SECONDS: f32 = LIGHTNING_TIME;
-const LIGHTNING_RANGE: f32 = 50.0 * UNIT;
+pub const LIGHTNING_RANGE: f32 = 50.0 * UNIT;
 /// The bolt's cross-section is a flat V: twice `g_lightningBeamThickness` across and
 /// that thickness less a quarter (`LightningAction::Initialize`) up.
 const LIGHTNING_WIDTH: f32 = 2.0 * 0.85 * UNIT;
@@ -269,6 +274,13 @@ pub struct Pickup {
     going_home: bool,
     /// The port's random bricks: a coloured brick that comes back as any colour.
     random: bool,
+    /// One of the bricks an elimination race has besides the circuit's own, which
+    /// is a colour for the car coming to it.
+    extra: bool,
+    /// Which half of the field an extra brick was last coloured for: the back, or
+    /// the front.
+    #[serde(skip)]
+    meant: Option<bool>,
 }
 
 impl Pickup {
@@ -293,6 +305,8 @@ impl Pickup {
             dropped: None,
             going_home: false,
             random: false,
+            extra: false,
+            meant: None,
         }
     }
 
@@ -464,6 +478,51 @@ pub struct ItemAssets {
 
 const POWERS: [Power; 4] = [Power::Red, Power::Yellow, Power::Blue, Power::Green];
 
+/// An extra brick is for the nearest car within this of it that is coming its way
+/// (the cosine of how far off its way it may be going), and is not changed once
+/// that car is this near.
+const EXTRA_FAR: f32 = 120.0;
+const EXTRA_NEAR: f32 = 25.0;
+const EXTRA_CONE: f32 = 0.5;
+/// How often an extra brick is one of the two colours for the half of the field
+/// the car coming to it is in.
+const EXTRA_ODDS: f32 = 0.8;
+/// How far to either side of the middle of the road the extra bricks are, as a
+/// part of its half-width, and how far over and under the road they are looked
+/// for ground from.
+const EXTRA_ACROSS: f32 = 0.45;
+const EXTRA_PROBE: f32 = 2.0;
+
+/// The colour of an extra brick for a car in the back half of the field, or the
+/// front: to catch up with, or to keep a place with, more often than not.
+fn for_place(behind: bool, rng: &mut crate::meshgen::Rng) -> Power {
+    let likely = rng.f() < EXTRA_ODDS;
+    let pair = if behind == likely {
+        [Power::Red, Power::Green]
+    } else {
+        [Power::Yellow, Power::Blue]
+    };
+    pair[(rng.f() * 2.0) as usize % 2]
+}
+
+/// A car still racing, for the extra bricks: which, where, how fast and which way,
+/// and whether it is in the back half of the field.
+type Coming = (Entity, Vec3, Vec3, bool);
+
+/// The car that is coming to a brick at `at` next, leaving out `but`: how far off
+/// it is, and whether it is in the back half of the field.
+fn due(cars: &[Coming], at: Vec3, but: Option<Entity>) -> Option<(f32, bool)> {
+    cars.iter()
+        .filter(|car| Some(car.0) != but)
+        .filter_map(|&(_, pos, vel, behind)| {
+            let to = at - pos;
+            let far = to.length();
+            let coming = far < EXTRA_FAR && to.dot(vel) > EXTRA_CONE * far * vel.length();
+            coming.then_some((far, behind))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+}
+
 fn any_colour(rng: &mut crate::meshgen::Rng) -> Power {
     POWERS[(rng.f() * POWERS.len() as f32) as usize % POWERS.len()]
 }
@@ -604,7 +663,10 @@ pub fn setup_items(
     let rule = raced.brick_rule().unwrap_or(settings.brick_rule());
     let placed = loaded.is_some();
     let models = models.as_deref();
-    let mut spawn = |pos: Vec3, power: Option<Power>| {
+    // An elimination race's extra bricks are a colour for whoever is coming, unless
+    // the rule has every brick one colour.
+    let coloured = rule == 0 || rule == crate::menu::RANDOM_BRICKS;
+    let mut spawn = |pos: Vec3, power: Option<Power>, extra: bool| {
         // The race's rule may recolour the brick, or leave it out.
         let Some(power) = crate::rules::brick(rule, power) else {
             return;
@@ -612,6 +674,12 @@ pub fn setup_items(
         // The original's own placements are where the brick is drawn (`PickupBrick::Draw`);
         // ours are on the road, and the brick is held above it.
         let lift = if placed { 0.0 } else { BRICK_HEIGHT };
+        // An extra brick is found on the road, and is as far over it either way.
+        let pos = if extra {
+            pos + Vec3::Y * (BRICK_HEIGHT - lift)
+        } else {
+            pos
+        };
         // The port's random bricks begin as any colour, too.
         let random = rule == crate::menu::RANDOM_BRICKS && power.is_some();
         let power = if random {
@@ -624,6 +692,7 @@ pub fn setup_items(
             models,
             Pickup {
                 random,
+                extra: extra && coloured,
                 ..Pickup::new(power, pos, lift, false)
             },
         );
@@ -631,17 +700,48 @@ pub fn setup_items(
     // Circuits from the original game come with their own brick placements.
     if let Some(loaded) = loaded {
         for &(power, pos) in &loaded.bricks {
-            spawn(pos, power);
+            spawn(pos, power, false);
         }
-        commands.insert_resource(assets);
-        return;
+    } else {
+        // Otherwise they are laid where the circuit's own features ask for them.
+        for (power, pos) in laid(&track) {
+            spawn(pos, power, false);
+        }
     }
-
-    // Otherwise they are laid where the circuit's own features ask for them.
-    for (power, pos) in laid(&track) {
-        spawn(pos, power);
+    // The extra ones are put out last, so that the circuit's own are numbered as
+    // they are in any other race.
+    if settings.eliminating() {
+        for (power, pos) in more(&track) {
+            spawn(pos, Some(power), true);
+        }
     }
     commands.insert_resource(assets);
+}
+
+/// Where the extra bricks of an elimination race are, on the road, and what colour
+/// each begins as: a pair half way between each two of the stations a built-in
+/// circuit's rows are at, which is as many again on one of the original's.
+pub fn more(track: &Track) -> Vec<(Power, Vec3)> {
+    let mut bricks = Vec::new();
+    if track.arena.is_some() || track.unrouted {
+        return bricks;
+    }
+    let n = track.n();
+    let rows = FEWEST_ROWS.max((track.length / ROW_SPACING).round() as usize);
+    for row in 0..rows {
+        let mut at = (2 * row + 1) * n / (2 * rows);
+        // A pair that would lie on a jump lies just before it.
+        if let Some(jump) = track.jumps.iter().find(|jump| (jump.0..jump.1).contains(&at)) {
+            at = jump.0.min(jump.1).saturating_sub(4);
+        }
+        for (i, side) in [-1.0, 1.0].into_iter().enumerate() {
+            let over = track.edge(at, side * EXTRA_ACROSS * track.road);
+            let ground = track.collision.ground(over + Vec3::Y * EXTRA_PROBE, EXTRA_PROBE * 2.0);
+            let on = ground.map_or(over, |hit| hit.point);
+            bricks.push((POWERS[(2 * row + i) % 4], on));
+        }
+    }
+    bricks
 }
 
 /// How far apart the rows of bricks round a built-in circuit are, about, and the
@@ -658,7 +758,9 @@ const FEWEST_ROWS: usize = 8;
 pub fn laid(track: &Track) -> Vec<(Option<Power>, Vec3)> {
     let mut bricks = Vec::new();
     let n = track.n();
-    let rows = FEWEST_ROWS.max((track.length / ROW_SPACING).round() as usize);
+    // An arena has as many rows across its line as its map says, if it says.
+    let asked = track.arena.as_ref().and_then(|plan| plan.rows);
+    let rows = asked.map_or(FEWEST_ROWS.max((track.length / ROW_SPACING).round() as usize), |rows| rows + 1);
     for row in 1..rows {
         // A row that would lie on a jump lies just before it.
         let mut at = row * n / rows;
@@ -711,13 +813,22 @@ pub fn laid(track: &Track) -> Vec<(Option<Power>, Vec3)> {
             }
         }
     }
-    // An arena has more where its line doesn't go, each a colour of its own.
+    // An arena has the bricks its map lays: each the colour the map says, a white
+    // one, or a colour of its own by its place among them.
     if let Some(plan) = &track.arena {
-        for (i, &[x, z]) in plan.bricks.iter().enumerate() {
-            // On whatever is uppermost there: the floor, or the high ground.
-            let over = Vec3::new(x, 20.0, z);
-            let on = track.collision.ground(over, 40.0).map_or(over.with_y(0.0), |hit| hit.point);
-            bricks.push((Some(POWERS[i % 4]), on));
+        for (i, brick) in plan.bricks.iter().enumerate() {
+            // On whatever is uppermost there, the floor or the high ground; or on
+            // the floor, whatever is over it.
+            let [x, z] = brick.at;
+            let (from, reach) = if brick.low { (ARENA_LOW, ARENA_LOW * 2.0) } else { (ARENA_HIGH, ARENA_HIGH * 2.0) };
+            let over = Vec3::new(x, from, z);
+            let on = track.collision.ground(over, reach).map_or(over.with_y(0.0), |hit| hit.point);
+            let power = match brick.hue {
+                crate::arena::Hue::Any => Some(POWERS[i % 4]),
+                crate::arena::Hue::White => None,
+                crate::arena::Hue::Is(power) => Some(power),
+            };
+            bricks.push((power, on));
         }
     }
     let mut i = 0;
@@ -740,6 +851,10 @@ pub fn laid(track: &Track) -> Vec<(Option<Power>, Vec3)> {
 
 /// How many samples past a jump's lip the brick over its dip is.
 const JUMP_BRICK: usize = 5;
+/// How high over an arena's floor the ground a brick lies on is looked for from:
+/// above anything built there, or, for a brick that lies under something, below it.
+const ARENA_HIGH: f32 = 20.0;
+const ARENA_LOW: f32 = 2.0;
 
 pub fn pickups(
     mut commands: Commands,
@@ -757,6 +872,16 @@ pub fn pickups(
     // Bricks are only heard once the race is on (`SetBricksAudible`); before it they
     // are all put back as they began (`ColorBrick::Respawn`, `WhiteBrick::Respawn`).
     let audible = matches!(race.phase, crate::Phase::Racing | crate::Phase::Finished);
+    // The cars an extra brick may be coloured for: those still racing, and whether
+    // each is in the back half of them.
+    let racing = |k: &Kart| k.out.is_none() && k.finished.is_none();
+    let field = karts.iter().filter(|(_, k)| racing(k)).count();
+    let ahead = |k: &Kart| karts.iter().filter(|(_, o)| racing(o) && o.place < k.place).count();
+    let coming: Vec<Coming> = karts
+        .iter()
+        .filter(|(_, k)| racing(k))
+        .map(|(e, k)| (e, k.pos, k.vel, 2 * (ahead(k) + 1) > field))
+        .collect();
 
     // White bricks leave their cars: knocked out by a hit, they fall where the car is;
     // spent on a power-up, they go home.
@@ -791,19 +916,19 @@ pub fn pickups(
     }
 
     for (entity, mut p, mut tf, mut vis) in &mut picks {
+        // A random brick, or an extra one, keeps the colour it has.
+        let kept = p.random || p.extra;
         if !audible
-            && (p.state == BrickState::Wait
-                || (p.power != p.home && !p.random)
-                || p.pos != p.home_pos)
+            && (p.state == BrickState::Wait || (p.power != p.home && !kept) || p.pos != p.home_pos)
         {
-            // A random brick is put back as the colour it has.
-            let colour = if p.random { p.power } else { p.home };
+            let colour = if kept { p.power } else { p.home };
             let fresh = Pickup {
                 random: p.random,
+                extra: p.extra,
                 id: p.id,
                 ..Pickup::new(colour, p.home_pos, p.lift, p.modelled)
             };
-            if p.power != p.home && !p.random {
+            if p.power != p.home && !kept {
                 commands.entity(entity).despawn();
                 assets.spawn_brick(&mut commands, models.as_deref(), fresh);
                 continue;
@@ -849,6 +974,20 @@ pub fn pickups(
         if formed && audible {
             sfx.emit(id::BRICK_RESPAWN, brick_sound(p.pos));
         }
+        // An extra brick waiting to be taken becomes a colour for the car that is
+        // coming to it, if that isn't who it was coloured for, while the car is
+        // still some way off.
+        let next = due(&coming, p.pos, None).filter(|due| due.0 >= EXTRA_NEAR);
+        if let Some((_, behind)) = next.filter(|due| {
+            p.extra && audible && p.state == BrickState::Idle && p.meant != Some(due.1)
+        }) {
+            p.meant = Some(behind);
+            let colour = Some(for_place(behind, &mut rng));
+            if colour != p.power {
+                (p.next_power, p.next) = (colour, BrickState::Appear);
+                (p.state, p.timer) = (BrickState::Shrink, 0.0);
+            }
+        }
 
         p.show(&mut tf, &mut vis, t);
 
@@ -872,6 +1011,16 @@ pub fn pickups(
                     (p.next_power, p.next) = match had {
                         Some(old) => (Some(old), BrickState::Appear),
                         None if p.random => (Some(any_colour(&mut rng)), BrickState::Wait),
+                        // An extra one comes back for the next car on its way.
+                        None if p.extra => {
+                            let next = due(&coming, p.pos, Some(kart));
+                            p.meant = next.map(|due| due.1);
+                            let colour = match next {
+                                Some((_, behind)) => for_place(behind, &mut rng),
+                                None => any_colour(&mut rng),
+                            };
+                            (Some(colour), BrickState::Wait)
+                        }
                         None => (p.home, BrickState::Wait),
                     };
                     if audible {
@@ -2548,6 +2697,41 @@ mod tests {
         let k = kart(&world, owner);
         assert!(k.s - start > 200.0, "warped {}", k.s - start);
         assert!(k.vel.length() > crate::physics::MAX_SPEED);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn an_extra_brick_is_a_colour_for_the_car_coming_to_it() {
+    // Mostly red and green for a car that is behind, yellow and blue for one in front.
+    let mut rng = crate::meshgen::Rng(11);
+    for behind in [true, false] {
+        let chasing = (0..1000)
+            .filter(|_| matches!(for_place(behind, &mut rng), Power::Red | Power::Green))
+            .count();
+        let most = if behind { chasing } else { 1000 - chasing };
+        assert!((700..900).contains(&most), "{behind} {most}");
+    }
+    // The car it is for is the nearest of those on their way to it.
+    let car = |n: u32, x: f32, speed: f32, behind: bool| -> Coming {
+        (Entity::from_raw_u32(n).unwrap(), Vec3::X * x, Vec3::X * speed, behind)
+    };
+    let cars = [car(1, -30.0, 20.0, false), car(2, -60.0, 20.0, true), car(3, 10.0, 20.0, true)];
+    assert_eq!(due(&cars, Vec3::ZERO, None), Some((30.0, false)));
+    assert_eq!(due(&cars, Vec3::ZERO, Some(cars[0].0)), Some((60.0, true)));
+    // Not one that has gone by, is standing, or is too far off.
+    assert_eq!(due(&cars[2..], Vec3::ZERO, None), None);
+    assert_eq!(due(&[car(4, -30.0, 0.0, true)], Vec3::ZERO, None), None);
+    assert_eq!(due(&[car(5, -EXTRA_FAR - 1.0, 20.0, true)], Vec3::ZERO, None), None);
+    // Every circuit has as many pairs of them as it has stations, on its road.
+    for map in crate::map::stock().into_iter().filter(|map| !map.arena()) {
+        let track = Track::built(map);
+        let bricks = more(&track);
+        assert!(bricks.len() >= 2 * FEWEST_ROWS, "{}", bricks.len());
+        for (_, at) in &bricks {
+            assert!(track.on_road(*at, crate::track::WALL), "{at}");
+            assert!(track.collision.ground(*at + Vec3::Y, 3.0).is_some(), "{at}");
+        }
     }
 }
 

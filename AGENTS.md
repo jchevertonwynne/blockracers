@@ -86,24 +86,48 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
 - **Arenas:** `src/arena.rs` (the port's own) builds a map that has a floor and
   no road: four places to fight in
   (the yard, the crossroads, the ring and the town), for a battle or a game
-  of tag online and offered nowhere else: the room's vote lists them only when the
-  host's mode is one of those (`frontend`'s `offered`), and the host runs a race
-  voted onto one on the first circuit (`Rules::fitted`). An arena is a walled floor
+  of tag online and offered nowhere else, and those are fought nowhere but in
+  one: the room's vote lists the arenas, and nothing else, only when the host's
+  mode is one of those (`frontend`'s `offered`), and the host runs a race voted
+  onto an arena on the first circuit and a battle voted onto a circuit in the
+  first arena (`Rules::fitted`). An arena is a walled floor
   with no road (`Track::arena`), built of blocks, ramps and decks that are driven
-  on and under (`arena::Plan`): the yard is three ways end to end with a bridge
-  over the middle one and catwalks from it to its buildings' roofs, each with a
-  ramp up from its end; the crossroads has a flyover across its junction, a deck
-  across that climbed from east and west, and a pocket at the end of two arms;
-  the ring a hill with a ramp up each side and a gallery against the wall north
-  and south; and the town a street with a two-floored house at each end, a bus
-  and a truck between them and a footbridge over those from the one house's
-  upper floor to the other's. There
+  on and under, with speed pads on its floor where its map lays them
+  (`arena::Plan`). Each is laid out for those two games: every way through it
+  comes round again, so that nobody is stopped at the end of one; its high
+  ground has more than one way up and any edge to come down by; what stands on
+  it hides one way from another, a shot and the car that is "it" both wanting a
+  clear line; and its bricks are where its map puts them and the colour it
+  says (`arena::Brick`), with no rows across the line: the white ones, which a
+  car keeps until it fires, only in the middle or on the high ground, where a
+  hazard stands over them, and coloured ones by the starts and on the ways
+  round. The yard is three ways end to end, the roofs of the buildings between
+  them two more over those, joined by a bridge over the middle way, with a ramp
+  up to each roof from its end and one to each end of the bridge from beside
+  it; the crossroads is two streets crossing between four blocks, a road round
+  the outside, and over the crossing a platform with a ramp down into each
+  street; the ring a round floor with a broken wall half way out, two humps on
+  the way round outside it and a hill in the middle whose top is a roundabout,
+  a ramp onto the end of each side of it, round the ark; and the town eight
+  houses round a square, a street between each two of them out to the road
+  round the outside, their roofs joined by planks into a way round over the
+  streets, with a ramp up to it from each side of the square. There
   are no gates, lap zones or finishing line, and the cars start apart, facing
-  the middle.
-  Its line (`arena::Plan::line`) is only where bricks are laid and where the
-  computer's cars wander when they have nobody in sight to go for (`kart::Ai::quarry`:
-  the nearest car, when they hold a power-up or are "it"). Each has a hazard or
-  two of the game's (`gauntlet::load`), and its map is of its wall and blocks.
+  the middle or the way the map says.
+  Its line (`arena::Plan::line`), a loop over the floor and the high ground, is
+  where the computer's cars go, some one way round and some the other, when
+  they have nobody to go for (`kart::Ai::quarry`: the nearest car on their own
+  level with nothing between, when they hold a power-up or are "it", followed
+  for a moment to where it went out of sight). One that has left the line comes
+  back to the nearest of it on its own level (`Track::rejoined`), round what is
+  in the way (`arena::Ways`), and goes on whichever way it is then heading. A
+  test plays a minute of a battle and of a game of tag in each among the
+  computer's cars and says how much of the arena they use (`net::tests`'
+  `fought_over`); `the_arenas_as_the_computers_cars_find_them`, run with
+  `--ignored`, prints the same of several whole games, beside those of the
+  files in `$BRICK_OLD` if that is a folder of others of the same names, to be
+  read while one is laid out. Each has a hazard of the game's
+  (`gauntlet::load`), and its map is of its wall and blocks.
   A mirrored race turns the plan over (`Plan::mirrored`).
 - **Built cars:** `src/build.rs` has the rules of putting bricks on a chassis, the
   bytes a car is saved as and the model made of one, and a racer's minifigure;
@@ -246,8 +270,15 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   online is won is the host's to say on "rules" (`menu::Mode`, sent in
   `net::protocol::Rules`): a race, elimination, or one of the two of `src/net/modes.rs`
   that laps don't end, a battle (three lives, a spin or a blow into the air takes
-  one, the last car left wins) and a game of tag (the car that is "it" runs its
-  clock down until it bumps another; the first clock out ends it). What a car has
+  one, the last car left wins) and a game of tag (one clock runs down whoever is "it", with a few seconds at the least for a car just caught,
+  which a bump passes on; the car that is "it" when it runs out is out, the clock
+  is put back, to thirty seconds and five more for each car over two left, and another drawn, and the last car left wins; the car that is "it"
+  is drawn again in red through whatever hides it, `modes::glow`, and the display
+  says where it is at the edge of the screen while it is out of the picture). The host's "rules" page
+  has rows only a battle or a game of tag has (`menu::Extra::of`): a battle's
+  lives, time limit and how long a car that has lost a life is spared, and a game
+  of tag's least on the clock for a car just caught and how long it can't catch
+  back; they are kept with the settings and go with the rules. What a car has
   left is `Kart::stake` and `Kart::it`, which go to the players with its standing
   and are shown where the display counts laps. A session's "series" scores any of
   them by place, race after race. A race on one of the port's own maps is run on
@@ -262,6 +293,14 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   The garage's test drive, taken from a session's room, is driven alone as it
   is offline (`net::Apart` keeps the session while `Role` says offline); a
   host's start fetches a player from it, and a host on it starts nothing.
+- **Elimination's bricks:** a race that puts the last car out each lap has more
+  coloured bricks than the circuit's own (`items::more`: a pair between each two
+  stations round the lap, put out last so that the circuit's own keep their
+  numbers), and each is a colour for the car coming to it next (`items::due`):
+  mostly red or green for one in the back half of the field, mostly yellow or blue
+  for one in the front (`items::for_place`). It is recoloured only while that car
+  is still some way off, so cars in a bunch have the colours of the first of them.
+  A rule that makes every brick one colour, or leaves them out, has its way.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 

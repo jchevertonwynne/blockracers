@@ -22,7 +22,7 @@
 //! Racing online the host's map is the one raced: it goes to the players with the
 //! start, and is theirs until they race alone again (`menu::Circuits::lend`).
 
-use crate::arena::{Block, Deck, Plan, Ramp};
+use crate::arena::{Block, Brick, Deck, Plan, Ramp, Start};
 use crate::gauntlet::Stood;
 use crate::landmarks::Landmark;
 use crate::meshgen::*;
@@ -104,7 +104,7 @@ struct Sheet {
     #[serde(default)]
     infields: Vec<Stretch>,
     #[serde(default)]
-    pads: Vec<Padded>,
+    pads: Vec<Padding>,
     #[serde(default)]
     banks: Vec<Banked>,
     walls: Option<Look>,
@@ -121,11 +121,26 @@ struct Sheet {
     decks: Vec<Deck>,
     #[serde(default)]
     line: Vec<[f32; 3]>,
-    grid: Option<[[f32; 2]; 6]>,
+    grid: Option<[Start; 6]>,
     #[serde(default)]
-    bricks: Vec<[f32; 2]>,
+    bricks: Vec<Brick>,
+    rows: Option<usize>,
     #[serde(default)]
     hazards: Vec<Stood>,
+}
+
+/// A speed pad as a map gives it: `at` so far round a circuit's lap and `right` of
+/// the middle of its road, or at a `place` on an arena's floor, its arrows
+/// pointing `heading` degrees round from east to north.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Padding {
+    at: Option<f32>,
+    #[serde(default)]
+    right: f32,
+    place: Option<[f32; 2]>,
+    #[serde(default)]
+    heading: f32,
 }
 
 /// The colours a map may name.
@@ -192,10 +207,22 @@ impl Map {
         }
         let floored = sheet.grid.is_some()
             || sheet.floor.is_some()
+            || sheet.rows.is_some()
             || !(sheet.blocks.is_empty() && sheet.ramps.is_empty() && sheet.decks.is_empty())
             || !(sheet.line.is_empty() && sheet.bricks.is_empty());
         if circuit && floored {
-            return Err("a circuit has no floor, blocks, grid or line of an arena's".into());
+            return Err("a circuit has no floor, blocks, grid, line or rows of an arena's".into());
+        }
+        // A circuit's pads are so far round its lap, and an arena's at places on
+        // its floor.
+        let mut pads = (Vec::new(), Vec::new());
+        for pad in &sheet.pads {
+            match (circuit, pad.at, pad.place) {
+                (true, Some(at), None) => pads.0.push(Padded { at, right: pad.right }),
+                (false, None, Some(at)) => pads.1.push(crate::arena::Pad { at, heading: pad.heading }),
+                (true, ..) => return Err("a circuit's pad is `at` so far round its lap".into()),
+                (false, ..) => return Err("an arena's pad is at a `place` on its floor, [x, z]".into()),
+            }
         }
         let plan = match circuit {
             true => None,
@@ -207,6 +234,8 @@ impl Map {
                 line: sheet.line,
                 grid: sheet.grid.ok_or("an arena wants a `grid`: the six places its cars start")?,
                 bricks: sheet.bricks,
+                rows: sheet.rows,
+                pads: pads.1,
                 floor: sheet.floor.map_or([GREY, DARK_GREY], |floor| floor.map(|tint| tint.0)),
             }),
         };
@@ -216,11 +245,11 @@ impl Map {
             jumps: sheet.jumps,
             byways: sheet.byways,
             infields: sheet.infields,
-            pads: sheet.pads,
+            pads: pads.0,
             banks: sheet.banks,
         };
         if !circuit && road != Road::default() {
-            return Err("an arena has no road for tunnels, jumps, byways, infields, pads or banks".into());
+            return Err("an arena has no road for tunnels, jumps, byways, infields or banks".into());
         }
         let map = Map {
             key: key.to_string(),
@@ -410,6 +439,8 @@ fn floor_amiss(plan: &Plan) -> Option<String> {
         plan.decks.len(),
         plan.line.len(),
         plan.bricks.len(),
+        plan.pads.len(),
+        plan.rows.unwrap_or(0),
     ];
     if counts.iter().any(|&count| count > MOST) {
         return Some("it has too much".into());
@@ -447,8 +478,10 @@ fn floor_amiss(plan: &Plan) -> Option<String> {
     if line.len() < 4 || !ranged || (0..line.len()).any(|i| apart(i) < 1.0) {
         return Some("its `line` is four places or more, each apart from the next".into());
     }
-    if !plan.grid.iter().chain(&plan.bricks).all(near) {
-        return Some("its grid or its bricks are out of range".into());
+    let places = plan.grid.iter().map(|start| &start.at);
+    let places = places.chain(plan.bricks.iter().map(|brick| &brick.at));
+    if !places.chain(plan.pads.iter().map(|pad| &pad.at)).all(near) {
+        return Some("its grid, its bricks or its pads are out of range".into());
     }
     None
 }
@@ -695,6 +728,31 @@ mod tests {
         assert!(wrong(floor).contains("grid"));
         let pen = Map::tried("PEN", &format!("{floor}{grid}")).unwrap();
         assert!(pen.arena() && Track::made(&pen, true).course.grid.len() == 6);
+        // With what a floor may have besides: bricks of its choosing, a start that
+        // faces its own way, pads, a deck of a colour, and no rows across its line.
+        let more = "bricks = [[10, 10], { at = [0, 0], colour = \"white\" }, { at = [20, 0], colour = \"red\", low = true }]\n\
+                    decks = [{ at = [20, 0], half = [5, 5], height = 6, colour = \"brown\" }]\n\
+                    pads = [{ place = [-20, 0], heading = 90 }]\nrows = 0\n";
+        let faced = grid.replace("[40, 0]", "{ at = [40, 0], faces = \"north\" }");
+        let pen = Map::tried("PEN", &format!("{floor}{faced}{more}")).unwrap();
+        let track = Track::made(&pen, false);
+        let laid = crate::items::laid(&track);
+        let brick = |x: f32| laid.iter().find(|brick| brick.1.x == x).expect("a brick there");
+        assert_eq!(laid.len(), 3);
+        assert_eq!((brick(10.0).0, brick(0.0).0), (Some(crate::items::Power::Red), None));
+        assert!(brick(20.0).0 == Some(crate::items::Power::Red) && brick(20.0).1.y < 1.0);
+        assert_eq!(track.course.grid[0], (Vec3::new(40.0, 0.0, 0.0), Vec3::NEG_Z));
+        assert_eq!(track.course.grid[1].1, Vec3::X);
+        let plan = track.arena.as_ref().unwrap();
+        assert!(plan.padded(Vec3::new(-20.0, 0.1, 2.0)) && !plan.padded(Vec3::new(-20.0, 0.1, 9.0)));
+        // Without `rows` there are rows across the line, as there always were.
+        let rows = Map::tried("PEN", &format!("{floor}{grid}")).unwrap();
+        assert!(crate::items::laid(&Track::made(&rows, false)).len() > 20);
+        assert!(wrong(&format!("{floor}{grid}bricks = [{{ at = [0, 0], colour = \"pink\" }}]\n")).contains("white"));
+        assert!(wrong(&format!("{floor}{grid}bricks = [[0]]\n")).contains("brick"));
+        assert!(wrong(&format!("{floor}{}", grid.replace("[40, 0]", "[40]"))).contains("grid"));
+        assert!(with("pads = [{ place = [0, 0] }]\n").contains("circuit"));
+        assert!(with("rows = 3\n").contains("circuit"));
         assert!(wrong(&format!("{floor}{grid}").replace("[60, 60]", "[-90, -70]")).contains("outline"));
         assert!(wrong(&format!("{floor}{grid}pads = [{{ at = 3 }}]\n")).contains("arena"));
         let stood = "hazards = [{ kind = \"ghost\", at = 30 }]\n";

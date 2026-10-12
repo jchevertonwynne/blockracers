@@ -1,24 +1,41 @@
 //! Two ways of racing online that laps don't end: a battle and a game of tag. The
 //! port's own, and the host's to choose (`menu::Mode`, in `protocol::Rules`).
 //!
-//! In a battle every car has `LIVES` lives. Anything that spins a car round or
-//! blows it into the air takes one (`Kart::hits`), and for `SPARED` seconds after
-//! nothing takes another: a blast throws a car for as long as it is in reach, and
-//! that is one hit. A car with none left is out of the race; the last car in it
-//! wins, or after `BATTLE_TIME` whoever has most left.
+//! In a battle every car has a few lives. Anything that spins a car round or
+//! blows it into the air takes one (`Kart::hits`), and for a moment after nothing
+//! takes another: a blast throws a car for as long as it is in reach, and that is
+//! one hit. A car with none left is out of the race; the last car in it wins, or
+//! when its time is up whoever has most left. How many lives, how long a car is
+//! spared and how long the battle may go on are the host's to say
+//! (`Settings::lives`, `spared`, `battle_time`).
 //!
-//! In a game of tag every car has a clock of `TAG_TIME` seconds, and one car, drawn
-//! at the start, is "it". Its clock runs down until it bumps another car, which is
-//! "it" from then on, and can't hand it straight back for `TAG_BACK` seconds. The
-//! car that is "it" is `IT_PACE` times as fast as the rest, so that it can catch
-//! them, the computer's on their recorded lines too. The first clock to run out
-//! ends the game: that car is last, and the rest come in the order of what their
-//! clocks have left.
+//! In a game of tag one car, drawn at the start, is "it", and a clock runs down
+//! whoever is: `TAG_TIME` seconds for the last two cars, and `TAG_MORE` more for
+//! each car besides that is in the round (`round`). The car that is "it" stops being so by bumping
+//! another, which is "it" from then on and can't hand it straight back for a
+//! moment; the clock is not put back, but a car caught has a few seconds of it at
+//! the least (the host's to say: `Settings::tag_back`, `tag_least`). The car that is "it" when the
+//! clock runs out is out of the race, the clock is put back and another of those
+//! left is drawn. The car that is "it" is `IT_PACE` times as fast as the rest, so
+//! that it can catch them, the computer's on their recorded lines too. The last
+//! car in it wins, and the rest come in the order they went out, last out first.
+//! So that the car to keep away from can be found, it glows red, through whatever
+//! stands between (`glow`), and the display says where it is while it is out of
+//! the picture (`hud_original`).
 //!
 //! Both are run on the host, as the rest of the race is, and what each car has left
 //! (`Kart::stake`, `Kart::it`) goes to the players with its `state::Standing`.
 
+use bevy::mesh::MeshVertexBufferLayoutRef;
+use bevy::mesh::skinning::SkinnedMesh;
+use bevy::pbr::{
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+};
 use bevy::prelude::*;
+use bevy::render::render_resource::{
+    AsBindGroup, CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+};
+use bevy::shader::ShaderDefVal;
 
 use crate::kart::{Bumps, Kart};
 use crate::menu::{Mode, Settings};
@@ -26,15 +43,10 @@ use crate::meshgen::Rng;
 use crate::rules::put_out;
 use crate::{Phase, Race};
 
-/// The lives a car begins a battle with, and how long one is fought for.
-pub const LIVES: f32 = 3.0;
-pub const BATTLE_TIME: f32 = 240.0;
-/// How long a car that has just lost a life can't lose another.
-pub const SPARED: f32 = 1.5;
-/// The seconds on each car's clock in a game of tag.
+/// The seconds on the clock of a game of tag when a car is made "it" by the draw
+/// with two cars left in it, and how many more there are for each car besides.
 pub const TAG_TIME: f32 = 30.0;
-/// How long a car that has just been made "it" can't make another so.
-const TAG_BACK: f32 = 2.0;
+pub const TAG_MORE: f32 = 5.0;
 /// How many times as fast as the rest the car that is "it" is.
 pub const IT_PACE: f32 = 1.15;
 /// Cars that end a game together are a thousandth of a second apart for each of
@@ -81,7 +93,7 @@ pub fn battle(
     if !play.begun {
         play.begun = true;
         for mut kart in &mut karts {
-            kart.stake = LIVES;
+            kart.stake = settings.lives as f32;
         }
     }
     if !on(&race) {
@@ -100,7 +112,7 @@ pub fn battle(
         if !hit || *spared > 0.0 || kart.out.is_some() || kart.finished.is_some() {
             continue;
         }
-        *spared = SPARED;
+        *spared = settings.spared();
         kart.stake = (kart.stake - 1.0).max(0.0);
         debug!("{} has {} lives left", kart.name, kart.stake);
         if kart.stake <= 0.0 {
@@ -111,13 +123,33 @@ pub fn battle(
         .iter()
         .filter(|kart| kart.out.is_none() && kart.finished.is_none())
         .count();
-    if left == 1 || (left > 1 && race.time >= BATTLE_TIME) {
+    if left == 1 || (left > 1 && race.time >= settings.battle_time()) {
         end(karts.iter_mut(), race.time);
     }
 }
 
-/// A game of tag: "it" goes to whichever car the one that is "it" bumps, and the
-/// game is over when a clock has run out.
+/// What the clock of a game of tag begins a round at, with `cars` in it.
+pub fn round(cars: usize) -> f32 {
+    TAG_TIME + TAG_MORE * cars.saturating_sub(2) as f32
+}
+
+/// Whether a car is still in the game.
+fn playing(kart: &Kart) -> bool {
+    kart.out.is_none() && kart.finished.is_none()
+}
+
+/// One of the cars still in a game of tag is made "it".
+fn draw(karts: &mut Query<&mut Kart>, dice: &mut Rng) {
+    let count = karts.iter().filter(|kart| playing(kart)).count();
+    let drawn = (dice.f() * count as f32) as usize % count.max(1);
+    let mut left = karts.iter_mut().filter(|kart| playing(kart));
+    if let Some(mut kart) = left.nth(drawn) {
+        kart.it = true;
+    }
+}
+
+/// A game of tag: "it" goes to whichever car the one that is "it" bumps, the car
+/// that is "it" when the clock runs out is out, and the last car left wins.
 pub fn tag(
     time: Res<Time>,
     race: Res<Race>,
@@ -132,50 +164,68 @@ pub fn tag(
     }
     if !play.begun {
         play.begun = true;
-        let count = karts.iter().count();
-        let drawn = (dice.f() * count as f32) as usize % count.max(1);
-        for (n, mut kart) in karts.iter_mut().enumerate() {
-            (kart.stake, kart.it) = (TAG_TIME, n == drawn);
+        let clock = round(karts.iter().count());
+        for mut kart in &mut karts {
+            (kart.stake, kart.it) = (clock, false);
         }
+        draw(&mut karts, &mut dice);
     }
-    // Over once any car is out or home.
-    if !on(&race)
-        || karts
-            .iter()
-            .any(|kart| kart.out.is_some() || kart.finished.is_some())
-    {
+    // Over once one car is left.
+    if !on(&race) || karts.iter().filter(|kart| playing(kart)).count() < 2 {
         return;
     }
     let dt = time.delta_secs();
     play.held = (play.held - dt).max(0.0);
-    let Some(it) = karts.iter().find(|kart| kart.it).map(|kart| kart.slot) else {
-        return;
-    };
-    let caught = bumps.0.iter().find_map(|&(a, b)| match (a == it, b == it) {
-        (true, false) => Some(b),
-        (false, true) => Some(a),
-        _ => None,
+    let it = karts.iter().find(|kart| kart.it).map(|kart| kart.slot);
+    let caught = it.and_then(|it| {
+        bumps.0.iter().find_map(|&(a, b)| match (a == it, b == it) {
+            (true, false) => Some(b),
+            (false, true) => Some(a),
+            _ => None,
+        })
     });
-    if let Some(caught) = caught.filter(|_| play.held <= 0.0) {
-        play.held = TAG_BACK;
+    let caught = caught.filter(|&caught| {
+        karts
+            .iter()
+            .any(|kart| kart.slot == caught && playing(kart))
+    });
+    let caught = caught.filter(|_| play.held <= 0.0);
+    if let Some(caught) = caught {
+        play.held = settings.tag_back();
         for mut kart in &mut karts {
             kart.it = kart.slot == caught;
             // The driver caught starts at it.
             kart.cues.hit |= kart.it;
         }
+    }
+    // The one clock is every car's `stake`, and the car that is "it" has the say.
+    let clock = karts
+        .iter()
+        .find(|kart| kart.it)
+        .map_or(TAG_TIME, |kart| kart.stake);
+    // A car caught with the clock all but out has a moment to pass it on in.
+    let least = if caught.is_some() { settings.tag_least() } else { 0.0 };
+    let mut clock = (clock - dt).max(least);
+    let ran_out = clock <= 0.0;
+    if ran_out {
+        for mut kart in karts.iter_mut().filter(|kart| kart.it) {
+            debug!("{} is out at {:.1}s", kart.name, race.time);
+            (kart.it, kart.stake) = (false, 0.0);
+            put_out(&mut kart, race.time);
+        }
+        let left = karts.iter().filter(|kart| playing(kart)).count();
+        (clock, play.held) = (round(left), 0.0);
+    }
+    for mut kart in karts.iter_mut().filter(|kart| playing(kart)) {
+        kart.stake = clock;
+    }
+    if !ran_out {
         return;
     }
-    let mut ran_out = false;
-    for mut kart in karts.iter_mut().filter(|kart| kart.it) {
-        kart.stake = (kart.stake - dt).max(0.0);
-        if kart.stake <= 0.0 {
-            debug!("{}'s clock has run out at {:.1}s", kart.name, race.time);
-            put_out(&mut kart, race.time);
-            ran_out = true;
-        }
-    }
-    if ran_out {
+    if karts.iter().filter(|kart| playing(kart)).count() < 2 {
         end(karts.iter_mut(), race.time);
+    } else {
+        draw(&mut karts, &mut dice);
     }
 }
 
@@ -201,6 +251,114 @@ pub fn pace(settings: Res<Settings>, mut karts: Query<&mut Kart>) {
         if kart.pace != pace {
             kart.pace = pace;
         }
+    }
+}
+
+/// What the glow of the car that is "it" is drawn with: a material that nothing
+/// in front of it hides.
+pub type Seen = ExtendedMaterial<StandardMaterial, Through>;
+
+/// Makes a material one that is drawn whatever is nearer the camera than it, and
+/// in its own colour whatever colours its mesh has.
+#[derive(Asset, AsBindGroup, TypePath, Clone, Default)]
+pub struct Through {}
+
+impl MaterialExtension for Through {
+    fn specialize(
+        _: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _: &MeshVertexBufferLayoutRef,
+        _: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if let Some(depth) = &mut descriptor.depth_stencil {
+            depth.depth_compare = Some(CompareFunction::Always);
+        }
+        let coloured = |def: &ShaderDefVal| matches!(def, ShaderDefVal::Bool(name, _) if name == "VERTEX_COLORS");
+        descriptor.vertex.shader_defs.retain(|def| !coloured(def));
+        if let Some(fragment) = &mut descriptor.fragment {
+            fragment.shader_defs.retain(|def| !coloured(def));
+        }
+        Ok(())
+    }
+}
+
+/// A piece of the glow of a car, which is that entity: one of the car's meshes
+/// again, in the glow's colour.
+#[derive(Component)]
+pub struct Glow(Entity);
+
+/// A car that has its glow.
+#[derive(Component)]
+pub struct Glowing;
+
+/// The glow's colour, how much of what is behind it it hides at its faintest and
+/// its strongest, and how fast it goes from one to the other.
+const GLOW: Color = Color::srgb(1.0, 0.1, 0.05);
+const GLOW_LIGHT: (f32, f32) = (0.45, 0.85);
+const GLOW_RATE: f32 = 6.0;
+
+/// In a game of tag the car that is "it" glows: the car itself, drawn again in
+/// red through whatever is between it and the camera, so that where it is and how
+/// far off can be seen.
+pub fn glow(
+    mut commands: Commands,
+    time: Res<Time>,
+    settings: Res<Settings>,
+    karts: Query<(Entity, &Kart, Has<Glowing>)>,
+    children: Query<&Children>,
+    parts: Query<(&Mesh3d, Option<&SkinnedMesh>), (Without<Glow>, Without<crate::kart::Shield>)>,
+    glows: Query<(Entity, &Glow)>,
+    mut made: Local<Option<Handle<Seen>>>,
+    mut materials: ResMut<Assets<Seen>>,
+) {
+    for (entity, kart, glowing) in &karts {
+        let wanted = settings.mode == Mode::Tag && kart.it && kart.out.is_none();
+        if wanted == glowing {
+            continue;
+        }
+        if !wanted {
+            commands.entity(entity).remove::<Glowing>();
+            for (piece, _) in glows.iter().filter(|(_, glow)| glow.0 == entity) {
+                commands.entity(piece).despawn();
+            }
+            continue;
+        }
+        let material = made.get_or_insert_with(|| {
+            materials.add(ExtendedMaterial {
+                base: StandardMaterial {
+                    unlit: true,
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                },
+                extension: Through {},
+            })
+        });
+        commands.entity(entity).insert(Glowing);
+        for part in children.iter_descendants(entity) {
+            let Ok((mesh, skin)) = parts.get(part) else {
+                continue;
+            };
+            // Each piece is its mesh's child, to move and to be hidden with it.
+            let piece = commands
+                .spawn((
+                    Glow(entity),
+                    mesh.clone(),
+                    MeshMaterial3d(material.clone()),
+                    Transform::default(),
+                    bevy::light::NotShadowCaster,
+                    ChildOf(part),
+                ))
+                .id();
+            if let Some(skin) = skin {
+                commands.entity(piece).insert(skin.clone());
+            }
+        }
+    }
+    // It swells and dies away.
+    if let Some(mut material) = made.as_ref().and_then(|made| materials.get_mut(made)) {
+        let swell = 0.5 + 0.5 * (time.elapsed_secs() * GLOW_RATE).sin();
+        let light = GLOW_LIGHT.0 + (GLOW_LIGHT.1 - GLOW_LIGHT.0) * swell;
+        material.base.base_color = GLOW.with_alpha(light);
     }
 }
 
@@ -274,7 +432,7 @@ mod tests {
     fn a_hit_takes_a_life_and_the_last_car_left_wins() {
         let mut world = world(Mode::Battle, 3);
         world.run_system_once(battle).unwrap();
-        assert!(cars(&mut world).iter().all(|kart| kart.stake == LIVES));
+        assert!(cars(&mut world).iter().all(|kart| kart.stake == 3.0));
         // A blast throws a car for as long as it is in reach, and a car that drives
         // for itself is over being thrown by the next step: that is one life all
         // the same, and not one for every step of it.
@@ -283,14 +441,18 @@ mod tests {
             car(&mut world, 0).spin_out = 0.0;
         }
         world.run_system_once(battle).unwrap();
-        assert_eq!(car(&mut world, 0).stake, LIVES - 1.0);
+        assert_eq!(car(&mut world, 0).stake, 2.0);
         // Thrown again at once it is spared; a step of a second on, it isn't, and
         // a spin costs it what a throw does. With no lives it is out.
         car(&mut world, 0).launch(1.0);
-        world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(100));
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(100));
         world.run_system_once(battle).unwrap();
-        assert_eq!(car(&mut world, 0).stake, LIVES - 1.0);
-        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(2));
+        assert_eq!(car(&mut world, 0).stake, 2.0);
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(2));
         world.run_system_once(battle).unwrap();
         for _ in 0..2 {
             car(&mut world, 0).spin = 0.0;
@@ -315,11 +477,49 @@ mod tests {
         world.run_system_once(battle).unwrap();
         car(&mut world, 1).stake = 1.0;
         car(&mut world, 2).stake = 2.0;
-        world.resource_mut::<Race>().time = BATTLE_TIME;
+        world.resource_mut::<Race>().time = 240.0;
         world.run_system_once(battle).unwrap();
         world.run_system_once(crate::kart::update_places).unwrap();
         let places: Vec<usize> = cars(&mut world).iter().map(|kart| kart.place).collect();
         assert_eq!(places, [1, 3, 2]);
+    }
+
+    #[test]
+    fn a_battle_and_a_game_of_tag_are_as_the_host_has_them() {
+        // Five lives, and nobody spared: two hits in two steps take two of them.
+        let mut world = world(Mode::Battle, 2);
+        (world.resource_mut::<Settings>().lives, world.resource_mut::<Settings>().spared) = (5, 0);
+        world.run_system_once(battle).unwrap();
+        for left in [4.0, 3.0] {
+            car(&mut world, 0).spin = 0.0;
+            car(&mut world, 0).spin_round(1.0);
+            world.run_system_once(battle).unwrap();
+            assert_eq!(car(&mut world, 0).stake, left);
+        }
+        // A minute's battle is over at a minute.
+        world.resource_mut::<Settings>().battle_time = 0;
+        world.resource_mut::<Race>().time = 60.0;
+        world.run_system_once(battle).unwrap();
+        assert!(cars(&mut world).iter().all(|kart| kart.finished.is_some()));
+        // With no time to catch back in and nothing put on the clock, a car caught
+        // at the last is out.
+        let mut world = self::world(Mode::Tag, 3);
+        (world.resource_mut::<Settings>().tag_back, world.resource_mut::<Settings>().tag_least) =
+            (0, 0);
+        world.run_system_once(tag).unwrap();
+        let it = cars(&mut world).iter().position(|kart| kart.it).unwrap();
+        let other = (it + 1) % 3;
+        for (from, to) in [(it, other), (other, it)] {
+            world.resource_mut::<Bumps>().0 = vec![(from, to)];
+            world.run_system_once(tag).unwrap();
+            assert!(car(&mut world, to).it);
+        }
+        for slot in 0..3 {
+            car(&mut world, slot).stake = 0.5;
+        }
+        world.resource_mut::<Bumps>().0 = vec![(it, other)];
+        world.run_system_once(tag).unwrap();
+        assert!(car(&mut world, other).out.is_some());
     }
 
     #[test]
@@ -330,9 +530,8 @@ mod tests {
         assert_eq!(all.iter().filter(|kart| kart.it).count(), 1);
         let it = all.iter().position(|kart| kart.it).unwrap();
         let (other, third) = ((it + 1) % 3, (it + 2) % 3);
-        // Its clock has run for the one second of that step, and nobody else's.
-        assert_eq!(all[it].stake, TAG_TIME - 1.0);
-        assert_eq!(all[other].stake, TAG_TIME);
+        // The one clock has run for the one second of that step, for them all.
+        assert!(all.iter().all(|kart| kart.stake == round(3) - 1.0));
         // Two cars that aren't "it" bumping passes nothing.
         world.resource_mut::<Bumps>().0 = vec![(other, third)];
         world.run_system_once(tag).unwrap();
@@ -354,24 +553,56 @@ mod tests {
     }
 
     #[test]
-    fn the_first_clock_to_run_out_ends_the_game() {
+    fn the_car_that_is_it_when_the_clock_runs_out_is_out_until_one_is_left() {
         let mut world = world(Mode::Tag, 3);
         world.run_system_once(tag).unwrap();
-        let it = cars(&mut world).iter().position(|kart| kart.it).unwrap();
-        let (other, third) = ((it + 1) % 3, (it + 2) % 3);
-        car(&mut world, it).stake = 0.5;
-        car(&mut world, other).stake = 12.0;
+        let first = cars(&mut world).iter().position(|kart| kart.it).unwrap();
+        // The clock runs down whoever is "it": passed on, it is not put back.
+        let other = (first + 1) % 3;
+        world.resource_mut::<Bumps>().0 = vec![(first, other)];
+        world.run_system_once(tag).unwrap();
+        assert!(car(&mut world, other).it);
+        assert_eq!(car(&mut world, other).stake, round(3) - 2.0);
+        // Caught with the clock all but out, a car has three seconds of it.
+        car(&mut world, other).stake = 2.5;
+        world.resource_mut::<Bumps>().0 = vec![(first, other)];
+        for _ in 0..2 {
+            world.run_system_once(tag).unwrap();
+        }
+        assert!(car(&mut world, first).it);
+        assert_eq!(car(&mut world, other).stake, 3.0);
+        world.resource_mut::<Bumps>().0 = vec![(first, other)];
+        for _ in 0..2 {
+            world.run_system_once(tag).unwrap();
+        }
+        assert!(car(&mut world, other).it && car(&mut world, other).out.is_none());
+        world.resource_mut::<Bumps>().0.clear();
+        car(&mut world, other).stake = 0.5;
+        world.run_system_once(tag).unwrap();
+        // That car is out, the clock is put back and one of the two left is "it".
+        let all = cars(&mut world);
+        assert!(all[other].out.is_some() && !all[other].it);
+        assert_eq!(all.iter().filter(|kart| kart.it).count(), 1);
+        assert!(all.iter().all(|kart| kart.finished.is_none()));
+        // A round of two is the shortest.
+        assert_eq!((round(6), round(3), round(2), round(1)), (50.0, 35.0, 30.0, 30.0));
+        assert_eq!(all[first].stake, TAG_TIME);
+        let second = all.iter().position(|kart| kart.it).unwrap();
+        world.resource_mut::<Race>().time = 40.0;
+        car(&mut world, second).stake = 0.5;
         world.run_system_once(tag).unwrap();
         world.run_system_once(crate::kart::update_places).unwrap();
+        // The one left has won, and the others are placed last out first.
         let all = cars(&mut world);
-        assert!(all[it].out.is_some());
+        let winner = 3 - other - second;
+        assert!(all[second].out.is_some() && all[winner].finished.is_some());
         assert_eq!(
-            (all[third].place, all[other].place, all[it].place),
+            (all[winner].place, all[second].place, all[other].place),
             (1, 2, 3)
         );
+        assert!(all.iter().all(|kart| !kart.it));
         // Nothing more comes of it once it is over.
-        world.resource_mut::<Bumps>().0 = vec![(other, third)];
         world.run_system_once(tag).unwrap();
-        assert_eq!(car(&mut world, third).stake, TAG_TIME);
+        assert_eq!(car(&mut world, winner).stake, TAG_TIME);
     }
 }

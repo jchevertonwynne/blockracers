@@ -1,124 +1,185 @@
-# The ring, an arena: a hill to hold. In the middle of a round floor is a square
-# of high ground with a ramp up each of its four sides and the best bricks on
-# top; round it are a ring of pillars and the wall's buttresses, to come at it
-# from behind, and against the wall north and south a gallery as high as the
-# hill, with a ramp up each end of it, that looks across at whoever holds the
-# hill.
+# The ring, an arena: a round floor with a hill in the middle of it and a broken
+# wall half way out, which leaves a wide way round the outside to go fast on and
+# a court inside. The top of the hill is a roundabout: a ramp comes up onto it
+# beside each of its four sides, each onto the right-hand end of its side, so
+# that a car coming up is already going round, and comes off whichever edge it
+# likes. In the middle of the roundabout the ark turns and fires at whatever is
+# near it, which is everything within the roundabout and nothing on it.
+#
+# The white bricks are round the ark and nowhere else: a car goes in for them
+# while the ark's bolt is out, which is not for long, or behind a shield, and
+# there is a blue brick at the foot of each ramp. The red ones are on the
+# roundabout and on the two humps of the outside way, the yellow and green in
+# the gaps of the wall, one in front of each start, and on the outside way
+# between the starts. Speed pads lie against the wall.
 #
 # yard.toml says what each thing here is.
 
 name = "The Ring"
 author = "Brick Racers"
 
-# A hundred out from the middle, a corner every fifteen degrees.
+# A hundred and ten out from the middle, a corner every fifteen degrees.
 outline = [
-    [100, 0],
-    [96.59258, 25.8819],
-    [86.60254, 50],
-    [70.71068, 70.71068],
-    [50, 86.60254],
-    [25.881908, 96.592575],
-    [0, 100],
-    [-25.8819, 96.59258],
-    [-50, 86.60254],
-    [-70.71068, 70.71068],
-    [-86.60254, 50],
-    [-96.592575, 25.881908],
-    [-100, 0],
-    [-96.59258, -25.8819],
-    [-86.60254, -50],
-    [-70.71068, -70.71068],
-    [-50, -86.60254],
-    [-25.881908, -96.592575],
-    [0, -100],
-    [25.8819, -96.59258],
-    [50, -86.60254],
-    [70.71068, -70.71068],
-    [86.60254, -50],
-    [96.592575, -25.881908],
+    [110, 0],
+    [106.25, 28.47],
+    [95.263, 55],
+    [77.782, 77.782],
+    [55, 95.263],
+    [28.47, 106.25],
+    [0, 110],
+    [-28.47, 106.25],
+    [-55, 95.263],
+    [-77.782, 77.782],
+    [-95.263, 55],
+    [-106.25, 28.47],
+    [-110, 0],
+    [-106.25, -28.47],
+    [-95.263, -55],
+    [-77.782, -77.782],
+    [-55, -95.263],
+    [-28.47, -106.25],
+    [0, -110],
+    [28.47, -106.25],
+    [55, -95.263],
+    [77.782, -77.782],
+    [95.263, -55],
+    [106.25, -28.47],
 ]
 
-# The hill and the plinth on it; a ring of six pillars, 68 out; and six
-# buttresses against the wall, 95 out.
+# The hill and the plinth on it; and the wall, seventy out: a bar north and
+# south and a block either side of east and west, with a gap in front of each
+# start.
 blocks = [
-    { at = [0, 0], half = [18, 18], height = 5, colour = "tan" },
-    { at = [0, 0], half = [5, 5], height = 8, colour = "yellow" },
-    { at = [58.889725, 34], half = [4, 4], height = 7, colour = "red" },
-    { at = [0, 68], half = [4, 4], height = 7, colour = "white" },
-    { at = [-58.889725, 34], half = [4, 4], height = 7, colour = "red" },
-    { at = [-58.889725, -34], half = [4, 4], height = 7, colour = "white" },
-    { at = [0, -68], half = [4, 4], height = 7, colour = "red" },
-    { at = [58.889725, -34], half = [4, 4], height = 7, colour = "white" },
-    { at = [95, 0], half = [4, 4], height = 6, colour = "yellow" },
-    { at = [47.5, 82.272415], half = [4, 4], height = 6, colour = "yellow" },
-    { at = [-47.5, 82.272415], half = [4, 4], height = 6, colour = "yellow" },
-    { at = [-95, 0], half = [4, 4], height = 6, colour = "yellow" },
-    { at = [-47.5, -82.272415], half = [4, 4], height = 6, colour = "yellow" },
-    { at = [47.5, -82.272415], half = [4, 4], height = 6, colour = "yellow" },
+    { at = [0, 0], half = [26, 26], height = 5, colour = "brown" },
+    { at = [0, 0], half = [4, 4], height = 8, colour = "yellow" },
+    { at = [0, -70], half = [20, 4], height = 6, colour = "white" },
+    { at = [0, 70], half = [20, 4], height = 6, colour = "white" },
+    { at = [60.6, -35], half = [9, 9], height = 6, colour = "red" },
+    { at = [60.6, 35], half = [9, 9], height = 6, colour = "red" },
+    { at = [-60.6, 35], half = [9, 9], height = 6, colour = "red" },
+    { at = [-60.6, -35], half = [9, 9], height = 6, colour = "red" },
 ]
 
 # Slopes from the floor up to `height`, which way each `climbs`.
 ramps = [
-    { at = [30, 0], half = [12, 8], height = 5, climbs = "west" },
-    { at = [-30, 0], half = [12, 8], height = 5, climbs = "east" },
-    { at = [0, 30], half = [8, 12], height = 5, climbs = "north" },
-    { at = [0, -30], half = [8, 12], height = 5, climbs = "south" },
-    # Up each end of each gallery.
-    { at = [-30, -80], half = [10, 5], height = 5, climbs = "east" },
-    { at = [30, -80], half = [10, 5], height = 5, climbs = "west" },
-    { at = [-30, 80], half = [10, 5], height = 5, climbs = "east" },
-    { at = [30, 80], half = [10, 5], height = 5, climbs = "west" },
+    # Onto the hill, each beside one of its sides and onto the right-hand end of it.
+    { at = [36, -19], half = [10, 7], height = 5, climbs = "west" },
+    { at = [-19, -36], half = [7, 10], height = 5, climbs = "south" },
+    { at = [-36, 19], half = [10, 7], height = 5, climbs = "east" },
+    { at = [19, 36], half = [7, 10], height = 5, climbs = "north" },
+    # A hump across the outside way north and south: two slopes back to back,
+    # with nothing between them but the drop.
+    { at = [7, -93], half = [7, 8], height = 3.5, climbs = "west" },
+    { at = [-7, -93], half = [7, 8], height = 3.5, climbs = "east" },
+    { at = [7, 93], half = [7, 8], height = 3.5, climbs = "west" },
+    { at = [-7, 93], half = [7, 8], height = 3.5, climbs = "east" },
 ]
 
-# Floors held up at `height`, driven on and under.
-decks = [
-    { at = [0, -80], half = [20, 5], height = 5 },
-    { at = [0, 80], half = [20, 5], height = 5 },
-]
-
-# Outside the ring of pillars on the east side and inside it on the west,
-# crossing it between two pillars north and south.
+# Up the north ramp and three parts of the way round the roundabout, down the
+# east ramp and out by the east gap, round the outside by the south and the
+# west, and in again by the gap north-west.
 line = [
-    [83, 0, 0],
-    [71.880104, 0, 41.5],
-    [33, 0, 57.157677],
-    [0, 0, 52],
-    [-26, 0, 45.03332],
-    [-45.03332, 0, 26],
-    [-52, 0, 0],
-    [-45.03332, 0, -26],
-    [-26, 0, -45.03332],
-    [0, 0, -52],
-    [33, 0, -57.157677],
-    [71.880104, 0, -41.5],
+    [-19, 0, -46],
+    [-19, 2.5, -36],
+    [-19.5, 5, -26],
+    [-20, 5, -8],
+    [-20, 5, 10],
+    [-18, 5, 18],
+    [-10, 5, 20],
+    [0, 5, 20],
+    [10, 5, 20],
+    [18, 5, 18],
+    [20, 5, 10],
+    [20, 5, 0],
+    [20, 5, -11],
+    [22, 5, -17],
+    [27, 5, -19],
+    [36, 2.5, -19],
+    [46, 0, -19],
+    [62, 0, -14],
+    [78, 0, -8],
+    [88, 0, 4],
+    [91.6, 0, 16.1],
+    [84.3, 0, 39.3],
+    [65.8, 0, 65.8],
+    [39.3, 0, 84.3],
+    [24, 0, 91],
+    [14, 0, 93],
+    [7, 1.75, 93],
+    [0, 3.5, 93],
+    [-7, 1.75, 93],
+    [-14, 0, 93],
+    [-24, 0, 91],
+    [-39.3, 0, 84.3],
+    [-65.8, 0, 65.8],
+    [-84.3, 0, 39.3],
+    [-93, 0, 0],
+    [-84.3, 0, -39.3],
+    [-71, 0, -60],
+    [-60, 0, -70],
+    [-46, 0, -69],
+    [-35, 0, -62],
+    [-25, 0, -54],
 ]
 
-# Eighty out, every sixty degrees.
+# Ninety-two out, every sixty degrees.
 grid = [
-    [80, 0],
-    [40, 69.28203],
-    [-40, 69.28203],
-    [-80, 0],
-    [-40, -69.28203],
-    [40, -69.28203],
+    [92, 0],
+    [46, 79.67],
+    [-46, 79.67],
+    [-92, 0],
+    [-46, -79.67],
+    [46, -79.67],
 ]
 
-# Where bricks lie besides those along the line: where the line doesn't go, to be
-# gone out of the way for.
+# The bricks, each where it lies.
 bricks = [
-    [12, 12],
-    [12, -12],
-    [-12, 12],
-    [-12, -12],
-    [0, 80],
-    [-72.74613, 42],
-    [-72.74613, -42],
-    [0, -80],
+    # The white ones, round the ark.
+    { at = [10, 0], colour = "white" },
+    { at = [-10, 0], colour = "white" },
+    { at = [0, 10], colour = "white" },
+    { at = [0, -10], colour = "white" },
+    # A shield at the foot of each ramp.
+    { at = [50, -19], colour = "blue" },
+    { at = [-19, -49], colour = "blue" },
+    { at = [-50, 19], colour = "blue" },
+    { at = [19, 49], colour = "blue" },
+    # Red on the roundabout, and on the humps.
+    { at = [-20, 0], colour = "red" },
+    { at = [0, 20], colour = "red" },
+    { at = [20, 0], colour = "red" },
+    { at = [0, -20], colour = "red" },
+    { at = [0, -93], colour = "red" },
+    { at = [0, 93], colour = "red" },
+    # In the gaps of the wall, one in front of each start.
+    { at = [70, 0], colour = "yellow" },
+    { at = [35, 60.6], colour = "green" },
+    { at = [-35, 60.6], colour = "yellow" },
+    { at = [-70, 0], colour = "green" },
+    { at = [-35, -60.6], colour = "yellow" },
+    { at = [35, -60.6], colour = "green" },
+    # On the outside way, between the starts.
+    { at = [80.5, 46.5], colour = "yellow" },
+    { at = [-80.5, 46.5], colour = "green" },
+    { at = [-80.5, -46.5], colour = "yellow" },
+    { at = [80.5, -46.5], colour = "green" },
+]
+
+rows = 0
+
+# Speed pads on the floor, each at a `place` [x, z] with its arrows pointing
+# `heading` degrees round from east to north: against the wall, between the
+# starts.
+pads = [
+    { place = [72.8, -72.8], heading = 315 },
+    { place = [72.8, 72.8], heading = 225 },
+    { place = [-72.8, 72.8], heading = 135 },
+    { place = [-72.8, -72.8], heading = 45 },
 ]
 
 # The floor's two colours, which alternate outwards from the middle.
 floor = ["tan", "orange"]
 
-# On a plinth on the hill the ark turns and fires at whatever it finds, so that
-# nobody holds it for long.
+# On a plinth in the middle of the hill the ark turns and fires at whatever it
+# finds.
 hazards = [{ kind = "ark", place = [0, 0] }]

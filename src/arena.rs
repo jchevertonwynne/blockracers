@@ -2,27 +2,43 @@
 //! game of tag. The port's own.
 //!
 //! An arena is a walled floor with no road: a car goes where it likes. Each is laid
-//! out as a place to fight over is: a few ways through it that a car must choose
-//! between, with buildings between them to break the sight of one from another
-//! and gaps to cross by; high ground in the middle of it, reached by ramps, that
-//! looks over the ways below and has the best bricks; a way under that for whoever
-//! would rather not be seen; and places at its ends for the cars to start from,
-//! out of sight of each other. It is built of blocks, which stand on the floor,
-//! ramps, and decks, which are held up over it and can be driven under. Each is a
-//! map (`map::Map`, a file of `maps/`) with a `Plan` in place of a road. Each still
-//! has a line (`Plan::line`), a loop through
-//! the open floor that nothing is made to follow: the bricks are laid along it, the
-//! computer's cars wander it when they have nobody to go after (`kart::Ai::quarry`),
-//! and the hazards are stood by it (`gauntlet::load`). The cars start spread round
-//! the floor, facing its middle. There are no gates, lap zones or finishing line, so
-//! nothing counts a lap or says a car is going the wrong way.
+//! out for the two games fought in it. Every way through it comes round again, so
+//! that a car is never stopped at the end of one: a car chased has always somewhere
+//! to go, and the car after it somewhere to cut it off. There is high ground with
+//! more than one way up and any edge of it to come down by, which is near to what
+//! is under it and a long way from it by road, so that a car is not caught, or
+//! shot, from below without being gone after. What stands on the floor breaks the
+//! sight of one way from another, for a shot needs a clear line and so does the
+//! car that is "it", which the others see through anything. And the bricks are
+//! put where they are on purpose: coloured ones by the starts and round the
+//! outside, to be had at once, and the white ones, which a car carries until it
+//! fires and which make whatever it fires the stronger, only in the middle or on
+//! the high ground, where everybody is seen and a hazard stands over them. A car
+//! has those to go in for or to keep out of.
 //!
-//! The four the game carries are the same either side of the line east to west;
-//! a mirrored race turns the plan over (`Plan::mirrored`), whatever it is.
+//! It is built of blocks, which stand on the floor, ramps, and decks, which are
+//! held up over it and can be driven under, with speed pads on the floor where its
+//! map lays them. Each is a map (`map::Map`, a file of `maps/`) with a `Plan` in
+//! place of a road. Each still has a line (`Plan::line`), a loop over the floor and
+//! the high ground that nothing is made to follow. The computer's cars go round
+//! it when they have nobody to go after (`kart::Ai::quarry`), some one way and
+//! some the other, so that they meet. One that has left it comes back to the
+//! nearest of it on its own level (`Track::rejoined`), round whatever is in the
+//! way by the floor's own ways back (`Ways`), and goes on round it whichever way
+//! it is then heading. A row of bricks lies across the line every so often if
+//! the map asks for rows. The cars start where the map says, facing its middle or
+//! the way it says. There are no gates, lap zones or finishing line, so nothing
+//! counts a lap or says a car is going the wrong way.
+//!
+//! Every start of the four the game carries is about as far as the rest from its
+//! first brick and from the white ones. A mirrored race turns the plan over
+//! (`Plan::mirrored`), whatever it is.
 
 use crate::assets::materials::Surface;
 use crate::collision::Collision;
+use crate::items::Power;
 use crate::meshgen::*;
+use crate::track::{PAD_LENGTH, PAD_WIDTH};
 use bevy::prelude::*;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
@@ -62,13 +78,133 @@ pub struct Ramp {
     pub climbs: [f32; 2],
 }
 
-/// A floor held up at `height`, to be driven on and under.
+/// A floor held up at `height`, to be driven on and under, and its colour where it
+/// isn't the grey of the rest.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Deck {
     pub at: [f32; 2],
     pub half: [f32; 2],
     pub height: f32,
+    #[serde(default, deserialize_with = "tinted")]
+    pub colour: Option<Color>,
+}
+
+fn tinted<'de, D: Deserializer<'de>>(from: D) -> Result<Option<Color>, D::Error> {
+    crate::map::colour(from).map(Some)
+}
+
+/// What a brick an arena's map lays is: a colour of its own by its place among
+/// them, where the map doesn't say, a white one, or the colour the map says.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Hue {
+    Any,
+    White,
+    Is(Power),
+}
+
+/// A brick lying in an arena: where, (x, z), on whatever is uppermost there, or on
+/// the floor under it if it is `low`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Brick {
+    pub at: [f32; 2],
+    pub hue: Hue,
+    pub low: bool,
+}
+
+impl<'de> Deserialize<'de> for Brick {
+    /// A place, `[x, z]`, or `{ at = [x, z] }` with its `colour`, and `low` if it
+    /// lies under something.
+    fn deserialize<D: Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Said {
+            at: [f32; 2],
+            colour: Option<String>,
+            #[serde(default)]
+            low: bool,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Laid {
+            Place([f32; 2]),
+            Said(Said),
+        }
+        let said = match Laid::deserialize(from) {
+            Ok(Laid::Place(at)) => return Ok(Brick { at, hue: Hue::Any, low: false }),
+            Ok(Laid::Said(said)) => said,
+            Err(_) => {
+                return Err(D::Error::custom(
+                    "a brick is its place, [x, z], or { at = [x, z] } with its `colour` and whether it is `low`",
+                ));
+            }
+        };
+        let hue = match said.colour.as_deref() {
+            None => Hue::Any,
+            Some("white") => Hue::White,
+            Some("red") => Hue::Is(Power::Red),
+            Some("yellow") => Hue::Is(Power::Yellow),
+            Some("blue") => Hue::Is(Power::Blue),
+            Some("green") => Hue::Is(Power::Green),
+            Some(other) => {
+                return Err(D::Error::custom(format!(
+                    "a brick is white, red, yellow, blue or green, not {other}"
+                )));
+            }
+        };
+        Ok(Brick { at: said.at, hue, low: said.low })
+    }
+}
+
+/// Where a car starts, (x, z), and the way it faces along the ground if that is
+/// not at the middle of the floor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Start {
+    pub at: [f32; 2],
+    pub faces: Option<[f32; 2]>,
+}
+
+impl<'de> Deserialize<'de> for Start {
+    /// A place, `[x, z]`, or `{ at = [x, z], faces = "north" }`.
+    fn deserialize<D: Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Faced {
+            at: [f32; 2],
+            #[serde(deserialize_with = "compass")]
+            faces: [f32; 2],
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Placed {
+            Place([f32; 2]),
+            Faced(Faced),
+        }
+        match Placed::deserialize(from) {
+            Ok(Placed::Place(at)) => Ok(Start { at, faces: None }),
+            Ok(Placed::Faced(start)) => Ok(Start { at: start.at, faces: Some(start.faces) }),
+            Err(_) => Err(D::Error::custom(
+                "a place on the grid is [x, z], or { at = [x, z], faces = \"north\" } (or south, east, west)",
+            )),
+        }
+    }
+}
+
+/// A speed pad on the floor: where its middle is, (x, z), and the way its arrows
+/// point, in degrees round from east to north. It sets a car off whichever way
+/// the car crosses it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pad {
+    pub at: [f32; 2],
+    pub heading: f32,
+}
+
+impl Pad {
+    /// The way it points along the ground, and across that to the right.
+    fn axes(&self) -> (Vec3, Vec3) {
+        let (sin, cos) = self.heading.to_radians().sin_cos();
+        (Vec3::new(cos, 0.0, -sin), Vec3::new(sin, 0.0, cos))
+    }
 }
 
 /// The way a point of the compass is along the ground: east is x, and south z.
@@ -86,6 +222,8 @@ fn compass<'de, D: Deserializer<'de>>(from: D) -> Result<[f32; 2], D::Error> {
 
 /// How thick a deck is.
 const DECK_THICK: f32 = 1.0;
+/// How far apart the studs on a block or a deck are, about.
+const STUD: f32 = 4.0;
 
 /// How an arena is laid out, as its map has it (`map::Map`).
 #[derive(Clone, Debug, PartialEq)]
@@ -98,17 +236,145 @@ pub struct Plan {
     pub decks: Vec<Deck>,
     /// The line's control points, as (x, height, z): a spline is put through them.
     pub line: Vec<[f32; 3]>,
-    /// Where the six cars start, as (x, z); each faces the middle.
-    pub grid: [[f32; 2]; 6],
-    /// Where bricks lie besides those along the line, as (x, z): in the corners
-    /// the line doesn't go to, to be gone out of the way for.
-    pub bricks: Vec<[f32; 2]>,
+    /// Where the six cars start.
+    pub grid: [Start; 6],
+    /// The bricks the map lays.
+    pub bricks: Vec<Brick>,
+    /// How many rows of bricks lie across the line besides, coloured and white by
+    /// turns: as many as a circuit as long would have, if the map doesn't say.
+    pub rows: Option<usize>,
+    pub pads: Vec<Pad>,
     /// The floor's two colours, which alternate outwards from the middle.
     pub floor: [Color; 2],
 }
 
 fn ground([x, z]: [f32; 2]) -> Vec3 {
     Vec3::new(x, 0.0, z)
+}
+
+/// How wide the squares are that an arena's floor is cut into for its ways back to
+/// the line, and the most of them there are across it, a bigger floor having bigger
+/// ones; how far round the middle of one must be clear for a car to be sent
+/// through it, and how high ground may be and still be floor: the foot of a ramp is.
+const WAY_CELL: f32 = 4.0;
+const WAY_ACROSS: f32 = 160.0;
+const WAY_CLEAR: f32 = 2.5;
+const WAY_FLOOR: f32 = 1.2;
+/// How many squares on from its own a car is sent for.
+const WAY_AHEAD: usize = 6;
+
+/// The ways back to an arena's line over its floor, for a car that has left the line
+/// and can't see it: round what stands between, by way of whichever square of the
+/// floor is the next nearer to the line from the one the car is in.
+pub struct Ways {
+    low: Vec3,
+    cell: f32,
+    across: usize,
+    /// For each square, the one next nearer the line from it, if a car can be there
+    /// and the line isn't in it.
+    next: Vec<Option<usize>>,
+    /// The squares the line crosses on the floor.
+    line: Vec<bool>,
+}
+
+impl Ways {
+    /// From the floor as it is built, and the line's samples.
+    pub fn found(collision: &Collision, reach: f32, line: &[Vec3]) -> Ways {
+        let lift = Vec3::Y * crate::physics::BODY_POINT_HEIGHT;
+        let cell = WAY_CELL.max(2.0 * reach / WAY_ACROSS);
+        let across = (2.0 * reach / cell).ceil() as usize + 1;
+        let mut ways = Ways {
+            low: Vec3::new(-reach, 0.0, -reach),
+            cell,
+            across,
+            next: vec![None; across * across],
+            line: vec![false; across * across],
+        };
+        // A square a car can be in: floor, with nothing standing close round its middle.
+        let on_floor = |at: Vec3| {
+            let under = collision.ground(at + Vec3::Y * (WAY_FLOOR + 1.0), WAY_FLOOR + 3.0);
+            under.is_some_and(|hit| hit.point.y < WAY_FLOOR)
+        };
+        let open = |at: Vec3, to: Vec3| collision.wall(at + lift, to + lift).is_none();
+        let round = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z];
+        let free: Vec<bool> = (0..across * across)
+            .map(|square| {
+                let at = ways.middle(square);
+                on_floor(at) && round.iter().all(|&way| open(at, at + way * WAY_CLEAR))
+            })
+            .collect();
+        // Outwards from the squares the line crosses on the floor, a square at a time.
+        let on_line = line.iter().filter(|p| p.y < WAY_FLOOR).filter_map(|&p| ways.square(p));
+        let mut reached: std::collections::VecDeque<usize> = on_line.filter(|&square| free[square]).collect();
+        for &square in &reached {
+            ways.line[square] = true;
+        }
+        while let Some(square) = reached.pop_front() {
+            let (x, z) = ((square % across) as i32, (square / across) as i32);
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, nz) = (x + dx, z + dz);
+                if nx < 0 || nz < 0 || nx >= across as i32 || nz >= across as i32 {
+                    continue;
+                }
+                let beside = nx as usize + nz as usize * across;
+                let known = ways.line[beside] || ways.next[beside].is_some();
+                if known || !free[beside] || !open(ways.middle(beside), ways.middle(square)) {
+                    continue;
+                }
+                ways.next[beside] = Some(square);
+                reached.push_back(beside);
+            }
+        }
+        ways
+    }
+
+    /// The square a place is in, if it is one of them.
+    fn square(&self, p: Vec3) -> Option<usize> {
+        let at = (p - self.low) / self.cell;
+        let inside = at.x >= 0.0 && at.z >= 0.0 && (at.x as usize) < self.across && (at.z as usize) < self.across;
+        inside.then(|| at.x as usize + at.z as usize * self.across)
+    }
+
+    fn middle(&self, square: usize) -> Vec3 {
+        let (x, z) = ((square % self.across) as f32, (square / self.across) as f32);
+        self.low + Vec3::new(x + 0.5, 0.0, z + 0.5) * self.cell
+    }
+
+    /// Where a car on the floor at `pos` is to make for to get back to the line:
+    /// the middle of the square furthest on from its own, of the next few, that it
+    /// has a `clear` run at. A car against something is in a square no way goes
+    /// through, and begins from the nearest about it that one does. Nowhere, if it
+    /// is on the line's own squares already or somewhere no way was found from.
+    pub fn back(&self, pos: Vec3, clear: impl Fn(Vec3) -> bool) -> Option<Vec3> {
+        let own = self.square(pos)?;
+        if self.line[own] {
+            return None;
+        }
+        let known = |square: &usize| self.line[*square] || self.next[*square].is_some();
+        let from = match self.next[own] {
+            Some(next) => next,
+            None => {
+                let (x, z) = ((own % self.across) as i32, (own / self.across) as i32);
+                let about = (-2..=2).flat_map(|dz| (-2..=2).map(move |dx| (x + dx, z + dz)));
+                let inside = |&(x, z): &(i32, i32)| {
+                    x >= 0 && z >= 0 && x < self.across as i32 && z < self.across as i32
+                };
+                let away = |square: &usize| self.middle(*square).distance(pos);
+                about
+                    .filter(inside)
+                    .map(|(x, z)| x as usize + z as usize * self.across)
+                    .filter(known)
+                    .filter(|&square| clear(self.middle(square)))
+                    .min_by(|a, b| away(a).total_cmp(&away(b)))?
+            }
+        };
+        let mut on = vec![from];
+        for _ in 1..WAY_AHEAD {
+            on.extend(self.next[on[on.len() - 1]]);
+        }
+        let seen = on.iter().rev().map(|&square| self.middle(square)).find(|&middle| clear(middle));
+        Some(seen.unwrap_or(self.middle(from)))
+    }
 }
 
 impl Ramp {
@@ -143,8 +409,10 @@ impl Plan {
                 .collect(),
             decks: self.decks.iter().map(|deck| Deck { at: over(deck.at), ..deck.clone() }).collect(),
             line: self.line.iter().map(|&[x, y, z]| [x, y, -z]).collect(),
-            grid: self.grid.map(over),
-            bricks: self.bricks.iter().copied().map(over).collect(),
+            grid: self.grid.map(|start| Start { at: over(start.at), faces: start.faces.map(over) }),
+            bricks: self.bricks.iter().map(|brick| Brick { at: over(brick.at), ..brick.clone() }).collect(),
+            rows: self.rows,
+            pads: self.pads.iter().map(|pad| Pad { at: over(pad.at), heading: -pad.heading }).collect(),
             floor: self.floor,
         }
     }
@@ -212,12 +480,26 @@ impl Plan {
         inside && off_wall && off_blocks
     }
 
-    /// Where the cars start and which way each faces: at the middle.
+    /// Where the cars start and which way each faces: at the middle, unless the
+    /// map says another.
     pub fn grid(&self) -> Vec<(Vec3, Vec3)> {
         self.grid
             .iter()
-            .map(|&place| (ground(place), -ground(place).normalize_or(Vec3::X)))
+            .map(|start| {
+                let place = ground(start.at);
+                (place, start.faces.map_or(-place.normalize_or(Vec3::X), ground))
+            })
             .collect()
+    }
+
+    /// Whether a car at `pos` is on one of the speed pads.
+    pub fn padded(&self, pos: Vec3) -> bool {
+        pos.y < 1.0
+            && self.pads.iter().any(|pad| {
+                let (along, across) = pad.axes();
+                let from = pos - ground(pad.at);
+                from.dot(along).abs() < PAD_LENGTH / 2.0 && from.dot(across).abs() < PAD_WIDTH / 2.0
+            })
     }
 
     /// The floor, the wall round it and the blocks on it, to be driven on and into.
@@ -307,10 +589,17 @@ impl Plan {
                 }
             }
         }
+        // What is built is studded as a brick is, a stud to every so much of it
+        // however big it is: its top may be driven on, and a car is not to be lost
+        // among them.
+        let studs = |half: [f32; 2]| {
+            let across = |half: f32| (2.0 * half / STUD).round().max(1.0) as u32;
+            (across(half[0]), across(half[1]))
+        };
         for block in &self.blocks {
             let half = Vec3::new(block.half[0], block.height / 2.0, block.half[1]);
             let middle = ground(block.at) + Vec3::Y * half.y;
-            b.brick(middle, half, Quat::IDENTITY, block.colour, (4, 4));
+            b.brick(middle, half, Quat::IDENTITY, block.colour, studs(block.half));
         }
         // A ramp is striped, as a jump is, so that it is seen for what it is.
         for ramp in &self.ramps {
@@ -344,7 +633,31 @@ impl Plan {
         for deck in &self.decks {
             let half = Vec3::new(deck.half[0], DECK_THICK / 2.0, deck.half[1]);
             let middle = ground(deck.at) + Vec3::Y * (deck.height - half.y);
-            b.brick(middle, half, Quat::IDENTITY, GREY, (4, 8));
+            b.brick(middle, half, Quat::IDENTITY, deck.colour.unwrap_or(GREY), studs(deck.half));
+        }
+        // The speed pads: a bright patch with arrows up it, as a circuit's are.
+        for pad in &self.pads {
+            let (along, across) = pad.axes();
+            let place = |on: f32, over: f32, lift: f32| {
+                ground(pad.at) + along * on + across * over + Vec3::Y * lift
+            };
+            let (long, wide) = (PAD_LENGTH / 2.0, PAD_WIDTH / 2.0);
+            b.quad(
+                place(-long, -wide, 0.05),
+                place(-long, wide, 0.05),
+                place(long, wide, 0.05),
+                place(long, -wide, 0.05),
+                ORANGE,
+            );
+            for arrow in 0..3 {
+                let back = -long + 0.6 + arrow as f32 * 2.4;
+                b.tri(
+                    place(back, -wide + 0.8, 0.065),
+                    place(back, wide - 0.8, 0.065),
+                    place(back + 2.0, 0.0, 0.065),
+                    YELLOW,
+                );
+            }
         }
         // A mark in the middle of the floor, to know it by.
         let spokes = 16;
@@ -363,6 +676,22 @@ impl Plan {
 mod tests {
     use super::*;
     use crate::track::Track;
+
+    /// How much of an arena's line is in sight from a place on it, taking one
+    /// place with another: the share of the pairs of places along it, a car's
+    /// length or so above the ground, that nothing stands between.
+    fn sight(track: &Track) -> f32 {
+        let eye = Vec3::Y * 1.5;
+        let places: Vec<Vec3> = track.pts.iter().step_by(5).map(|&p| p + eye).collect();
+        let (mut pairs, mut seen) = (0, 0);
+        for (i, &from) in places.iter().enumerate() {
+            for &to in &places[i + 1..] {
+                pairs += 1;
+                seen += track.collision.shot(from, to).is_none() as usize;
+            }
+        }
+        seen as f32 / pairs.max(1) as f32
+    }
 
     #[test]
     fn an_arena_is_a_walled_floor_with_room_to_go_anywhere() {
@@ -426,25 +755,55 @@ mod tests {
                 assert!(!plan.open(middle, 0.0));
             }
             assert!(track.course.checkpoints.is_empty() && track.course.zones.is_empty());
-            // Its other bricks are clear of what stands higher than they lie, and
-            // where the line's rows aren't.
-            for &spot in &plan.bricks {
-                let over = ground(spot) + Vec3::Y * 20.0;
-                let spot = track.collision.ground(over, 40.0).expect("ground").point;
-                assert!(plan.open(spot, 3.0), "{layout} brick at {spot}");
-                assert!(track.pts.iter().all(|p| p.distance(spot) > 5.0), "{layout} {spot}");
+            // Its bricks are clear of what stands higher than they lie, and of
+            // each other.
+            let bricks = crate::items::laid(&track);
+            for (i, &(_, spot)) in bricks.iter().enumerate() {
+                assert!(plan.open(spot, 2.0), "{layout} brick at {spot}");
+                let apart = |other: &(Option<Power>, Vec3)| other.1.distance(spot) > 3.0;
+                assert!(bricks[..i].iter().all(apart), "{layout} two bricks at {spot}");
             }
-            // Nowhere on the line is far from a block or the wall: the ways are
-            // narrow.
+            // Its pads are on open floor, and set off a car on them and no other.
+            for pad in &plan.pads {
+                let middle = ground(pad.at);
+                assert!(plan.open(middle, 4.0), "{layout} pad at {middle}");
+                assert!(plan.padded(middle) && !plan.padded(middle + Vec3::Y * 4.0));
+                assert!(!plan.padded(middle + pad.axes().0 * PAD_LENGTH));
+            }
+            // Nowhere on the line is far from a block or the wall, and from nowhere
+            // on it is much of the rest of it seen: what stands on the floor hides
+            // one way from another.
             for &p in track.pts.iter().filter(|p| p.y < 1.0) {
-                assert!(!plan.open(p, 32.0), "{layout} is wide open at {p}");
+                assert!(!plan.open(p, 44.0), "{layout} is wide open at {p}");
             }
-            // Mirrored it is the same place, and turned over is that place.
+            let seen = sight(&track);
+            println!("{layout}: {:.0}% of the line is in sight from a place on it", seen * 100.0);
+            assert!((0.08..0.5).contains(&seen), "{layout} {seen}");
+            // Every start is about as far as the rest from the nearest coloured
+            // brick, and from the nearest white one, of which there are a few.
+            let nearest = |white: bool| -> Vec<f32> {
+                let from = |place: Vec3| {
+                    let of_kind = bricks.iter().filter(|brick| brick.0.is_none() == white);
+                    let far = of_kind.map(|brick| brick.1.with_y(0.0).distance(place));
+                    far.fold(f32::MAX, f32::min)
+                };
+                track.course.grid.iter().map(|&(place, _)| from(place)).collect()
+            };
+            let spread = |far: &[f32]| {
+                let least = far.iter().copied().fold(f32::MAX, f32::min);
+                (least, far.iter().copied().fold(0.0, f32::max))
+            };
+            let (coloured, white) = (spread(&nearest(false)), spread(&nearest(true)));
+            assert!(coloured.1 < 30.0 && coloured.1 - coloured.0 < 6.0, "{layout} {coloured:?}");
+            assert!(white.0 > 60.0 && white.1 < white.0 * 1.15, "{layout} {white:?}");
+            let whites = bricks.iter().filter(|brick| brick.0.is_none()).count();
+            assert!((3..=6).contains(&whites), "{layout} {whites}");
+            // Turned over, as a mirrored race has it, it is the same place the other
+            // way up.
             let over = plan.mirrored();
             for outline in plan.outlines() {
                 for p in outline {
                     let flipped = Vec3::new(p.x, 0.0, -p.z);
-                    assert_eq!(plan.open(p * 0.9, 0.0), plan.open(flipped * 0.9, 0.0));
                     assert_eq!(plan.open(p * 0.9, 0.0), over.open(flipped * 0.9, 0.0));
                 }
             }

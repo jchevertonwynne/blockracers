@@ -133,6 +133,13 @@ pub struct Rules {
     pub speed: u8,
     pub opponents: u8,
     pub difficulty: u8,
+    /// A battle's lives, and which of `menu::BATTLE_TIMES` and `menu::SPARES` it is
+    /// fought by; which of `menu::TAG_LEASTS` and `menu::TAG_BACKS` a game of tag is.
+    pub lives: u8,
+    pub battle_time: u8,
+    pub spared: u8,
+    pub tag_least: u8,
+    pub tag_back: u8,
 }
 
 /// What a circuit is known by between games: its folder in the game's data, or
@@ -162,6 +169,11 @@ impl Rules {
             speed: settings.speed as u8,
             opponents: settings.opponents as u8,
             difficulty: settings.difficulty as u8,
+            lives: settings.lives as u8,
+            battle_time: settings.battle_time as u8,
+            spared: settings.spared as u8,
+            tag_least: settings.tag_least as u8,
+            tag_back: settings.tag_back as u8,
         }
     }
 
@@ -177,13 +189,18 @@ impl Rules {
     }
 
     /// These, on a circuit they can be raced on: an arena is for a battle or a game
-    /// of tag, and a race voted onto one is run on the first circuit there is, as is
-    /// one voted onto a map that only the player who voted for it has.
+    /// of tag and a circuit for the rest, so a race voted onto an arena is run on
+    /// the first circuit there is and a battle voted onto a circuit in the first
+    /// arena, as is one voted onto a map that only the player who voted for it has.
+    /// With no arena to be had, a battle stays on the circuit voted for.
     pub fn fitted(mut self, circuits: &Circuits) -> Self {
+        let fought = self.mode().lapless();
+        let fits = |circuit: &&crate::menu::Circuit| circuit.arena() == fought;
         let voted = circuits.0.iter().find(|c| key(c) == self.circuit);
-        let arena = voted.is_some_and(|c| c.arena());
-        if voted.is_none() || (arena && !self.mode().lapless()) {
-            self.circuit = circuits.0.first().map(key).unwrap_or_default().to_string();
+        if !voted.is_some_and(|c| fits(&c)) {
+            let first = circuits.0.iter().find(fits);
+            let run = first.or(voted.filter(|_| fought)).or(circuits.0.first());
+            self.circuit = run.map(key).unwrap_or_default().to_string();
         }
         self
     }
@@ -203,6 +220,11 @@ impl Rules {
         settings.speed = (self.speed as usize).min(crate::menu::SPEEDS.len() - 1);
         settings.opponents = (self.opponents as usize).min(crate::menu::MAX_OPPONENTS);
         settings.difficulty = (self.difficulty as usize).min(crate::menu::DIFFICULTIES.len() - 1);
+        settings.lives = (self.lives as usize).clamp(1, crate::menu::MAX_LIVES);
+        settings.battle_time = (self.battle_time as usize).min(crate::menu::BATTLE_TIMES.len() - 1);
+        settings.spared = (self.spared as usize).min(crate::menu::SPARES.len() - 1);
+        settings.tag_least = (self.tag_least as usize).min(crate::menu::TAG_LEASTS.len() - 1);
+        settings.tag_back = (self.tag_back as usize).min(crate::menu::TAG_BACKS.len() - 1);
         true
     }
 }
@@ -389,10 +411,30 @@ mod tests {
             assert_eq!(fitted.circuit, key(&circuits.0[0]));
             assert_eq!(fitted.mode(), mode);
         }
-        // A circuit that isn't an arena is anyone's, a battle's too.
-        let mut plain = wanted(Mode::Battle);
-        plain.circuit = key(&circuits.0[0]).to_string();
-        assert_eq!(plain.clone().fitted(&circuits), plain);
+        // A circuit that isn't an arena is for a race: a battle or a game of tag
+        // voted onto one is fought in the first arena.
+        for mode in [Mode::Battle, Mode::Tag] {
+            let mut plain = wanted(mode);
+            plain.circuit = key(&circuits.0[0]).to_string();
+            assert_eq!(plain.fitted(&circuits).circuit, key(arena));
+        }
+    }
+
+    #[test]
+    fn how_a_battle_and_a_game_of_tag_are_run_goes_with_the_rules() {
+        let circuits = Circuits::find();
+        let mut hosts = Settings::new(&circuits);
+        (hosts.lives, hosts.battle_time, hosts.spared) = (7, 0, 5);
+        (hosts.tag_least, hosts.tag_back) = (0, 4);
+        let rules = Rules::of(&hosts, &circuits);
+        let mut players = Settings::new(&circuits);
+        assert!(decode::<Rules>(&encode(&rules)).unwrap().apply(&mut players, &circuits));
+        assert_eq!((players.lives, players.battle_time(), players.spared()), (7, 60.0, 3.0));
+        assert_eq!((players.tag_least(), players.tag_back()), (0.0, 4.0));
+        // What is out of range is brought into it.
+        let wild = Rules { lives: 0, battle_time: 99, ..rules };
+        assert!(wild.apply(&mut players, &circuits));
+        assert_eq!((players.lives, players.battle_time()), (1, f32::INFINITY));
     }
 
     #[test]
