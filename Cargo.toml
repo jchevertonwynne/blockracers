@@ -18,6 +18,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 bytes = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# A host's address is copied and pasted, being too long to type.
+arboard = { version = "3", default-features = false }
 
 # Bevy systems take a parameter per thing they touch, and their queries are long types.
 [lints.clippy]

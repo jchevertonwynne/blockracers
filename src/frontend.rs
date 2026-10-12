@@ -259,6 +259,22 @@ struct Online {
     /// The code typed to find a session by, and how the search for it stands.
     code: String,
     seeking: Option<bool>,
+    /// What was pasted as a host's address isn't one.
+    unread: bool,
+    /// The session's address has been copied.
+    copied: bool,
+}
+
+/// What has been copied on this machine, and copying something there: how a host's
+/// address, which is too long to type, goes from one player to another.
+fn pasted() -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
+}
+
+fn copy(words: &str) -> bool {
+    arboard::Clipboard::new()
+        .and_then(|mut board| board.set_text(words))
+        .is_ok()
 }
 
 /// What the online pages show: who this game is to the session, the session, its
@@ -398,6 +414,10 @@ enum Action {
     /// Going to the race that is on, and finding the session a code is for.
     Enter,
     Find,
+    /// Copying the address a session is hosted at, for someone to be sent, and
+    /// joining the session at the address that has been copied.
+    CopyAddress,
+    Paste,
     /// A vote for one of the circuits, to race it next.
     Map(usize),
     /// Something of the garage's.
@@ -1265,6 +1285,7 @@ fn items(
         }
         Page::Code => vec![
             field(FIELD[0], wired.online.code.clone(), Typed::Code),
+            plain(Vec2::new(3.0, 178.0), "PASTE AN ADDRESS", Action::Paste),
             Item {
                 widget: Widget::Button {
                     at: art.place("race", "gonext").min,
@@ -1444,6 +1465,15 @@ fn items(
                     Action::Remove(member.peer),
                 )
             }));
+            // Its address, for someone the lobby can't bring here.
+            if !wired.session.address.is_empty() {
+                let label = if wired.online.copied {
+                    "ADDRESS COPIED"
+                } else {
+                    "COPY ADDRESS"
+                };
+                items.push(plain(Vec2::new(330.0, 262.0), label, Action::CopyAddress));
+            }
             let back = art.place("race", "goback").min;
             items.push(plain(
                 Vec2::new(330.0, back.y),
@@ -1761,6 +1791,7 @@ fn notes(
             notes.extend(match wired.online.seeking {
                 Some(true) => Some(middle("ASKING THE LOBBY")),
                 Some(false) => Some(middle("NO SESSION HAS THAT CODE")),
+                None if wired.online.unread => Some(middle("NO ADDRESS HAS BEEN COPIED")),
                 None => None,
             });
             notes
@@ -1780,7 +1811,15 @@ fn notes(
             }
             notes
         }
-        Page::Password => vec![banner("JOIN A RACE"), beside(FIELD[0], "PASSWORD")],
+        Page::Password => {
+            let mut notes = vec![banner("JOIN A RACE"), beside(FIELD[0], "PASSWORD")];
+            // A session dialled by its address is not known to have one or not.
+            let addressed = |picked: &lobby_api::Session| picked.id.is_empty();
+            if wired.online.picked.as_ref().is_some_and(addressed) {
+                notes.push(middle("LEAVE IT EMPTY IF THE HOST SET NONE"));
+            }
+            notes
+        }
         Page::Connecting => vec![banner("JOIN A RACE"), middle("CALLING THE HOST")],
         Page::Wishes => {
             let room = wired.room;
@@ -1909,6 +1948,8 @@ fn notes(
             // far the series has got.
             let ready = room.voters.iter().filter(|voter| voter.ready).count();
             let standing = match (room.closing, room.racing, room.series) {
+                // The way to the host has broken, and nothing else said here is news.
+                _ if wired.session.retrying.is_some() => "CONNECTION LOST - TRYING AGAIN".to_string(),
                 (Some(left), ..) => format!("RACE STARTS IN {}", left.max(0.0).ceil() as i32),
                 (None, true, _) => "A RACE IS ON".to_string(),
                 // Until most are ready no clock runs: how many are is said instead.
@@ -2929,7 +2970,8 @@ fn input(
                             .collect()
                     }
                     Page::Join => online.refresh = 0.0,
-                    Page::Code => online.seeking = None,
+                    Page::Code => (online.seeking, online.unread) = (None, false),
+                    Page::Session => online.copied = false,
                     _ => {}
                 }
                 go(
@@ -2968,8 +3010,30 @@ fn input(
             Action::Find => {
                 sfx.play(id::MENU_CONFIRM);
                 lobby.find(&online.code);
-                (online.seeking, menu.drawn) = (Some(true), false);
+                (online.seeking, online.unread, menu.drawn) = (Some(true), false, false);
             }
+            Action::CopyAddress => {
+                online.copied = copy(&session.address);
+                sfx.play(if online.copied {
+                    id::MENU_CONFIRM
+                } else {
+                    id::MENU_REFUSE
+                });
+                menu.drawn = false;
+            }
+            // A session at an address is asked for its password, which it may not
+            // have: nothing but its host can say.
+            Action::Paste => match pasted().as_deref().and_then(net::addressed) {
+                Some(listed) => {
+                    sfx.play(id::MENU_CONFIRM);
+                    (online.picked, online.key) = (Some(listed), String::new());
+                    go(&mut menu, Page::Password, 0);
+                }
+                None => {
+                    sfx.play(id::MENU_REFUSE);
+                    (online.seeking, online.unread, menu.drawn) = (None, true, false);
+                }
+            },
             Action::Enter => {
                 sfx.play(id::MENU_CONFIRM);
                 if let Some(wire) = &mut wire {

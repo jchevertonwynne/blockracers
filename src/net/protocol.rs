@@ -12,10 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use super::room::{Finish, Voter};
 use super::scene::{EventNote, Scene};
-use super::state::{Standing, State};
+use super::state::{Sight, State};
 use crate::kart::Controls;
 use crate::menu::{Circuits, LAP_CHOICES, Mode, Settings};
-use crate::replay::Pose;
 
 /// A step of the race. Host and players each count their own.
 pub type Tick = u32;
@@ -29,6 +28,9 @@ pub const TICKS: f64 = 60.0;
 pub const SNAPSHOT_EVERY: Tick = 2;
 /// Each `Inputs` carries this many steps' pressing, so that one lost costs nothing.
 pub const RESENT: usize = 4;
+/// The most a datagram may be, in bytes: what the real link is tried with, and under
+/// what it carries. One bigger is not sent at all, so a `Snapshot` is kept inside it.
+pub const DATAGRAM: usize = 1000;
 
 #[derive(thiserror::Error, Debug)]
 pub enum WireError {
@@ -114,8 +116,8 @@ pub struct Snapshot {
     pub clocks: [f32; 3],
     /// The player's own car, in full; nothing for someone only watching.
     pub own: Option<State>,
-    /// Every car, the player's too, by grid slot.
-    pub karts: Vec<(u8, Pose, Standing)>,
+    /// Every car, the player's too.
+    pub karts: Vec<Sight>,
 }
 
 /// How a race is to be run: what the host's `Settings` say of it.
@@ -140,6 +142,8 @@ pub struct Rules {
     pub spared: u8,
     pub tag_least: u8,
     pub tag_back: u8,
+    /// Which of `menu::GOALS` wins keep-away and king of the hill.
+    pub goal: u8,
 }
 
 /// What a circuit is known by between games: its folder in the game's data, or
@@ -174,6 +178,7 @@ impl Rules {
             spared: settings.spared as u8,
             tag_least: settings.tag_least as u8,
             tag_back: settings.tag_back as u8,
+            goal: settings.goal as u8,
         }
     }
 
@@ -225,6 +230,7 @@ impl Rules {
         settings.spared = (self.spared as usize).min(crate::menu::SPARES.len() - 1);
         settings.tag_least = (self.tag_least as usize).min(crate::menu::TAG_LEASTS.len() - 1);
         settings.tag_back = (self.tag_back as usize).min(crate::menu::TAG_BACKS.len() - 1);
+        settings.goal = (self.goal as usize).min(crate::menu::GOALS.len() - 1);
         true
     }
 }
@@ -307,6 +313,9 @@ pub enum ToHost {
         name: String,
         password: String,
         car: Ride,
+        /// What the host gave them when they were here before, if they were: by
+        /// it they are known for who they were, whatever they are called now.
+        back: Option<u64>,
     },
     /// The race asked for is loaded and its cars are on the grid.
     Loaded,
@@ -329,6 +338,10 @@ pub enum ToHost {
 pub enum ToPlayer {
     Welcome {
         you: Peer,
+        /// What to say on coming back, should the way here break (`ToHost::Hello`).
+        token: u64,
+        /// What the session is called, for someone who dialled it by its address.
+        title: String,
     },
     Refused(Refusal),
     Start {
@@ -389,6 +402,7 @@ mod tests {
             name: "Rocket".into(),
             password: "bricks".into(),
             car: Ride::Driver("RR".into()),
+            back: Some(7),
         };
         assert_eq!(decode::<ToHost>(&encode(&hello)).unwrap(), hello);
         assert!(decode::<ToPlayer>(&[0xff, 0xff, 0xff]).is_err());

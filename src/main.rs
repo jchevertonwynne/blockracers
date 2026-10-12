@@ -327,7 +327,12 @@ fn main() {
     );
     // `BRICK_MODE=battle` (or tag, elimination) is how a race hosted online is won.
     if let Some(mode) = std::env::var("BRICK_MODE").ok().and_then(|wanted| {
-        let named = |mode: &&menu::Mode| mode.label().eq_ignore_ascii_case(&wanted);
+        // "keepaway" and "hill" will do for the two that are longer to say.
+        let named = |mode: &&menu::Mode| {
+            let label = mode.label().replace(' ', "");
+            label.eq_ignore_ascii_case(&wanted)
+                || (wanted.len() > 3 && label.to_lowercase().ends_with(&wanted.to_lowercase()))
+        };
         menu::Mode::ALL.iter().find(named).copied()
     }) {
         settings.mode = mode;
@@ -561,6 +566,7 @@ fn main() {
                     .chain(),
                 kart::sync_karts,
                 net::modes::glow.after(kart::sync_karts),
+                net::modes::beacon,
                 kart::sync_wheels,
                 cheats::hide_parts,
                 cheats::fast_forward,

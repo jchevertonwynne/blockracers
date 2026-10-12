@@ -2069,6 +2069,7 @@ name = "blockracers"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "bevy",
  "bytes",
  "iroh",

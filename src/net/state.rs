@@ -2,45 +2,168 @@
 //!
 //! `State` is everything `Kart::advance` reads and writes for a car that is driven,
 //! so that a player's game can take up its own car where the host has it and drive on
-//! from there. The other cars are only looked at, and go as `replay::Pose` with the
-//! `Standing` the display shows of them.
+//! from there. The other cars are only looked at, and go as a `Sight`: the
+//! `replay::Pose` they are shown by and the `Standing` the display shows of them,
+//! packed small, so that a `protocol::Snapshot` of a full grid fits a datagram.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::items::Power;
-use crate::kart::{Kart, LapTimes};
+use crate::kart::Kart;
+use crate::replay::Pose;
 use crate::physics::Rigid;
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+/// What the display shows of a car besides where it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Standing {
     pub lap: i32,
     pub place: u8,
     pub progress: f32,
     pub finished: Option<f32>,
-    pub laps: LapTimes,
     /// What it has left in a battle or a game of tag, and that it is "it".
     pub stake: f32,
     pub it: bool,
 }
 
 impl Standing {
+    pub fn put(self, k: &mut Kart) {
+        (k.lap, k.place, k.progress, k.finished) =
+            (self.lap, self.place as usize, self.progress, self.finished);
+        (k.stake, k.it) = (self.stake, self.it);
+    }
+}
+
+/// How many of a `Sight`'s parts of a turn make one, and of its speeds a unit a
+/// second; and how many of its timers a second, the longest it can say being a
+/// little under thirteen.
+const TURNED: f32 = 32767.0 * std::f32::consts::SQRT_2;
+const SPED: f32 = 64.0;
+const TIMED: f32 = 20.0;
+
+/// Three numbers as they go in a `Sight`: sixteen bits each, whatever they are.
+fn packed(parts: [f32; 3]) -> [u8; 6] {
+    let mut bytes = [0; 6];
+    for (two, part) in bytes.chunks_exact_mut(2).zip(parts) {
+        two.copy_from_slice(&(part.round() as i16).to_le_bytes());
+    }
+    bytes
+}
+
+fn unpacked(bytes: [u8; 6]) -> [f32; 3] {
+    [0, 2, 4].map(|at| i16::from_le_bytes([bytes[at], bytes[at + 1]]) as f32)
+}
+
+/// A car as the games that only look at it are told of it: a `replay::Pose` and a
+/// `Standing`, in half the bytes. Where it is is told exactly; how it is turned
+/// goes as the three smallest parts of its quaternion, its speed to a sixty-fourth
+/// of a unit a second, and what power-ups have done to it to a twentieth of a
+/// second. Its lap times change once a lap, and go with the `scene` when they do.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Sight {
+    pub slot: u8,
+    pos: Vec3,
+    turn: [u8; 6],
+    vel: [u8; 6],
+    steer: i8,
+    /// Which part of its turn is left out, in the low two bits, and above them
+    /// that it is sliding, out of the race, and "it".
+    bits: u8,
+    /// What is left of its turbo, shield, whirl, flight, curse and magnet.
+    timers: [u8; 6],
+    held: Option<Power>,
+    whites: u8,
+    lap: i32,
+    place: u8,
+    progress: f32,
+    finished: Option<f32>,
+    stake: f32,
+}
+
+impl Sight {
+    const SLIDING: u8 = 4;
+    const OUT: u8 = 8;
+    const IT: u8 = 16;
+
     pub fn of(k: &Kart) -> Self {
-        Standing {
+        // The biggest part of a turn is the one made up again from the others,
+        // and is made positive, the same turn being said by both signs.
+        let turn = k.rot.normalize().to_array();
+        let most = (0..4).fold(0, |most, at| {
+            if turn[at].abs() > turn[most].abs() {
+                at
+            } else {
+                most
+            }
+        });
+        let sign = TURNED.copysign(turn[most]);
+        let mut rest = turn.into_iter().enumerate().filter(|(at, _)| *at != most);
+        let rest = [(); 3].map(|_| rest.next().map_or(0.0, |(_, part)| part * sign));
+        let limit = i16::MAX as f32 / SPED;
+        let timer = |left: f32| (left * TIMED).ceil().clamp(0.0, 255.0) as u8;
+        Sight {
+            slot: k.slot as u8,
+            pos: k.pos,
+            turn: packed(rest),
+            vel: packed((k.vel.clamp(Vec3::splat(-limit), Vec3::splat(limit)) * SPED).to_array()),
+            steer: (k.steer.clamp(-1.0, 1.0) * 127.0).round() as i8,
+            bits: most as u8
+                | if k.sliding { Self::SLIDING } else { 0 }
+                | if k.out.is_some() { Self::OUT } else { 0 }
+                | if k.it { Self::IT } else { 0 },
+            timers: [k.boost, k.shield, k.spin, k.spin_out, k.cursed, k.magnet].map(timer),
+            held: k.held,
+            whites: k.whites,
             lap: k.lap,
             place: k.place as u8,
             progress: k.progress,
             finished: k.finished,
-            laps: k.laps,
             stake: k.stake,
-            it: k.it,
         }
     }
 
-    pub fn put(self, k: &mut Kart) {
-        (k.lap, k.place, k.progress, k.finished) =
-            (self.lap, self.place as usize, self.progress, self.finished);
-        (k.laps, k.stake, k.it) = (self.laps, self.stake, self.it);
+    /// Where the car is and how it looks.
+    pub fn pose(&self) -> Pose {
+        let rest = unpacked(self.turn).map(|part| part / TURNED);
+        let most = (self.bits & 3) as usize;
+        let left = (1.0 - rest.iter().map(|part| part * part).sum::<f32>()).max(0.0).sqrt();
+        let mut rest = rest.into_iter();
+        let turn = [0, 1, 2, 3].map(|at| {
+            if at == most {
+                left
+            } else {
+                rest.next().unwrap_or(0.0)
+            }
+        });
+        let [boost, shield, spin, spin_out, cursed, magnet] =
+            self.timers.map(|left| left as f32 / TIMED);
+        Pose {
+            pos: self.pos,
+            rot: Quat::from_array(turn).normalize(),
+            vel: Vec3::from_array(unpacked(self.vel)) / SPED,
+            steer: self.steer as f32 / 127.0,
+            boost,
+            shield,
+            sliding: self.bits & Self::SLIDING != 0,
+            out: self.bits & Self::OUT != 0,
+            spin,
+            spin_out,
+            cursed,
+            magnet,
+            held: self.held,
+            whites: self.whites,
+        }
+    }
+
+    pub fn standing(&self) -> Standing {
+        Standing {
+            lap: self.lap,
+            place: self.place,
+            progress: self.progress,
+            finished: self.finished,
+            stake: self.stake,
+            it: self.bits & Self::IT != 0,
+        }
     }
 }
 
@@ -264,5 +387,41 @@ mod tests {
         }
         assert!(driven.vel.length() > 5.0, "the car should have got going");
         assert_eq!(State::of(&driven), State::of(&taken));
+    }
+
+    /// A car is shown from its `Sight` as near as makes no difference to where and
+    /// how it was, whichever way it is turned.
+    #[test]
+    fn a_car_is_seen_as_it_was() {
+        let track = Track::new();
+        let mut k = Kart::new(&track, 3);
+        (k.vel, k.steer, k.sliding) = (Vec3::new(31.4159, -2.5, -47.123), -0.37, true);
+        (k.boost, k.shield, k.spin_out, k.cursed) = (0.31, 40.0, 0.0, 0.004);
+        (k.held, k.whites, k.it, k.stake) = (Some(Power::Blue), 2, true, 17.5);
+        (k.lap, k.place, k.progress, k.finished) = (2, 4, 1234.5, Some(61.25));
+        let turns = [
+            Quat::IDENTITY,
+            Quat::from_rotation_y(3.1),
+            Quat::from_euler(EulerRot::YXZ, -2.0, 0.4, -0.3),
+            Quat::from_euler(EulerRot::YXZ, 1.0, -1.5, 3.0),
+            -Quat::from_rotation_x(1.6),
+        ];
+        for turn in turns {
+            k.rot = turn;
+            let sight = Sight::of(&k);
+            let (pose, was) = (sight.pose(), Pose::of(&k));
+            assert_eq!(pose.pos, was.pos);
+            assert!(pose.rot.angle_between(was.rot) < 1e-3, "turned {turn:?}");
+            assert!(pose.vel.distance(was.vel) < 0.02);
+            assert!((pose.steer - was.steer).abs() < 0.005);
+            assert_eq!((pose.sliding, pose.out, pose.held, pose.whites), (true, false, was.held, 2));
+            // What is left of something is never said to be none while there is some,
+            // and more than can be said is said as the most that can.
+            assert!((pose.boost - 0.31).abs() <= 0.05 && pose.cursed > 0.0);
+            assert_eq!((pose.shield, pose.spin_out), (12.75, 0.0));
+            let standing = sight.standing();
+            assert_eq!((standing.lap, standing.place, standing.progress), (2, 4, 1234.5));
+            assert_eq!((standing.finished, standing.stake, standing.it), (Some(61.25), 17.5, true));
+        }
     }
 }

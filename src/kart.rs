@@ -5,7 +5,7 @@ use crate::assets::materials::Surface;
 use crate::audio::{Sfx, id};
 use crate::input::{Actions, Event};
 use crate::items::Power;
-use crate::menu::Settings;
+use crate::menu::{Mode, Settings};
 use crate::meshgen::*;
 use crate::net::{Lineup, Puppet, Remote, Role, Who};
 use crate::opponent::{RUBBER_BAND, RoutePlay};
@@ -15,7 +15,7 @@ use crate::track::{Checkpoint, Track};
 use crate::world::{Chassis, KartModel, LoadedWorld};
 use crate::{Phase, Race};
 use bevy::prelude::*;
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 pub const WHEEL_RADIUS: f32 = 0.45;
 const WARP_SHRINK: f32 = 0.25;
@@ -908,6 +908,14 @@ const NOWHERE_TIME: f32 = 1.5;
 const QUARRY_LEAD: f32 = 12.0;
 const QUARRY_KEPT: f32 = 2.5;
 const QUARRY_REACHED: f32 = 4.0;
+/// In infection, how near a car that is "it" is run from when it is in sight, and
+/// when it is not; how far off the place run to is, which must be clear; and how
+/// much a way that is straight on, or open a long way, is liked beside one that is
+/// straight away from those cars.
+const FLEE_FROM: f32 = 35.0;
+const FLEE_CLOSE: f32 = 14.0;
+const FLEE_ROOM: f32 = 12.0;
+const FLEE_AHEAD: f32 = 0.5;
 
 impl Ai {
     /// Takes the driver's habits from the game's table.
@@ -1470,7 +1478,8 @@ pub fn ai_drive(
     variant: Res<crate::variant::Variant>,
     mut rng: ResMut<Rng>,
     loaded: Option<Res<LoadedWorld>>,
-    mut q: Query<(&mut Kart, &mut Ai, &mut Controls, Has<Player>, Has<Remote>)>,
+    settings: Res<Settings>,
+    mut q: Query<(&mut Kart, &mut Ai, &mut Controls, Has<Player>, Option<&Remote>)>,
 ) {
     let dt = time.delta_secs();
     let racing = matches!(race.phase, Phase::Racing | Phase::Finished);
@@ -1478,7 +1487,7 @@ pub fn ai_drive(
     // whichever of them leads.
     let player_progress = q
         .iter()
-        .filter(|x| x.3 || x.4)
+        .filter(|x| x.3 || x.4.is_some())
         .map(|x| x.0.progress)
         .reduce(f32::max)
         .unwrap_or(0.0);
@@ -1487,6 +1496,9 @@ pub fn ai_drive(
         .filter(|x| x.0.out.is_none())
         .map(|x| (x.0.slot, x.0.pos, x.0.vel))
         .collect();
+    // The cars that are "it", and what that is to the rest (`net::modes`).
+    let its: Vec<usize> = q.iter().filter(|x| x.0.it).map(|x| x.0.slot).collect();
+    let mode = settings.mode;
     // The nearest other car between two distances inside a cone ahead.
     let ahead = |k: &Kart, (min, max, cone): (f32, f32, f32)| {
         let forward = k.rot * Vec3::NEG_Z;
@@ -1497,8 +1509,9 @@ pub fn ai_drive(
         })
     };
     for (mut k, mut ai, mut c, here, elsewhere) in &mut q {
-        // A player is a player wherever they sit.
-        let is_player = here || elsewhere;
+        // A player is a player wherever they sit, unless nothing has been heard
+        // from where they sit for a while.
+        let is_player = here || elsewhere.is_some_and(|remote| !remote.stalled());
         if (is_player && k.finished.is_none() && !race.demo) || k.out.is_some() {
             ai.started = racing;
             continue;
@@ -1580,10 +1593,25 @@ pub fn ai_drive(
             let clear = |at: Vec3| {
                 track.collision.wall(k.pos + lift, at.with_y(k.pos.y) + lift).is_none() && !fired_at(at)
             };
-            let hunting = track.arena.is_some() && (k.held.is_some() || k.it);
+            // Who a driver is after is the game's to say: in infection a car that
+            // is "it" wants one that isn't, in keep-away every car wants the one
+            // with the flag, which wants nobody, and in king of the hill nobody is
+            // gone after for being its king.
+            let it = |slot: usize| its.contains(&slot);
+            let wanted = |slot: usize| match mode {
+                Mode::Infection if k.it => !it(slot),
+                Mode::KeepAway => !k.it && it(slot),
+                _ => true,
+            };
+            let after = match mode {
+                Mode::KeepAway => !k.it && !its.is_empty(),
+                Mode::Hill => false,
+                _ => k.it,
+            };
+            let hunting = track.arena.is_some() && (k.held.is_some() || after);
             let sighted = cars
                 .iter()
-                .filter(|car| hunting && car.0 != k.slot)
+                .filter(|car| hunting && car.0 != k.slot && wanted(car.0))
                 .filter(|car| (car.1.y - k.pos.y).abs() < QUARRY_LEVEL && clear(car.1))
                 .min_by(|a, b| a.1.distance(k.pos).total_cmp(&b.1.distance(k.pos)));
             ai.quarry = match sighted {
@@ -1602,7 +1630,56 @@ pub fn ai_drive(
                     ai.seen.and_then(|(at, on, _)| [on, at].into_iter().find(|&place| clear(place)))
                 }
             };
+            // In infection a car that hasn't been caught runs from those that have,
+            // when they are near: from one in plain sight, or one close by whatever
+            // hides it. It takes whichever open way leads farthest from them all,
+            // the nearer of them counting for more, and is the least to turn to; a
+            // way that is open a long way on is liked over one that soon ends.
+            if mode == Mode::Infection && !k.it && track.arena.is_some() {
+                let near = |car: &&(usize, Vec3, Vec3)| {
+                    let off = car.1.distance(k.pos);
+                    it(car.0)
+                        && (car.1.y - k.pos.y).abs() < QUARRY_LEVEL
+                        && (off < FLEE_CLOSE || (off < FLEE_FROM && clear(car.1)))
+                };
+                let from = cars.iter().filter(near).fold(Vec3::ZERO, |from, car| {
+                    let off = (k.pos - car.1).with_y(0.0);
+                    from + off / off.length_squared().max(1.0)
+                });
+                if from != Vec3::ZERO {
+                    let ahead = (k.rot * Vec3::NEG_Z).with_y(0.0).normalize_or(Vec3::NEG_Z);
+                    let away = from.normalize_or(ahead);
+                    let liked = |way: &Vec3| {
+                        let far = clear(k.pos + way * 2.5 * FLEE_ROOM) as u8 as f32;
+                        way.dot(away) + FLEE_AHEAD * (way.dot(ahead) + far)
+                    };
+                    let ways = (-3..=4)
+                        .map(|eighth| Quat::from_rotation_y(eighth as f32 * FRAC_PI_4) * ahead)
+                        .filter(|way| clear(k.pos + way * FLEE_ROOM));
+                    if let Some(way) = ways.max_by(|a, b| liked(a).total_cmp(&liked(b))) {
+                        (ai.quarry, ai.seen) = (Some(k.pos + way * FLEE_ROOM), None);
+                    }
+                }
+            }
+            // In king of the hill the line takes everyone up to the hill, and a
+            // driver with nobody to go for makes for the middle of it once that
+            // is near: from farther off the straight way there may be over an edge.
+            let top = track.hill();
+            let near = top.distance(k.pos);
+            if mode == Mode::Hill
+                && ai.quarry.is_none()
+                && (top.y - k.pos.y).abs() < QUARRY_LEVEL
+                && (QUARRY_REACHED..2.0 * crate::net::modes::HILL_REACH).contains(&near)
+                && clear(top)
+            {
+                ai.quarry = Some(top);
+            }
             ai.drive(&k, &mut c, &track, &mut rng, dt);
+            // Its king stays where it is until someone comes to push it off.
+            if mode == Mode::Hill && k.it {
+                let rolling = k.vel.dot(k.rot * Vec3::NEG_Z);
+                c.throttle = if rolling > 3.0 { -1.0 } else { 0.0 };
+            }
         }
 
         // Rubber-banding keeps the pack close to the player.

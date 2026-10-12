@@ -36,6 +36,7 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
             name: "Guest".into(),
             car: Ride::Driver("RR".into()),
             loaded: true,
+            token: 0,
         }]
     } else {
         Vec::new()
@@ -1340,10 +1341,17 @@ fn watching_slot(app: &App) -> usize {
         .expect("a car being watched")
 }
 
-/// A player who drops out and comes back under the same name has their points, and
-/// their place in the race they left.
-#[test]
-fn a_player_who_comes_back_has_what_they_had() {
+/// The points a player has in the host's room, and who has their place on the grid.
+fn held(host: &App, peer: Peer, name: &str) -> (Option<u32>, Option<Peer>) {
+    let room = host.world().resource::<Room>();
+    let voter = room.voters.iter().find(|voter| voter.peer == peer);
+    let lineup = host.world().resource::<Lineup>();
+    let seat = lineup.seats.iter().find(|seat| seat.name == name);
+    (voter.map(|voter| voter.points), seat.and_then(|seat| seat.peer))
+}
+
+/// A pair whose guest has fifty points, and what the guest was given to come back by.
+fn scored() -> (Pair, u64) {
     let mut pair = Pair::new(0, 0.0);
     pair.guest.world_mut().resource_mut::<Session>().name = "Guest".into();
     for _ in 0..30 {
@@ -1355,46 +1363,216 @@ fn a_player_who_comes_back_has_what_they_had() {
         .find(|voter| voter.peer == 1)
         .expect("the player in the room")
         .points = 50;
-    // The player's connection goes.
-    pair.host.world_mut().resource_mut::<Inbox>().left.push(1);
-    for _ in 0..10 {
-        pair.step();
-    }
-    assert_eq!(
-        pair.host.world().resource::<Session>().absent,
-        [("Guest".to_string(), 50)]
-    );
-    // They dial again, and are someone new to the link.
+    let token = pair.guest.world().resource::<Session>().token;
+    assert!(token != 0, "the host should have given the player something to come back by");
+    (pair, token)
+}
+
+/// Someone new to the link, who says they are called `name` and were given `token`.
+fn comer(pair: &mut Pair, name: &str, token: u64) {
     let mut back = game(Role::Client, pair.hub.join(), 0, 0);
     back.insert_state(Screen::Menu);
     *back.world_mut().resource_mut::<Session>() = Session {
-        name: "Guest".into(),
+        name: name.into(),
+        token,
         ..default()
     };
     for _ in 0..30 {
         pair.step();
         back.update();
     }
+}
+
+/// A player who drops out and comes back with what the host gave them has their
+/// points, and their place in the race they left, whatever they are called now.
+#[test]
+fn a_player_who_comes_back_has_what_they_had() {
+    let (mut pair, token) = scored();
+    // The player's connection goes.
+    pair.host.world_mut().resource_mut::<Inbox>().left.push(1);
+    for _ in 0..10 {
+        pair.step();
+    }
+    let absent = &pair.host.world().resource::<Session>().absent;
+    assert_eq!(
+        absent[..],
+        [Absent {
+            token,
+            peer: 1,
+            name: "Guest".into(),
+            points: 50
+        }]
+    );
+    // They dial again, and are someone new to the link.
+    comer(&mut pair, "Guest again", token);
     let session = pair.host.world().resource::<Session>();
     assert!(session.absent.is_empty() && session.members.iter().any(|member| member.peer == 2));
-    let voter = pair
-        .host
-        .world()
-        .resource::<Room>()
-        .voters
-        .iter()
-        .find(|voter| voter.peer == 2)
-        .cloned();
-    assert_eq!(voter.map(|voter| voter.points), Some(50));
-    let lineup = pair.host.world().resource::<Lineup>();
+    assert_eq!(held(&pair.host, 2, "Guest"), (Some(50), Some(2)));
+}
+
+/// Someone who takes the name of a player who has gone is not that player: they
+/// have nothing of theirs, and it is kept for whoever it belongs to.
+#[test]
+fn a_name_is_not_who_someone_is() {
+    let (mut pair, token) = scored();
+    pair.host.world_mut().resource_mut::<Inbox>().left.push(1);
+    for _ in 0..10 {
+        pair.step();
+    }
+    for guess in [0, token ^ 2] {
+        comer(&mut pair, "Guest", guess);
+    }
+    for peer in [2, 3] {
+        assert_eq!(held(&pair.host, peer, "Guest"), (Some(0), Some(1)));
+    }
+    assert_eq!(pair.host.world().resource::<Session>().absent.len(), 1);
+}
+
+/// A player whose way to the host broke at their own end is back before the host
+/// has missed them: they are let go of where they were, and are who they were.
+#[test]
+fn someone_back_before_they_were_missed_has_their_own_place() {
+    let (mut pair, token) = scored();
+    comer(&mut pair, "Guest", token);
+    let session = pair.host.world().resource::<Session>();
+    let here: Vec<Peer> = session.members.iter().map(|member| member.peer).collect();
+    assert!(here == [2] && session.absent.is_empty(), "{here:?} are here");
+    assert_eq!(held(&pair.host, 2, "Guest"), (Some(50), Some(2)));
+    assert_eq!(held(&pair.host, 1, "Guest").0, None);
+}
+
+/// A player whose way to the host breaks in a race dials again without being
+/// asked, is known for who they were, and goes back to the race they were in.
+#[test]
+fn a_player_whose_way_to_the_host_breaks_dials_again() {
+    let (mut pair, _) = scored();
+    let circuits = Circuits::find();
+    pair.host.world_mut().resource_mut::<Session>().racing =
+        Some(Rules::of(&Settings::new(&circuits), &circuits));
+    let state = |app: &App| *app.world().resource::<State<Screen>>().get();
+    let driven = |app: &mut App| {
+        let mut remotes = app.world_mut().query::<&Remote>();
+        remotes.iter(app.world()).map(|remote| remote.peer).collect::<Vec<Peer>>()
+    };
+    pair.hub.cut(1);
+    for _ in 0..8 {
+        pair.step();
+    }
+    // Until it is through again the player waits in the room, and is told why.
+    assert!(pair.guest.world().resource::<Session>().retrying.is_some());
+    assert_eq!(state(&pair.guest), Screen::Menu);
+    for _ in 0..40 {
+        pair.step();
+    }
+    let session = pair.guest.world().resource::<Session>();
+    assert_eq!((session.you, session.retrying), (2, None));
+    assert_eq!(*pair.guest.world().resource::<Role>(), Role::Client);
+    assert_eq!(held(&pair.host, 2, "Guest"), (Some(50), Some(2)));
+    // The host has sent the race again, and the player's game is loading it.
+    assert_eq!(state(&pair.guest), Screen::Loading);
+    assert_eq!(driven(&mut pair.host), Vec::<Peer>::new());
+    pair.guest.insert_state(Screen::Race);
+    pair.guest
+        .world_mut()
+        .run_system_cached(client::loaded)
+        .unwrap();
+    for _ in 0..30 {
+        pair.step();
+    }
+    assert_eq!(driven(&mut pair.host), [2]);
+}
+
+/// A host that can't be got through to again is given up in the end.
+#[test]
+fn a_host_that_is_never_reached_again_is_given_up() {
+    let (mut pair, _) = scored();
+    pair.hub.cut(1);
+    // Whoever dials from here on is cut off too: nothing gets through.
+    for peer in 2..40 {
+        pair.hub.cut(peer);
+    }
+    for _ in 0..(REDIAL_FOR * 60.0) as usize + 60 {
+        pair.hub.step();
+        pair.guest.update();
+    }
+    assert_eq!(*pair.guest.world().resource::<Role>(), Role::Offline);
     assert_eq!(
-        lineup
-            .seats
-            .iter()
-            .find(|seat| seat.name == "Guest")
-            .and_then(|seat| seat.peer),
-        Some(2)
+        pair.guest.world().resource::<Session>().notice.as_deref(),
+        Some("The host has gone")
     );
+}
+
+/// A host that says nothing of a race for long enough is taken to be out of
+/// reach, though nothing has said the way to it is broken.
+#[test]
+fn a_race_gone_silent_is_a_host_lost() {
+    let (mut pair, _) = scored();
+    for _ in 0..(SILENT * 60.0) as usize + 30 {
+        pair.hub.step();
+        pair.guest.update();
+    }
+    assert!(pair.guest.world().resource::<Session>().retrying.is_some());
+}
+
+/// A player whose pressing stops arriving is driven on as they last pressed for
+/// a moment, then by the computer, and by themselves again once it arrives.
+#[test]
+fn a_car_nothing_is_heard_of_is_the_computers_until_something_is() {
+    let mut pair = Pair::new(0, 0.0);
+    for _ in 0..60 {
+        pair.step();
+    }
+    let stalled = |app: &mut App| {
+        let mut remotes = app.world_mut().query::<&Remote>();
+        remotes.iter(app.world()).map(Remote::stalled).collect::<Vec<bool>>()
+    };
+    // Nothing pressed, the car has stayed on the grid.
+    let grid = car(&mut pair.host, GUESTS).pos;
+    assert_eq!(stalled(&mut pair.host), [false]);
+    for _ in 0..240 {
+        pair.hub.step();
+        pair.host.update();
+    }
+    assert_eq!(stalled(&mut pair.host), [true]);
+    let went = car(&mut pair.host, GUESTS).pos.distance(grid);
+    assert!(went > 20.0, "the computer should have driven the car on, and drove it {went}");
+    for _ in 0..30 {
+        pair.step();
+    }
+    assert_eq!(stalled(&mut pair.host), [false]);
+}
+
+/// Everything a player is told of a full grid thirty times a second goes in one
+/// datagram, with room to spare: one too big for the link is never sent at all.
+#[test]
+fn a_full_grid_is_told_in_one_datagram() {
+    use super::protocol::{DATAGRAM, Snapshot, Stage};
+    use super::state::{Sight, State};
+    let mut pair = Pair::new(5, 0.0);
+    pair.step();
+    // Every car with all it can have to tell, in numbers as long as they come.
+    let mut karts = pair.host.world_mut().query::<&mut Kart>();
+    for mut k in karts.iter_mut(pair.host.world_mut()) {
+        (k.finished, k.out, k.held, k.whites) = (Some(123.456), Some(99.9), Some(Power::Green), 3);
+        (k.lap, k.progress, k.checkpoint) = (i32::MAX, 98765.43, Some(u32::MAX as usize));
+        k.warp_to = Some((Vec3::ONE, Vec3::ONE, Vec3::ONE));
+    }
+    let karts: Vec<&Kart> = karts.iter(pair.host.world()).collect();
+    assert_eq!(karts.len(), 6);
+    let snapshot = Snapshot {
+        tick: u32::MAX,
+        used: u32::MAX,
+        stage: Stage::Racing,
+        clocks: [1.0, 2.0, 3.0],
+        own: Some(State::of(karts[0])),
+        karts: karts.iter().map(|k| Sight::of(k)).collect(),
+    };
+    let length = encode(&snapshot).len();
+    assert!(
+        length <= DATAGRAM * 3 / 4,
+        "a snapshot of {length} bytes leaves too little of {DATAGRAM}"
+    );
+    println!("a snapshot of a full grid is {length} bytes");
 }
 
 /// A racer someone built goes to the host and comes back in the lineup whole, and
@@ -1421,6 +1599,7 @@ fn a_built_racer_goes_over_the_wire_whole() {
         name: "P1".into(),
         password: String::new(),
         car: Ride::Built(racer.clone()),
+        back: None,
     };
     assert_eq!(decode::<ToHost>(&encode(&hello)).unwrap(), hello);
     let seats = Lineup::seat(&[(1, "P1".to_string(), Ride::Built(racer.clone()))], 0);
@@ -1748,5 +1927,58 @@ fn the_arenas_as_the_computers_cars_find_them() {
                 );
             }
         }
+    }
+}
+
+/// What came of a game that nobody goes out of, played among the computer's cars
+/// for `seconds` or until it was won: how long it went on, how many cars were ever
+/// "it", how often that changed, and the most any car had of what it counts.
+fn tallied(key: &str, mode: crate::menu::Mode, seconds: f32) -> (f32, usize, u32, f32) {
+    let mut app = fought(crate::map::named(key), mode, 7);
+    let (mut time, mut ever, mut changes, mut most) = (0.0, [false; 6], 0, 0.0f32);
+    let mut was: Vec<usize> = Vec::new();
+    for _ in 0..(seconds * TICKS as f32) as usize {
+        app.update();
+        if *app.world().resource::<State<Screen>>().get() != Screen::Race {
+            break;
+        }
+        let race = app.world().resource::<Race>();
+        if !matches!(race.phase, Phase::Racing | Phase::Finished) {
+            continue;
+        }
+        time = race.time;
+        let world = app.world_mut();
+        let cars: Vec<&Kart> = world.query::<&Kart>().iter(world).collect();
+        if cars.iter().any(|k| k.finished.is_some()) {
+            break;
+        }
+        let mut its: Vec<usize> = cars.iter().filter(|k| k.it).map(|k| k.slot).collect();
+        its.sort();
+        for &slot in &its {
+            ever[slot] = true;
+        }
+        changes += (its != was) as u32;
+        was = its;
+        most = cars.iter().map(|k| k.stake).fold(most, f32::max);
+    }
+    (time, ever.iter().filter(|ever| **ever).count(), changes, most)
+}
+
+/// The three games that come of tag are games among the computer's cars in every
+/// arena: in infection cars are caught, in keep-away the flag changes hands and is
+/// held, and in king of the hill the hill is found and held.
+#[test]
+fn the_games_nobody_goes_out_of_are_played_in_every_arena() {
+    use crate::menu::Mode;
+    for key in ["YARD", "CROSSROADS", "RING", "TOWN"] {
+        let (time, caught, _, _) = tallied(key, Mode::Infection, 90.0);
+        println!("{key} infection: {caught} caught in {time:.0}s");
+        assert!(caught >= 3, "{key}: {caught} were ever \"it\" in {time}s of infection");
+        let (time, held, changes, most) = tallied(key, Mode::KeepAway, 90.0);
+        println!("{key} keep-away: {held} held it, {changes} changes, most {most:.0}s in {time:.0}s");
+        assert!(held >= 2 && most > 5.0, "{key}: {held} held the flag, for {most}s at the most");
+        let (time, kings, changes, most) = tallied(key, Mode::Hill, 90.0);
+        println!("{key} hill: {kings} kings, {changes} changes, most {most:.0}s in {time:.0}s");
+        assert!(kings >= 1 && most > 3.0, "{key}: {kings} were king, for {most}s at the most");
     }
 }

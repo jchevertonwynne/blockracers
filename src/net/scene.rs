@@ -17,7 +17,7 @@ use super::{Clock, Inbox, Session, Wire};
 use crate::audio::{Emitter, Looped, Sfx};
 use crate::events::{Fired, Logged, TrackEvents};
 use crate::items::{Action, BrickMark, ItemAssets, Pickup};
-use crate::kart::Kart;
+use crate::kart::{Kart, LapTimes};
 use crate::racer_sounds::Cues;
 use crate::scenery::Models;
 
@@ -36,6 +36,8 @@ pub struct Scene {
     /// What has just happened to cars that their drivers have something to say
     /// about, or a horn or a shield to sound for, by grid slot.
     cues: Vec<(u8, Cues)>,
+    /// The lap times of the cars whose have changed, by grid slot: once a lap each.
+    laps: Vec<(u8, LapTimes)>,
 }
 
 /// An event of the circuit's starting or ending on the host: `events::Logged`, with
@@ -60,15 +62,19 @@ pub struct Told {
     /// has come up since the last telling.
     cues: [Cues; 6],
     cued: Vec<(u8, Cues)>,
+    /// The lap times each car was last said to have, by grid slot.
+    laps: [Option<LapTimes>; 6],
     /// The events of the circuit's own that have started and not ended.
     going: Vec<EventNote>,
 }
 
 impl Told {
-    /// Someone has come to the race late: every brick is told again, to everyone,
-    /// and what is given back is the events still going on, for the latecomer.
+    /// Someone has come to the race late: every brick and every car's lap times
+    /// are told again, to everyone, and what is given back is the events still
+    /// going on, for the latecomer.
     pub fn again(&mut self) -> Vec<EventNote> {
         self.bricks.clear();
+        self.laps = default();
         self.going.clone()
     }
 }
@@ -163,8 +169,18 @@ pub fn tell(
             .collect(),
         loops: sfx.looping.clone(),
         cues: std::mem::take(&mut told.cued),
+        laps: karts
+            .iter()
+            .filter_map(|kart| {
+                let before = told.laps.get_mut(kart.slot)?;
+                let changed = *before != Some(kart.laps);
+                *before = Some(kart.laps);
+                changed.then_some((kart.slot as u8, kart.laps))
+            })
+            .collect(),
     };
     let anything = !scene.actions.is_empty()
+        || !scene.laps.is_empty()
         || !scene.bricks.is_empty()
         || !scene.sounds.is_empty()
         || !scene.cues.is_empty();
@@ -256,6 +272,12 @@ pub fn take(
                     horn: cues.horn || kart.cues.horn,
                     hit: cues.hit || kart.cues.hit,
                 };
+            }
+        }
+        // Each car's laps are timed by the host, whose clock the race is run on.
+        for (slot, laps) in scene.laps {
+            if let Some(mut kart) = karts.iter_mut().find(|kart| kart.slot == slot as usize) {
+                kart.laps = laps;
             }
         }
         // Of several tellings at once only the last says what is there now.

@@ -224,6 +224,7 @@ mod tests {
             spared: 3,
             tag_least: 3,
             tag_back: 2,
+            goal: 1,
         }
     }
 

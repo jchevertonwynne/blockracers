@@ -11,6 +11,11 @@
 //! the screen is drawn at, so that a player's game and the host step a car alike. A
 //! race online is live and nothing else: it can't be paused, photographed or watched
 //! again, and it is run by the session's rules and not the player's own settings.
+//!
+//! A player is known to the host by a token it gives them, so that one whose way
+//! there breaks can dial again (`Retry`) and be who they were; and a session is
+//! found by the lobby's list, by its code, or by its host's address alone
+//! (`addressed`).
 
 pub mod client;
 pub mod display;
@@ -205,6 +210,48 @@ pub struct Member {
     pub car: Ride,
     /// Their game has the race loaded.
     pub loaded: bool,
+    /// What they were given to come back by (`ToPlayer::Welcome`).
+    pub token: u64,
+}
+
+/// Someone who was in the session and has gone: what they were given to come back
+/// by, who they were to the host, what they were called and the points they had.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Absent {
+    pub token: u64,
+    pub peer: Peer,
+    pub name: String,
+    pub points: u32,
+}
+
+/// How many who have gone are remembered, the longest gone forgotten first.
+const ABSENT: usize = 32;
+/// A player whose way to the host has broken dials again for this long, every so
+/// often, before the session is given up; and takes the way to have broken when a
+/// race has been silent this long. All in seconds of the real clock.
+const REDIAL_FOR: f32 = 30.0;
+const REDIAL_EVERY: f32 = 2.0;
+const SILENT: f32 = 5.0;
+
+/// A player's game dialling its host again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Retry {
+    /// How long is left to get through in.
+    left: f32,
+    /// How long until the host is next dialled; none while a dial is being made.
+    wait: Option<f32>,
+    /// The player was in the session's race, and is to go back to it.
+    racing: bool,
+}
+
+/// Something nobody else could guess, for a player to be known again by.
+fn token() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    // Each of these is keyed at random; none is taken for no token at all.
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+        | 1
 }
 
 /// The session this game is hosting or has joined.
@@ -237,11 +284,18 @@ pub struct Session {
     pub watching: Vec<Peer>,
     /// How many races the session's series is of; none if it is not run as one.
     pub series: u8,
-    /// Players who have gone, and the points they had, should they come back.
-    pub absent: Vec<(String, u32)>,
+    /// Players who have gone, and what they had, should they come back.
+    pub absent: Vec<Absent>,
+    /// What the host gave this game to come back by.
+    pub token: u64,
+    /// The way to the host has broken, and it is being dialled again.
+    pub retrying: Option<Retry>,
     /// Kept off the lobby's list, and the code the lobby has given the session.
     pub unlisted: bool,
     pub code: String,
+    /// What another game dials to reach the session this one hosts, once that is
+    /// known: by it the session is joined without the lobby.
+    pub address: String,
 }
 
 impl Session {
@@ -330,6 +384,8 @@ fn watch(
 pub struct Inbox {
     pub joined: Vec<Peer>,
     pub left: Vec<Peer>,
+    /// The other ends heard from no more, which never said they were going.
+    pub lost: Vec<Peer>,
     /// The link has broken: why.
     pub failed: Option<String>,
     pub to_host: Vec<(Peer, ToHost)>,
@@ -358,6 +414,10 @@ fn pump(
             }
             Event::Left(peer) => {
                 inbox.left.push(peer);
+                Ok(())
+            }
+            Event::Lost(peer) => {
+                inbox.lost.push(peer);
                 Ok(())
             }
             Event::Failed(why) => {
@@ -493,6 +553,41 @@ pub fn join_session(
     commands.insert_resource(Wire(Box::new(transport::Transport::join(&listed.endpoint))));
 }
 
+/// A session as it is known by its host's address alone, without the lobby: what
+/// it is called is the host's to say once it is reached.
+pub fn addressed(address: &str) -> Option<lobby_api::Session> {
+    let address = address.trim();
+    transport::dialled(address).then(|| lobby_api::Session {
+        id: String::new(),
+        name: String::new(),
+        host: String::new(),
+        endpoint: address.to_string(),
+        locked: false,
+        max: lobby_api::MAX_PLAYERS,
+        status: default(),
+    })
+}
+
+/// Someone has gone from the session a host keeps: what they had is kept, should
+/// they come back. Their car in a race is for whoever calls this to see to.
+fn depart(session: &mut Session, room: &mut Room, peer: Peer) {
+    let Some(at) = session.members.iter().position(|member| member.peer == peer) else {
+        return;
+    };
+    let member = session.members.remove(at);
+    session.watching.retain(|watching| *watching != peer);
+    let voter = room.voters.iter().find(|voter| voter.peer == peer);
+    session.absent.push(Absent {
+        token: member.token,
+        peer,
+        name: member.name,
+        points: voter.map_or(0, |voter| voter.points),
+    });
+    let extra = session.absent.len().saturating_sub(ABSENT);
+    session.absent.drain(..extra);
+    room.voters.retain(|voter| voter.peer != peer);
+}
+
 /// The host calls the race off: everyone is back in the room, the session as it was,
 /// to vote on another.
 pub fn call_off(session: &mut Session, wire: &mut Wire, next: &mut NextState<Screen>) {
@@ -551,6 +646,7 @@ pub fn leave(
     commands.insert_resource(Room::default());
     session.members.clear();
     (session.notice, session.left) = (why.map(str::to_string), true);
+    (session.token, session.retrying) = (0, None);
     if let Some(own) = session.own.take() {
         // A test drive is still to be ended, back at the menu.
         let driving = settings.test_drive.is_some();
@@ -583,6 +679,7 @@ fn session(
     mut next: ResMut<NextState<Screen>>,
     karts: Query<(Entity, &kart::Kart, Option<&Remote>)>,
     (mut lineup, mut told): (Option<ResMut<Lineup>>, ResMut<scene::Told>),
+    mut prediction: ResMut<client::Prediction>,
     mut measured: Local<f32>,
 ) {
     let remotes = || {
@@ -610,9 +707,18 @@ fn session(
                     name: session.name.clone(),
                     password: session.password.clone(),
                     car: session.car.clone(),
+                    back: Some(session.token).filter(|token| *token != 0),
                 }),
             );
         }
+    }
+    // A host that has been reached once and can't be now is dialled again.
+    if role == Role::Client
+        && session.token != 0
+        && let Some(why) = inbox.failed.take()
+    {
+        debug!("the host wasn't reached: {why}");
+        inbox.lost.push(HOST);
     }
     if let Some(why) = inbox.failed.take() {
         warn!("the session is over: {why}");
@@ -626,6 +732,15 @@ fn session(
         return;
     }
     if role == Role::Host {
+        if session.address.is_empty()
+            && let Some(address) = wire.0.address()
+        {
+            info!("hosting {} at {address}", session.title);
+            session.address = address;
+            room.revision += 1;
+        }
+        // To a host, a player heard from no more has gone like any other.
+        inbox.left.append(&mut inbox.lost);
         for (peer, message) in inbox.to_host.drain(..) {
             match message {
                 ToHost::Hello {
@@ -633,12 +748,32 @@ fn session(
                     name,
                     password,
                     car,
+                    back,
                 } => {
+                    let allowed = protocol == lobby_api::PROTOCOL
+                        // The game's lettering is all capitals, so a password can't be
+                        // told from itself in another case, and isn't asked to be.
+                        && password.eq_ignore_ascii_case(&session.password);
+                    // Someone come back before they were heard to have gone, their
+                    // way here having broken at their end alone, has gone from where
+                    // they were.
+                    let stale = session
+                        .members
+                        .iter()
+                        .find(|member| {
+                            allowed && Some(member.token) == back && member.peer != peer
+                        })
+                        .map(|member| member.peer);
+                    if let Some(stale) = stale {
+                        wire.0.close(stale);
+                        depart(session, room, stale);
+                        for (entity, _) in remotes().filter(|(_, remote)| remote.peer == stale) {
+                            commands.entity(entity).remove::<Remote>();
+                        }
+                    }
                     let refusal = if protocol != lobby_api::PROTOCOL {
                         Some(Refusal::Version)
-                    // The game's lettering is all capitals, so a password can't be told
-                    // from itself in another case, and isn't asked to be.
-                    } else if !password.eq_ignore_ascii_case(&session.password) {
+                    } else if !allowed {
                         Some(Refusal::Password)
                     } else if session.members.len() + 1 >= session.most() as usize {
                         Some(Refusal::Full)
@@ -650,30 +785,30 @@ fn session(
                         None => {
                             info!("{name} has joined");
                             let name: String = name.chars().take(lobby_api::MAX_NAME).collect();
+                            // Someone who was here before, and says what they were
+                            // given then, has what they had: their points, and their
+                            // car if the race they left is still on. A name says
+                            // nothing of who someone is, being anyone's to take.
+                            let had = session
+                                .absent
+                                .iter()
+                                .position(|gone| Some(gone.token) == back)
+                                .map(|had| session.absent.remove(had));
+                            let token = had.as_ref().map_or_else(token, |had| had.token);
+                            let points = had.as_ref().map_or(0, |had| had.points);
                             session.members.retain(|member| member.peer != peer);
                             session.members.push(Member {
                                 peer,
                                 name: name.clone(),
                                 car: car.checked(),
                                 loaded: false,
+                                token,
                             });
-                            // Someone who was here before has what they had: their
-                            // points, and their car if the race they left is still on.
-                            let had = session.absent.iter().position(|gone| gone.0 == name);
-                            let points = had.map_or(0, |had| session.absent.remove(had).1);
-                            if let Some(lineup) = &mut lineup {
-                                let here = |seat: &Seat| {
-                                    seat.peer.is_some_and(|sat| {
-                                        sat == HOST
-                                            || session.members.iter().any(|member| {
-                                                member.peer == sat && member.peer != peer
-                                            })
-                                    })
-                                };
-                                if let Some(seat) = lineup.seats.iter_mut().find(|seat| {
-                                    seat.peer.is_some() && seat.name == name && !here(seat)
-                                }) {
-                                    seat.peer = Some(peer);
+                            if let (Some(lineup), Some(had)) = (&mut lineup, &had) {
+                                for seat in &mut lineup.seats {
+                                    if seat.peer == Some(had.peer) {
+                                        seat.peer = Some(peer);
+                                    }
                                 }
                             }
                             room.voters.retain(|voter| voter.peer != peer);
@@ -685,7 +820,11 @@ fn session(
                                 link: None,
                                 points,
                             });
-                            ToPlayer::Welcome { you: peer }
+                            ToPlayer::Welcome {
+                                you: peer,
+                                token,
+                                title: session.title.clone(),
+                            }
                         }
                     };
                     let welcome = matches!(answer, ToPlayer::Welcome { .. });
@@ -797,13 +936,7 @@ fn session(
         }
         for peer in inbox.left.drain(..) {
             info!("player {peer} has gone");
-            session.members.retain(|member| member.peer != peer);
-            session.watching.retain(|watching| *watching != peer);
-            if let Some(voter) = room.voters.iter().find(|voter| voter.peer == peer) {
-                session.absent.retain(|gone| gone.0 != voter.name);
-                session.absent.push((voter.name.clone(), voter.points));
-            }
-            room.voters.retain(|voter| voter.peer != peer);
+            depart(session, room, peer);
             // A car whose player has gone is the computer's to drive.
             for (entity, _) in remotes().filter(|(_, remote)| remote.peer == peer) {
                 commands.entity(entity).remove::<Remote>();
@@ -885,11 +1018,28 @@ fn session(
     } else {
         // What the host said before it went is heard first: it may be why.
         let gone = !std::mem::take(&mut inbox.left).is_empty();
+        let mut lost = !std::mem::take(&mut inbox.lost).is_empty();
+        // A race the host says nothing of for this long is one it can't be heard in.
+        let racing = *screen.get() == Screen::Race && apart.0.is_none();
+        if racing && session.retrying.is_none() && prediction.quiet > SILENT {
+            lost = true;
+        }
         for message in std::mem::take(&mut inbox.to_player) {
             match message {
-                ToPlayer::Welcome { you } => {
+                ToPlayer::Welcome { you, token, title } => {
+                    if session.title.is_empty() {
+                        session.title = title.chars().take(lobby_api::MAX_NAME).collect();
+                    }
                     info!("joined {} as player {you}", session.title);
-                    session.you = you;
+                    (session.you, session.token) = (you, token);
+                    // Back after the way here broke, the host is told afresh what is
+                    // wanted, and a race that was being driven is gone back to.
+                    if let Some(retry) = session.retrying.take() {
+                        (room.sent, room.rode) = (None, Some(session.car.clone()));
+                        if retry.racing {
+                            enter(&mut wire);
+                        }
+                    }
                     room.revision += 1;
                 }
                 ToPlayer::Refused(refusal) => {
@@ -982,7 +1132,40 @@ fn session(
                 }
             }
         }
-        if gone {
+        if lost && !gone {
+            match &mut session.retrying {
+                // An attempt to get through has failed: another is made in a while.
+                Some(retry) => retry.wait = retry.wait.or(Some(REDIAL_EVERY)),
+                // Nothing of a race can be driven or shown without the host, so the
+                // player waits in the room, as one who gave the race up does.
+                None => {
+                    info!("the host is heard from no more, and is dialled again");
+                    let racing = *screen.get() != Screen::Menu && apart.0.is_none();
+                    session.retrying = Some(Retry {
+                        left: REDIAL_FOR,
+                        wait: Some(0.0),
+                        racing,
+                    });
+                    prediction.quiet = 0.0;
+                    if racing {
+                        next.set(Screen::Menu);
+                    }
+                    room.revision += 1;
+                }
+            }
+        }
+        let mut given_up = gone;
+        if let Some(retry) = &mut session.retrying {
+            retry.left -= time.delta_secs();
+            retry.wait = retry.wait.map(|wait| wait - time.delta_secs());
+            if retry.left <= 0.0 {
+                given_up = true;
+            } else if retry.wait.is_some_and(|wait| wait <= 0.0) {
+                retry.wait = None;
+                given_up = !wire.0.redial();
+            }
+        }
+        if given_up {
             leave(
                 &mut commands,
                 session,
@@ -1014,7 +1197,9 @@ fn session(
 
 /// `BRICK_NET=host` (or `host:3`, for three players) hosts a session and starts its
 /// race, by the host's own settings and without a vote, once that many are in it;
-/// `BRICK_NET=join:<title>` joins the session of that title once the lobby lists it.
+/// `BRICK_NET=join:<title>` joins the session of that title once the lobby lists it,
+/// and `BRICK_NET=dial:<address>` the one hosted at that address, which its host's
+/// log says, without the lobby.
 /// `BRICK_SESSION` is the title hosted under, `BRICK_NAME` the player's name,
 /// `BRICK_CAR` who they race as and `BRICK_PASSWORD` the password set or given.
 #[derive(Resource)]
@@ -1026,6 +1211,11 @@ pub enum Auto {
     Join {
         title: String,
         asked: f32,
+        dialled: bool,
+    },
+    /// `BRICK_NET=dial:<address>`: the session at that address, without the lobby.
+    Dial {
+        address: String,
         dialled: bool,
     },
 }
@@ -1041,6 +1231,10 @@ impl Auto {
             ("join", title) => Some(Auto::Join {
                 title: title.to_string(),
                 asked: 0.0,
+                dialled: false,
+            }),
+            ("dial", address) => Some(Auto::Dial {
+                address: address.to_string(),
                 dialled: false,
             }),
             _ => None,
@@ -1103,6 +1297,22 @@ fn auto(
                     &circuits,
                     &mut next,
                 );
+            }
+        }
+        Auto::Dial { address, dialled } => {
+            if !std::mem::replace(dialled, true) {
+                match addressed(address) {
+                    Some(listed) => join_session(
+                        &mut commands,
+                        &mut session,
+                        &settings,
+                        &circuits,
+                        &listed,
+                        &var("BRICK_PASSWORD", ""),
+                        garage.ride(&settings),
+                    ),
+                    None => warn!("{address} is no host's address"),
+                }
             }
         }
         Auto::Join {
@@ -1278,6 +1488,9 @@ pub fn plugin(app: &mut App) {
                     kart::kart_collisions,
                     modes::battle,
                     modes::tag,
+                    modes::infection,
+                    modes::keep_away,
+                    modes::hill,
                     kart::update_places,
                     rules::elimination,
                     items::pickups,

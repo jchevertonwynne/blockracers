@@ -9,18 +9,24 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
-use super::protocol::{Drive, Peer, SNAPSHOT_EVERY, Snapshot, Stage, Tick, ToPlayer, encode};
+use super::protocol::{
+    DATAGRAM, Drive, Peer, SNAPSHOT_EVERY, Snapshot, Stage, Tick, ToPlayer, encode,
+};
 use super::room::Finish;
-use super::state::{Standing, State};
+use super::state::{Sight, State};
 use super::{Clock, Inbox, Session, Wire};
 use crate::kart::{Controls, Kart, Player};
 use crate::menu::Screen;
-use crate::replay::Pose;
 use crate::{Phase, Race};
 
 /// A player's steps are kept waiting no deeper than this; a game that has got ahead
 /// of the host has its oldest dropped.
 const QUEUE: usize = 4;
+/// A player whose steps have stopped coming is driven as they last pressed for this
+/// many steps, and by the computer from then until one comes: half a second, which
+/// is more than a poor connection loses at once and less than a car takes to be
+/// driven off the road.
+const STALLED: u32 = 30;
 /// How long the start waits for a player's game to load the circuit.
 const LOAD_WAIT: f32 = 20.0;
 /// How long the cars still out are given once the first player is home, as the
@@ -38,6 +44,8 @@ pub struct Remote {
     newest: Option<Tick>,
     /// The last of the player's steps the car has been driven by.
     used: Tick,
+    /// How many steps running have had none of the player's to drive it by.
+    starved: u32,
 }
 
 impl Remote {
@@ -47,7 +55,14 @@ impl Remote {
             queue: VecDeque::new(),
             newest: None,
             used: 0,
+            starved: 0,
         }
+    }
+
+    /// Nothing has been heard of the player's pressing for too long, and the car
+    /// is the computer's to drive until something is.
+    pub fn stalled(&self) -> bool {
+        self.starved >= STALLED
     }
 
     /// Takes in what a player's game says it pressed, less what was heard before.
@@ -94,12 +109,20 @@ pub fn receive(mut inbox: ResMut<Inbox>, mut remotes: Query<&mut Remote>) {
 }
 
 /// Sets each player's car to what they pressed in the next of their steps. A step
-/// that hasn't come is driven as the last was, with no button newly pressed.
-pub fn drive_remotes(mut remotes: Query<(&Kart, &mut Remote, &mut Controls)>) {
+/// that hasn't come is driven as the last was, with no button newly pressed; when
+/// none has come for a while (`Remote::stalled`) the computer drives, as
+/// `kart::ai_drive` has just set the car to be.
+pub fn drive_remotes(
+    race: Res<Race>,
+    mut remotes: Query<(&Kart, &mut Remote, &mut Controls)>,
+) {
     for (kart, mut remote, mut c) in &mut remotes {
         let next = remote.queue.pop_front();
-        if let Some((tick, _)) = next {
-            remote.used = tick;
+        match next {
+            Some((tick, _)) => (remote.used, remote.starved) = (tick, 0),
+            // Nobody is waited for to press anything before the race is on.
+            None if race.phase == Phase::Racing => remote.starved += 1,
+            None => {}
         }
         // Its race run, the car is the computer's to drive.
         if kart.finished.is_some() || kart.out.is_some() {
@@ -107,6 +130,7 @@ pub fn drive_remotes(mut remotes: Query<(&Kart, &mut Remote, &mut Controls)>) {
         }
         match next {
             Some((_, drive)) => *c = drive.controls(),
+            None if remote.stalled() => {}
             None => (c.use_item, c.start_boost) = (false, None),
         }
     }
@@ -272,10 +296,7 @@ pub fn send(
         Phase::Countdown => Stage::Countdown,
         Phase::Racing | Phase::Finished => Stage::Racing,
     };
-    let all: Vec<(u8, Pose, Standing)> = karts
-        .iter()
-        .map(|(k, _)| (k.slot as u8, Pose::of(k), Standing::of(k)))
-        .collect();
+    let all: Vec<Sight> = karts.iter().map(|(k, _)| Sight::of(k)).collect();
     for (kart, remote) in &karts {
         let Some(remote) = remote else { continue };
         let snapshot = Snapshot {
@@ -286,7 +307,9 @@ pub fn send(
             own: Some(State::of(kart)),
             karts: all.clone(),
         };
-        wire.0.datagram(remote.peer, encode(&snapshot));
+        let snapshot = encode(&snapshot);
+        debug_assert!(snapshot.len() <= DATAGRAM, "a snapshot of {}", snapshot.len());
+        wire.0.datagram(remote.peer, snapshot);
     }
     // Those watching are told of every car and of none in particular.
     for &peer in &session.watching {

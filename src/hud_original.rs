@@ -121,6 +121,9 @@ pub struct Art {
     white: Handle<Image>,
     /// The player's mark on the map, pointing right.
     arrow: Handle<Image>,
+    /// The marks of the car that is "it" in a game of tag, which are red: another
+    /// racer's, and the player's own. The port's own.
+    it: [Handle<Image>; 2],
 }
 
 /// What the display remembers from frame to frame.
@@ -282,7 +285,11 @@ pub fn load(
         &mut images,
     )
     .0;
-    let arrow = image(arrow(), &mut images).0;
+    let it = [
+        image(mark([255, 64, 51]), &mut images).0,
+        image(arrow([255, 64, 51]), &mut images).0,
+    ];
+    let arrow = image(arrow([0, 255, 0]), &mut images).0;
     commands.insert_resource(Art {
         faces,
         strings,
@@ -291,6 +298,7 @@ pub fn load(
         turning,
         white,
         arrow,
+        it,
     });
 }
 
@@ -465,9 +473,30 @@ fn pane(map: &Pixels, range: Vec2, own: Vec2, per_unit: f32, turn: Rot2, mirror:
     rgba
 }
 
+/// A racer's mark on the map in a colour of the port's choosing: a disc of it
+/// inside a black one, the size of the game's own marks.
+fn mark(colour: [u8; 3]) -> Pixels {
+    const SIZE: usize = 64;
+    let mut rgba = vec![0; SIZE * SIZE * 4];
+    for (i, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let at = (Vec2::new((i % SIZE) as f32, (i / SIZE) as f32) + 0.5) / SIZE as f32 - 0.5;
+        if at.length() <= 0.3 {
+            pixel.copy_from_slice(&[colour[0], colour[1], colour[2], 255]);
+        } else if at.length() <= 0.4 {
+            pixel.copy_from_slice(&[0, 0, 0, 255]);
+        }
+    }
+    Pixels {
+        width: SIZE as u32,
+        height: SIZE as u32,
+        rgba,
+    }
+}
+
 /// The arrow `RaceHud::DrawMapArrow` draws for the player: a green triangle inside a
-/// black one, here pointing right and drawn large so that it turns smoothly.
-fn arrow() -> Pixels {
+/// black one, here pointing right and drawn large so that it turns smoothly; and in
+/// another colour for the port's own use.
+fn arrow(colour: [u8; 3]) -> Pixels {
     const SIZE: usize = 96;
     let per_unit = SIZE as f32 / ARROW_SPAN;
     // Tip ahead of the middle, base behind it, and half the base's width.
@@ -480,7 +509,7 @@ fn arrow() -> Pixels {
         let at =
             (Vec2::new((i % SIZE) as f32, (i / SIZE) as f32) + 0.5) / per_unit - ARROW_SPAN / 2.0;
         if inside(at, [8.0, 5.0, 4.0]) {
-            pixel.copy_from_slice(&[0, 255, 0, 255]);
+            pixel.copy_from_slice(&[colour[0], colour[1], colour[2], 255]);
         } else if inside(at, [9.5, 6.5, 5.5]) {
             pixel.copy_from_slice(&[0, 0, 0, 255]);
         }
@@ -754,7 +783,9 @@ pub fn draw(
             .filter(|at| at.cmpge(Vec2::ZERO).all() && at.cmple(screen).all());
         // The car that is "it" and out of the picture is said at the edge of the
         // screen nearest to where it is.
-        let aside = (kart.it && seen.is_none()).then(|| beside(eye, above, screen));
+        // In infection that is news only to a car that isn't.
+        let pointed = kart.it && !(player.it && settings.mode == crate::menu::Mode::Infection);
+        let aside = (pointed && seen.is_none()).then(|| beside(eye, above, screen));
         let Some(at) = seen.or(aside) else {
             continue;
         };
@@ -765,8 +796,8 @@ pub fn draw(
         let person = people.contains(&kart.slot);
         let lives = kart.stake as u32;
         let (words, colour) = match (kart.it, battle, person) {
-            (true, _, true) => (format!("{} IS IT", kart.name), IT),
-            (true, _, false) => ("IT".to_string(), IT),
+            (true, _, true) => (format!("{} {}", kart.name, crate::net::modes::said(settings.mode)), IT),
+            (true, _, false) => (crate::net::modes::called(settings.mode).to_string(), IT),
             (false, true, true) => (format!("{} {lives}", kart.name), Color::WHITE),
             (false, true, false) => (lives.to_string(), Color::WHITE),
             (false, false, _) => (kart.name.to_string(), Color::WHITE),
@@ -1015,10 +1046,19 @@ pub fn draw(
             }
             // The marker picture holds four; the first is the one for other racers.
             if let Some((handle, _)) = art.pictures[10].clone() {
-                for (kart, _) in karts.iter().filter(|k| !k.1 && k.0.out.is_none()) {
-                    let rect = Some(Rect::new(0.0, 0.0, MARKER, MARKER));
+                let mut others: Vec<_> =
+                    karts.iter().filter(|k| !k.1 && k.0.out.is_none()).collect();
+                // The car that is "it" in a game of tag is marked in red, over the
+                // marks of any cars it is among.
+                others.sort_by_key(|k| k.0.it);
+                for (kart, _) in others {
+                    let (image, rect) = if kart.it {
+                        (art.it[0].clone(), None)
+                    } else {
+                        (handle.clone(), Some(Rect::new(0.0, 0.0, MARKER, MARKER)))
+                    };
                     let node = ImageNode {
-                        image: handle.clone(),
+                        image,
                         rect,
                         image_mode: NodeImageMode::Stretch,
                         ..default()
@@ -1062,7 +1102,11 @@ pub fn draw(
                 ..UiTransform::IDENTITY
             };
             let node = ImageNode {
-                image: art.arrow.clone(),
+                image: if player.it {
+                    art.it[1].clone()
+                } else {
+                    art.arrow.clone()
+                },
                 image_mode: NodeImageMode::Stretch,
                 ..default()
             };

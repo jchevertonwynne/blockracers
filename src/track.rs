@@ -651,6 +651,18 @@ fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
 }
 
 impl Track {
+    /// The hill of king of the hill (`net::modes::hill`): the middle of the highest
+    /// of the line, which in an arena is the top of its high ground.
+    pub fn hill(&self) -> Vec3 {
+        let top = self.pts.iter().map(|at| at.y).fold(f32::MIN, f32::max);
+        let high: Vec<Vec3> = self.pts.iter().copied().filter(|at| at.y > top - 0.5).collect();
+        let middle = high.iter().sum::<Vec3>() / high.len().max(1) as f32;
+        let nearest = high
+            .iter()
+            .min_by(|a, b| a.distance(middle).total_cmp(&b.distance(middle)));
+        nearest.copied().unwrap_or_default()
+    }
+
     /// The built-in brick circuit.
     #[cfg(test)]
     pub fn new() -> Self {

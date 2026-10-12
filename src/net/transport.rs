@@ -9,15 +9,22 @@
 //! with its length before it) and both send datagrams for what needn't. iroh wants
 //! an async runtime and the game hasn't one, so all of this runs on `runtime`'s
 //! threads and talks to the game through channels.
+//!
+//! A host that leaves closes its connections and is heard to have `Left`; one that
+//! is only heard from no more is `Lost`, and its player's game dials it again
+//! (`Link::redial`).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
+use iroh::endpoint::{
+    Connection, ConnectionError, RecvStream, SendDatagramError, SendStream, presets,
+};
 use iroh::{Endpoint, EndpointId};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -72,6 +79,8 @@ fn quality(connection: &Connection) -> Option<Quality> {
 }
 
 pub struct Transport {
+    /// The host this end dials, if it is a player's.
+    dial: Option<String>,
     out: UnboundedSender<Out>,
     events: Mutex<Receiver<Event>>,
     /// What other games dial to reach this one, once it is known.
@@ -93,6 +102,7 @@ impl Transport {
     fn start(dial: Option<String>) -> Self {
         let (out, outgoing) = unbounded_channel();
         let (tell, events) = channel();
+        let dialled = dial.clone();
         let address = Arc::new(OnceLock::new());
         let known = address.clone();
         let measured = Measured::default();
@@ -107,6 +117,7 @@ impl Transport {
             }
         });
         Transport {
+            dial: dialled,
             out,
             events: Mutex::new(events),
             address,
@@ -138,6 +149,32 @@ impl Link for Transport {
 
     fn close(&mut self, peer: Peer) {
         let _ = self.out.send(Out::Close(peer));
+    }
+
+    fn redial(&mut self) -> bool {
+        let Some(host) = self.dial.clone() else {
+            return false;
+        };
+        // Letting go of the old end closes what is left of its connection.
+        *self = Self::start(Some(host));
+        true
+    }
+}
+
+/// Whether a game could be dialled at this: it is the key of an endpoint.
+pub fn dialled(address: &str) -> bool {
+    address.parse::<EndpointId>().is_ok()
+}
+
+/// Sends a datagram. One sent while the way is blocked is one lost, and so is one
+/// too big to send, which is said, once: every one like it will be lost too.
+fn datagram(connection: &Connection, bytes: Vec<u8>) {
+    static SAID: AtomicBool = AtomicBool::new(false);
+    let length = bytes.len();
+    if let Err(SendDatagramError::TooLarge) = connection.send_datagram(Bytes::from(bytes))
+        && !SAID.swap(true, Ordering::Relaxed)
+    {
+        bevy::log::warn!("a datagram of {length} bytes is too big to send");
     }
 }
 
@@ -224,8 +261,7 @@ async fn join(
         while let Some(out) = outgoing.recv().await {
             match out {
                 Out::Message(_, bytes) => drop(messages.send(bytes)),
-                // One too big to send, or sent while the way is blocked, is one lost.
-                Out::Datagram(_, bytes) => drop(connection.send_datagram(Bytes::from(bytes))),
+                Out::Datagram(_, bytes) => datagram(&connection, bytes),
                 Out::Close(_) => {}
             }
         }
@@ -241,7 +277,15 @@ async fn join(
     tokio::select! {
         // The game has let go of its end.
         _ = writing => {}
-        _ = reading => drop(tell.send(Event::Left(HOST))),
+        // A host that goes says so as it closes; one that is only heard from no
+        // more may be there yet, to be dialled again.
+        _ = reading => {
+            let said = matches!(
+                connection.close_reason(),
+                Some(ConnectionError::ApplicationClosed(_))
+            );
+            drop(tell.send(if said { Event::Left(HOST) } else { Event::Lost(HOST) }))
+        }
         _ = measuring => {}
     }
     connection.close(0u32.into(), b"left");
@@ -304,11 +348,11 @@ async fn host(
                 Out::Message(peer, bytes) => {
                     drop(players.get(&peer).map(|(_, messages)| messages.send(bytes)))
                 }
-                Out::Datagram(peer, bytes) => drop(
-                    players
-                        .get(&peer)
-                        .map(|(connection, _)| connection.send_datagram(Bytes::from(bytes))),
-                ),
+                Out::Datagram(peer, bytes) => {
+                    if let Some((connection, _)) = players.get(&peer) {
+                        datagram(connection, bytes)
+                    }
+                }
                 // Forgotten, the player's stream ends once what is waiting to go
                 // down it has gone, and their game closes the rest.
                 Out::Close(peer) => drop(players.remove(&peer)),
@@ -411,7 +455,7 @@ mod tests {
         // Datagrams may be lost, so a few are sent each way; a snapshot's worth fits.
         for _ in 0..20 {
             player.datagram(HOST, vec![7; 60]);
-            host.datagram(peer, vec![8; 1000]);
+            host.datagram(peer, vec![8; crate::net::protocol::DATAGRAM]);
         }
         assert_eq!(
             wait_for(&mut host, "a datagram", |e| matches!(
@@ -425,7 +469,7 @@ mod tests {
                 e,
                 Event::Datagram(..)
             )),
-            Event::Datagram(HOST, vec![8; 1000])
+            Event::Datagram(HOST, vec![8; crate::net::protocol::DATAGRAM])
         );
 
         // A player who goes is heard to have gone.

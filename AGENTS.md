@@ -273,9 +273,22 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   one, the last car left wins) and a game of tag (one clock runs down whoever is "it", with a few seconds at the least for a car just caught,
   which a bump passes on; the car that is "it" when it runs out is out, the clock
   is put back, to thirty seconds and five more for each car over two left, and another drawn, and the last car left wins; the car that is "it"
-  is drawn again in red through whatever hides it, `modes::glow`, and the display
-  says where it is at the edge of the screen while it is out of the picture). The host's "rules" page
-  has rows only a battle or a game of tag has (`menu::Extra::of`): a battle's
+  is drawn again in red through whatever hides it, `modes::glow`, the display
+  says where it is at the edge of the screen while it is out of the picture, and
+  its mark on the map is red, over the others', the player's own arrow too), and
+  three that come of tag, in which nobody goes out: infection (every car a car that
+  is "it" bumps is "it" too, after a three-second start; a car that is "it" is
+  no quicker than the rest; `Kart::stake` is how long a car went uncaught and the last
+  one uncaught wins), keep-away (the car that is "it" has the flag until another
+  bumps it; `stake` is how long each has held it) and king of the hill (a car
+  alone on the hill, `Track::hill`, the middle of the highest of the arena's line
+  with `modes::beacon` standing on it, is "it"; `stake` is how long each has been).
+  The last two are won by the first to the host's "first to" (`Settings::goal`) or
+  by whoever has most when the time limit is up. The computer's cars go after
+  whoever the game says (`kart::ai_drive`'s `wanted`), a king stops where it
+  is, and in infection a car not yet caught runs from those that are when they
+  are near (`FLEE_FROM`), by whichever open way leads farthest from them. The host's "rules" page
+  has rows only these games have (`menu::Extra::of`): a battle's
   lives, time limit and how long a car that has lost a life is spared, and a game
   of tag's least on the clock for a car just caught and how long it can't catch
   back; they are kept with the settings and go with the rules. What a car has
@@ -290,6 +303,19 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   only the host has is there by name (`Circuits::promise`) until a start brings
   it. The drop-in and the countdown wait for every player's game to say it has
   the race loaded (`ToHost::Loaded`, `host`'s `LOAD_WAIT` at the longest).
+  A player the host welcomes is given a token (`ToPlayer::Welcome`), and it is
+  by that, never by their name, that one who comes back is given their points
+  and their car again (`Session::absent`). A player's game whose way to the host
+  breaks, or whose race goes silent for five seconds, waits in the room and dials
+  again for half a minute (`Link::redial`, `net::Retry`), then goes back to the
+  race it was in; a host that leaves says so, and is not dialled again. A player
+  whose pressing stops arriving for half a second is driven by the computer
+  until it arrives (`Remote::stalled`). A session can be joined without the
+  lobby by its host's address, which the host's "session" page copies and the
+  join page's "enter a code" pastes (`net::addressed`). The cars a game only
+  looks at go as `state::Sight`, packed so that a full grid's `Snapshot` fits a
+  datagram (`protocol::DATAGRAM`; a test says so), and their lap times go with
+  the scene when they change.
   The garage's test drive, taken from a session's room, is driven alone as it
   is offline (`net::Apart` keeps the session while `Role` says offline); a
   host's start fetches a player from it, and a host on it starts nothing.
@@ -376,7 +402,8 @@ menu instead. These combine with it:
 | `BRICK_SOUND=1` | let the demo be heard (see below) |
 | `BRICK_NET=host:2` | host a session and start its race, without a vote, once that many players are in it (the host is one); `host:9` never fills, and leaves the session in its room |
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
-| `BRICK_MODE=battle\|tag\|elimination` | how the race a demo hosts is won (`BRICK_NET=host:1` hosts one against the computer's cars alone) |
+| `BRICK_NET=dial:<address>` | join the session hosted at that address, which its host's log says ("hosting Demo at ..."), without the lobby |
+| `BRICK_MODE=battle\|tag\|elimination\|infection\|keepaway\|hill` | how the race a demo hosts is won (`BRICK_NET=host:1` hosts one against the computer's cars alone) |
 | `BRICK_SESSION`, `BRICK_NAME`, `BRICK_CAR`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, who they race as (a code from `roster::NAMES`, such as `PH`, or a number for that one of the garage's racers), the password set or given |
 | `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
 | `RUST_LOG=blockracers::hazards=debug` | per-module logging |

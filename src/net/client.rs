@@ -47,6 +47,8 @@ pub struct Prediction {
     sent: VecDeque<(Tick, Drive)>,
     /// The host's step last heard from.
     latest: Option<Tick>,
+    /// How long it is since anything was, in seconds, once something has been.
+    pub quiet: f32,
     /// Where each car has been said to be, by grid slot, oldest first.
     seen: [VecDeque<(Tick, Pose)>; 6],
     /// The host's step the other cars are being shown at.
@@ -114,14 +116,19 @@ pub fn receive(
     heard.retain(|snapshot| p.latest.is_none_or(|latest| snapshot.tick > latest));
     heard.sort_by_key(|snapshot| snapshot.tick);
     for snapshot in &heard {
-        for (slot, pose, _) in &snapshot.karts {
-            if let Some(seen) = p.seen.get_mut(*slot as usize) {
-                seen.push_back((snapshot.tick, *pose));
+        for sight in &snapshot.karts {
+            if let Some(seen) = p.seen.get_mut(sight.slot as usize) {
+                seen.push_back((snapshot.tick, sight.pose()));
             }
         }
     }
-    let Some(snapshot) = heard.pop() else { return };
-    p.latest = Some(snapshot.tick);
+    let Some(snapshot) = heard.pop() else {
+        if p.latest.is_some() {
+            p.quiet += dt;
+        }
+        return;
+    };
+    (p.latest, p.quiet) = (Some(snapshot.tick), 0.0);
     [race.intro, race.countdown, race.time] = snapshot.clocks;
     race.phase = match snapshot.stage {
         Stage::Intro => Phase::Intro,
@@ -140,17 +147,15 @@ pub fn receive(
         let standing: Option<Standing> = snapshot
             .karts
             .iter()
-            .find(|k| k.0 as usize == kart.slot)
-            .map(|k| k.2);
+            .find(|sight| sight.slot as usize == kart.slot)
+            .map(|sight| sight.standing());
         if !own || shown {
             if let Some(standing) = standing {
                 standing.put(&mut kart);
             }
         } else if let Some(state) = &snapshot.own {
             kart.place = standing.map_or(kart.place, |standing| standing.place as usize);
-            // Its laps are timed by the host, whose clock the race is run on.
-            kart.laps = standing.map_or(kart.laps, |standing| standing.laps);
-            // So is what it has left of a battle or a game of tag.
+            // What it has left of a battle or a game of tag is the host's to say.
             (kart.stake, kart.it) =
                 standing.map_or((kart.stake, kart.it), |standing| (standing.stake, standing.it));
             // A white brick taken sounds as it does where the race is run, a note

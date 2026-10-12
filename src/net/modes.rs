@@ -1,5 +1,6 @@
-//! Two ways of racing online that laps don't end: a battle and a game of tag. The
-//! port's own, and the host's to choose (`menu::Mode`, in `protocol::Rules`).
+//! The ways of racing online that laps don't end: a battle, a game of tag, and three
+//! that come of tag, infection, keep-away and king of the hill. The port's own, and
+//! the host's to choose (`menu::Mode`, in `protocol::Rules`).
 //!
 //! In a battle every car has a few lives. Anything that spins a car round or
 //! blows it into the air takes one (`Kart::hits`), and for a moment after nothing
@@ -23,8 +24,26 @@
 //! stands between (`glow`), and the display says where it is while it is out of
 //! the picture (`hud_original`).
 //!
-//! Both are run on the host, as the rest of the race is, and what each car has left
-//! (`Kart::stake`, `Kart::it`) goes to the players with its `state::Standing`.
+//! In infection a car that is "it" stays so, and so does every car one of them
+//! bumps: the drawn car has the whole field to catch, and is no quicker than the
+//! rest, so that it catches by cornering. A car's `stake` is how long it has gone uncaught, and the
+//! game is over when one car is left that hasn't been, or its time is up; the
+//! cars come in the order of how long they lasted.
+//!
+//! In keep-away one car, drawn at the start, has the flag (it is "it"), and has
+//! it until another bumps it, which has it then and can't lose it straight back
+//! for a moment (`Settings::tag_back`). A car's `stake` is how long it has held
+//! the flag in all; the first to have held it as long as the host says
+//! (`Settings::goal`) wins, or whoever has held it longest when the time is up.
+//!
+//! In king of the hill the hill is the highest of the arena's line
+//! (`Track::hill`), marked by a beacon (`beacon`). A car on it alone is its king
+//! (it is "it"), and its `stake` is how long it has been; with two cars on it
+//! nobody is. It is won as keep-away is.
+//!
+//! In all three nobody goes out. All are run on the host, as the rest of the race
+//! is, and what each car has (`Kart::stake`, `Kart::it`) goes to the players with
+//! its `state::Standing`.
 
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::mesh::skinning::SkinnedMesh;
@@ -229,19 +248,257 @@ pub fn tag(
     }
 }
 
+/// The cars that bumped a car that is "it" this step, and are still in the game.
+fn bumped(karts: &Query<&mut Kart>, bumps: &Bumps) -> Vec<usize> {
+    let is = |slot: usize, it: bool| {
+        karts
+            .iter()
+            .any(|kart| kart.slot == slot && kart.it == it && playing(kart))
+    };
+    let met = bumps.0.iter().flat_map(|&(a, b)| [(a, b), (b, a)]);
+    met.filter(|&(it, other)| is(it, true) && is(other, false))
+        .map(|(_, other)| other)
+        .collect()
+}
+
+/// How long the cars of a game of infection have to get away from the one drawn,
+/// which catches nobody until then: they start side by side.
+const HEAD_START: f32 = 3.0;
+
+/// Infection: every car a car that is "it" bumps is "it" from then on, and the
+/// last car that isn't has won.
+pub fn infection(
+    time: Res<Time>,
+    race: Res<Race>,
+    settings: Res<Settings>,
+    bumps: Res<Bumps>,
+    mut play: ResMut<Play>,
+    mut dice: ResMut<Rng>,
+    mut karts: Query<&mut Kart>,
+) {
+    if settings.mode != Mode::Infection {
+        return;
+    }
+    if !play.begun {
+        play.begun = true;
+        for mut kart in &mut karts {
+            (kart.stake, kart.it) = (0.0, false);
+        }
+        draw(&mut karts, &mut dice);
+        play.held = HEAD_START;
+    }
+    if !on(&race) || !karts.iter().any(|kart| playing(kart)) {
+        return;
+    }
+    let dt = time.delta_secs();
+    play.held = (play.held - dt).max(0.0);
+    let caught = if play.held > 0.0 {
+        Vec::new()
+    } else {
+        bumped(&karts, &bumps)
+    };
+    for mut kart in karts.iter_mut().filter(|kart| caught.contains(&kart.slot)) {
+        debug!("{} is caught at {:.1}s", kart.name, race.time);
+        // The driver caught starts at it.
+        (kart.it, kart.cues.hit) = (true, true);
+    }
+    for mut kart in karts.iter_mut().filter(|kart| playing(kart) && !kart.it) {
+        kart.stake += dt;
+    }
+    let free = karts.iter().filter(|kart| playing(kart) && !kart.it).count();
+    if free <= 1 || race.time >= settings.battle_time() {
+        end(karts.iter_mut(), race.time);
+    }
+}
+
+/// The game is whoever's has most of what it counts, once someone has all it
+/// takes or its time is up.
+fn scored(karts: &mut Query<&mut Kart>, settings: &Settings, time: f32) {
+    let won = karts
+        .iter()
+        .any(|kart| playing(kart) && kart.stake >= settings.goal());
+    if won || time >= settings.battle_time() {
+        for mut kart in karts.iter_mut() {
+            kart.it = false;
+        }
+        end(karts.iter_mut(), time);
+    }
+}
+
+/// Keep-away: the car with the flag has it until another bumps it, and whoever
+/// has held it longest wins.
+pub fn keep_away(
+    time: Res<Time>,
+    race: Res<Race>,
+    settings: Res<Settings>,
+    bumps: Res<Bumps>,
+    mut play: ResMut<Play>,
+    mut dice: ResMut<Rng>,
+    mut karts: Query<&mut Kart>,
+) {
+    if settings.mode != Mode::KeepAway {
+        return;
+    }
+    if !play.begun {
+        play.begun = true;
+        for mut kart in &mut karts {
+            (kart.stake, kart.it) = (0.0, false);
+        }
+        draw(&mut karts, &mut dice);
+    }
+    if !on(&race) || !karts.iter().any(|kart| playing(kart)) {
+        return;
+    }
+    let dt = time.delta_secs();
+    play.held = (play.held - dt).max(0.0);
+    let taker = bumped(&karts, &bumps).first().copied().filter(|_| play.held <= 0.0);
+    if let Some(taker) = taker {
+        play.held = settings.tag_back();
+        for mut kart in &mut karts {
+            // The driver it is taken from starts at it.
+            kart.cues.hit |= kart.it;
+            kart.it = kart.slot == taker;
+        }
+    }
+    for mut kart in karts.iter_mut().filter(|kart| kart.it) {
+        kart.stake += dt;
+    }
+    scored(&mut karts, &settings, race.time);
+}
+
+/// How far from the middle of the hill a car is on it, and how far above or below.
+pub const HILL_REACH: f32 = 7.0;
+const HILL_LEVEL: f32 = 2.5;
+
+/// King of the hill: a car alone on the hill is its king, and whoever has been
+/// king longest wins.
+pub fn hill(
+    time: Res<Time>,
+    race: Res<Race>,
+    settings: Res<Settings>,
+    track: Res<crate::track::Track>,
+    mut play: ResMut<Play>,
+    mut karts: Query<&mut Kart>,
+) {
+    if settings.mode != Mode::Hill {
+        return;
+    }
+    if !play.begun {
+        play.begun = true;
+        for mut kart in &mut karts {
+            (kart.stake, kart.it) = (0.0, false);
+        }
+    }
+    if !on(&race) || !karts.iter().any(|kart| playing(kart)) {
+        return;
+    }
+    let top = track.hill();
+    let on_it = |kart: &Kart| {
+        let from = kart.pos - top;
+        playing(kart) && from.with_y(0.0).length() < HILL_REACH && from.y.abs() < HILL_LEVEL
+    };
+    let alone = karts.iter().filter(|kart| on_it(kart)).count() == 1;
+    let dt = time.delta_secs();
+    for mut kart in &mut karts {
+        let king = alone && on_it(&kart);
+        if kart.it != king {
+            kart.it = king;
+        }
+        if king {
+            kart.stake += dt;
+        }
+    }
+    scored(&mut karts, &settings, race.time);
+}
+
 /// What the display counts for a car where a race counts its laps: the word for it
-/// and how many, if the race is a battle or a game of tag.
+/// and how many, if the race is one that laps don't end.
 pub fn left(settings: &Settings, kart: &Kart) -> Option<(&'static str, String)> {
+    let whole = || (kart.stake as u32).to_string();
     match settings.mode {
-        Mode::Battle => Some(("LIVES", (kart.stake as u32).to_string())),
+        Mode::Battle => Some(("LIVES", whole())),
         Mode::Tag if kart.it => Some(("IT", (kart.stake.ceil() as u32).to_string())),
         Mode::Tag => Some(("SAFE", (kart.stake.ceil() as u32).to_string())),
+        Mode::Infection if kart.it => Some(("IT", whole())),
+        Mode::Infection => Some(("SAFE", whole())),
+        Mode::KeepAway if kart.it => Some(("FLAG", whole())),
+        Mode::KeepAway => Some(("HELD", whole())),
+        Mode::Hill if kart.it => Some(("KING", whole())),
+        Mode::Hill => Some(("HILL", whole())),
         Mode::Race | Mode::Elimination => None,
     }
 }
 
-/// The car that is "it" is quicker than the rest. Run on every game alike, so that a
-/// player's game drives their own car as the host does.
+/// What a car that is "it" is called over it and at the edge of the screen: the
+/// car to keep away from, the one to go after, or the one to push off the hill.
+pub fn called(mode: Mode) -> &'static str {
+    match mode {
+        Mode::KeepAway => "FLAG",
+        Mode::Hill => "KING",
+        _ => "IT",
+    }
+}
+
+/// And what is said of a player who is, after their name.
+pub fn said(mode: Mode) -> &'static str {
+    match mode {
+        Mode::KeepAway => "HAS THE FLAG",
+        Mode::Hill => "IS KING",
+        _ => "IS IT",
+    }
+}
+
+/// The hill's beacon, and the ring round the hill at its foot.
+#[derive(Component)]
+pub struct Beacon;
+
+/// How high the beacon stands, how wide it is, and its colour.
+const BEACON: (f32, f32) = (30.0, 0.6);
+const BEACON_COLOUR: Color = Color::srgba(1.0, 0.85, 0.1, 0.45);
+
+/// In king of the hill the hill has a beacon standing on it, to be seen from all
+/// over the arena, and a ring round it as far out as a car is on it.
+pub fn beacon(
+    mut commands: Commands,
+    settings: Res<Settings>,
+    track: Res<crate::track::Track>,
+    beacons: Query<(), With<Beacon>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if settings.mode != Mode::Hill || !beacons.is_empty() {
+        return;
+    }
+    let material = materials.add(StandardMaterial {
+        base_color: BEACON_COLOUR,
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    let top = track.hill();
+    let scoped = || DespawnOnExit(crate::menu::Screen::Race);
+    commands.spawn((
+        Beacon,
+        Mesh3d(meshes.add(Cylinder::new(BEACON.1, BEACON.0))),
+        MeshMaterial3d(material.clone()),
+        Transform::from_translation(top + Vec3::Y * BEACON.0 / 2.0),
+        bevy::light::NotShadowCaster,
+        scoped(),
+    ));
+    commands.spawn((
+        Beacon,
+        Mesh3d(meshes.add(Torus::new(HILL_REACH - 0.3, HILL_REACH))),
+        MeshMaterial3d(material),
+        Transform::from_translation(top + Vec3::Y * 0.15).with_scale(Vec3::new(1.0, 0.3, 1.0)),
+        bevy::light::NotShadowCaster,
+        scoped(),
+    ));
+}
+
+/// In a game of tag the car that is "it" is quicker than the rest. In infection it
+/// is not: a car is caught by being cornered. Run on every game alike, so that a player's game drives their own car as the
+/// host does.
 pub fn pace(settings: Res<Settings>, mut karts: Query<&mut Kart>) {
     if settings.mode != Mode::Tag {
         return;
@@ -297,9 +554,9 @@ const GLOW: Color = Color::srgb(1.0, 0.1, 0.05);
 const GLOW_LIGHT: (f32, f32) = (0.45, 0.85);
 const GLOW_RATE: f32 = 6.0;
 
-/// In a game of tag the car that is "it" glows: the car itself, drawn again in
-/// red through whatever is between it and the camera, so that where it is and how
-/// far off can be seen.
+/// The car that is "it" glows, whatever that is in the game being played: the car
+/// itself, drawn again in red through whatever is between it and the camera, so
+/// that where it is and how far off can be seen.
 pub fn glow(
     mut commands: Commands,
     time: Res<Time>,
@@ -312,7 +569,7 @@ pub fn glow(
     mut materials: ResMut<Assets<Seen>>,
 ) {
     for (entity, kart, glowing) in &karts {
-        let wanted = settings.mode == Mode::Tag && kart.it && kart.out.is_none();
+        let wanted = settings.lapless() && kart.it && kart.out.is_none();
         if wanted == glowing {
             continue;
         }
@@ -426,6 +683,100 @@ mod tests {
             .iter_mut(world)
             .find(|kart| kart.slot == slot)
             .expect("a car in the slot")
+    }
+
+    #[test]
+    fn the_caught_catch_too_and_the_last_car_uncaught_wins() {
+        let mut world = world(Mode::Infection, 4);
+        world.run_system_once(infection).unwrap();
+        let first = cars(&mut world).iter().position(|kart| kart.it).unwrap();
+        let rest: Vec<usize> = (0..4).filter(|slot| *slot != first).collect();
+        // For the first moments the car drawn catches nobody.
+        world.resource_mut::<Bumps>().0 = vec![(first, rest[0])];
+        world.run_system_once(infection).unwrap();
+        assert_eq!(cars(&mut world).iter().filter(|kart| kart.it).count(), 1);
+        for _ in 0..2 {
+            world.run_system_once(infection).unwrap();
+        }
+        // After that a car it bumps is "it" as well, and catches in its turn.
+        assert!(car(&mut world, rest[0]).it && car(&mut world, first).it);
+        world.resource_mut::<Bumps>().0 = vec![(rest[1], rest[0])];
+        world.run_system_once(infection).unwrap();
+        // One car is left that wasn't caught, and the game is over: the cars are
+        // home in the order of how long each lasted, the one drawn last of all.
+        world.run_system_once(crate::kart::update_places).unwrap();
+        let all = cars(&mut world);
+        assert!(all.iter().all(|kart| kart.finished.is_some() && kart.out.is_none()));
+        let places = [first, rest[0], rest[1], rest[2]].map(|slot| all[slot].place);
+        assert_eq!(places, [4, 3, 2, 1]);
+        // A car that is "it" is no quicker than one that isn't.
+        let mut world = self::world(Mode::Infection, 3);
+        world.run_system_once(infection).unwrap();
+        world.run_system_once(pace).unwrap();
+        assert!(cars(&mut world).iter().all(|kart| kart.pace == 1.0));
+    }
+
+    #[test]
+    fn the_flag_is_taken_by_a_bump_and_won_by_holding_it() {
+        let mut world = world(Mode::KeepAway, 3);
+        world.resource_mut::<Settings>().goal = 0;
+        world.run_system_once(keep_away).unwrap();
+        let first = cars(&mut world).iter().position(|kart| kart.it).unwrap();
+        let (other, third) = ((first + 1) % 3, (first + 2) % 3);
+        // A second of the step has gone to whoever has it.
+        assert_eq!(car(&mut world, first).stake, 1.0);
+        // Two cars without it bumping take nothing; one bumping its holder has it,
+        // and keeps what the car it was taken from had held it for.
+        world.resource_mut::<Bumps>().0 = vec![(other, third)];
+        world.run_system_once(keep_away).unwrap();
+        assert!(car(&mut world, first).it);
+        world.resource_mut::<Bumps>().0 = vec![(other, first)];
+        world.run_system_once(keep_away).unwrap();
+        let all = cars(&mut world);
+        assert!(all[other].it && !all[first].it);
+        assert_eq!((all[first].stake, all[other].stake), (2.0, 1.0));
+        // It can't be taken straight back.
+        world.run_system_once(keep_away).unwrap();
+        assert!(car(&mut world, other).it);
+        // Held for as long as the host says, it is won, and the rest come in the
+        // order of how long they held it.
+        world.resource_mut::<Bumps>().0.clear();
+        car(&mut world, other).stake = 19.5;
+        world.run_system_once(keep_away).unwrap();
+        world.run_system_once(crate::kart::update_places).unwrap();
+        let all = cars(&mut world);
+        assert!(all.iter().all(|kart| kart.finished.is_some() && !kart.it));
+        assert_eq!((all[other].place, all[first].place, all[third].place), (1, 2, 3));
+    }
+
+    #[test]
+    fn a_car_alone_on_the_hill_is_its_king() {
+        let mut world = world(Mode::Hill, 3);
+        world.insert_resource(Track::new());
+        let top = world.resource::<Track>().hill();
+        for slot in 0..3 {
+            car(&mut world, slot).pos = top + Vec3::X * 40.0 * (slot + 1) as f32;
+        }
+        world.run_system_once(hill).unwrap();
+        assert!(cars(&mut world).iter().all(|kart| !kart.it && kart.stake == 0.0));
+        // One car on it is its king, and counts the time it is.
+        car(&mut world, 0).pos = top + Vec3::X * 2.0;
+        world.run_system_once(hill).unwrap();
+        assert!(car(&mut world, 0).it);
+        assert_eq!(car(&mut world, 0).stake, 1.0);
+        // With another there nobody is; one over or under it is not on it.
+        car(&mut world, 1).pos = top - Vec3::Z * 3.0;
+        world.run_system_once(hill).unwrap();
+        assert!(cars(&mut world).iter().all(|kart| !kart.it));
+        car(&mut world, 1).pos = top + Vec3::Y * 6.0;
+        world.run_system_once(hill).unwrap();
+        assert_eq!(car(&mut world, 0).stake, 2.0);
+        // When its time is up whoever has been king longest has won.
+        world.resource_mut::<Race>().time = 240.0;
+        world.run_system_once(hill).unwrap();
+        world.run_system_once(crate::kart::update_places).unwrap();
+        let all = cars(&mut world);
+        assert!(all[0].finished.is_some() && all[0].place == 1);
     }
 
     #[test]

@@ -23,6 +23,9 @@ pub enum Event {
     /// A player has connected to the host, or a player's game has reached its host.
     Joined(Peer),
     Left(Peer),
+    /// The way to the other game has broken without its saying it was going: it
+    /// may yet be dialled again.
+    Lost(Peer),
     /// Bytes sent with `send`: all of them arrive, in the order they were sent.
     Message(Peer, Vec<u8>),
     /// Bytes sent with `datagram`: some may not arrive, and not in order.
@@ -48,6 +51,11 @@ pub trait Link: Send + Sync + 'static {
     /// Lets go of a player, once what has been sent them has gone. Nothing says
     /// they have `Left`: whoever closes it knows.
     fn close(&mut self, _peer: Peer) {}
+    /// A player's end dials its host again, the way there having broken, and says
+    /// `Joined` or `Failed` as it did the first time. False if it can't dial.
+    fn redial(&mut self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -69,6 +77,8 @@ mod memory {
         /// and what it is.
         queues: HashMap<Peer, Vec<(u32, u64, Event)>>,
         joined: Peer,
+        /// The players whose way to the host has been cut.
+        cut: Vec<Peer>,
     }
 
     /// A network in memory. Everything takes `delay` steps to arrive, and `loss` of
@@ -124,6 +134,22 @@ mod memory {
             link.post(me, Event::Joined(HOST));
             link
         }
+
+        /// The way between a player and the host breaks: each hears of it, and
+        /// nothing more that was on its way arrives.
+        pub fn cut(&self, peer: Peer) {
+            let mut inner = self.inner.lock().unwrap();
+            inner.sent += 2;
+            let (due, order) = (inner.now + self.delay, inner.sent);
+            let ours = |event: &Event| {
+                matches!(event, Event::Message(from, _) | Event::Datagram(from, _) if *from == peer)
+            };
+            let host = inner.queues.entry(HOST).or_default();
+            host.retain(|(.., event)| !ours(event));
+            host.push((due, order - 1, Event::Left(peer)));
+            inner.queues.insert(peer, vec![(due, order, Event::Lost(HOST))]);
+            inner.cut.push(peer);
+        }
     }
 
     impl Memory {
@@ -133,6 +159,10 @@ mod memory {
 
         fn post(&self, to: Peer, event: Event) {
             let mut inner = self.hub.inner.lock().unwrap();
+            // Nothing goes by a way that has been cut, either way along it.
+            if inner.cut.contains(&self.me) || inner.cut.contains(&to) {
+                return;
+            }
             inner.sent += 1;
             let (due, order) = (inner.now + self.hub.delay, inner.sent);
             inner
@@ -159,6 +189,12 @@ mod memory {
                 ping: (self.hub.delay * 2 * 1000 / 60) as u16,
                 direct: true,
             })
+        }
+
+        fn redial(&mut self) -> bool {
+            // Dialled again, a player is someone new to the host.
+            *self = self.hub.join();
+            true
         }
 
         fn poll(&mut self) -> Option<Event> {

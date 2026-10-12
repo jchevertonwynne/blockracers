@@ -235,8 +235,8 @@ pub const NAME_LENGTH: usize = 10;
 const CIRCUIT_LAPS: i32 = 3;
 pub const DIFFICULTIES: [(&str, f32); 3] = [("Easy", 0.92), ("Normal", 1.0), ("Hard", 1.06)];
 
-/// How a race online is won. The port's own, all but the first; the last two are
-/// `net::modes`'.
+/// How a race online is won. The port's own, all but the first; those after the
+/// second are `net::modes`'.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mode {
     /// To the line, as the original races.
@@ -249,14 +249,30 @@ pub enum Mode {
     /// One car is "it" until it bumps another, which is "it" then; the car that is
     /// when the clock runs out is out, and the last car left wins.
     Tag,
+    /// One car is "it", and every car it or another that is "it" bumps is "it"
+    /// from then on; whoever is caught last wins.
+    Infection,
+    /// One car holds the flag until another bumps it and has it; whoever has held
+    /// it longest wins.
+    KeepAway,
+    /// A car alone on the hill is its king; whoever has been king longest wins.
+    Hill,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 4] = [Mode::Race, Mode::Elimination, Mode::Battle, Mode::Tag];
+    pub const ALL: [Mode; 7] = [
+        Mode::Race,
+        Mode::Elimination,
+        Mode::Battle,
+        Mode::Tag,
+        Mode::Infection,
+        Mode::KeepAway,
+        Mode::Hill,
+    ];
 
     /// Whether laps don't end it: it is then fought out, and in an arena (`arena`).
     pub fn lapless(self) -> bool {
-        matches!(self, Mode::Battle | Mode::Tag)
+        !matches!(self, Mode::Race | Mode::Elimination)
     }
 
     pub fn label(self) -> &'static str {
@@ -265,6 +281,9 @@ impl Mode {
             Mode::Elimination => "Elimination",
             Mode::Battle => "Battle",
             Mode::Tag => "Tag",
+            Mode::Infection => "Infection",
+            Mode::KeepAway => "Keep away",
+            Mode::Hill => "King of the hill",
         }
     }
 }
@@ -313,6 +332,8 @@ pub struct Settings {
     /// car just caught, and of `TAG_BACKS` how long it can't catch another.
     pub tag_least: usize,
     pub tag_back: usize,
+    /// Keep-away and king of the hill online: which of `GOALS` wins them.
+    pub goal: usize,
     pub vsync: bool,
     pub fullscreen: bool,
     /// Edges smoothed by multisampling.
@@ -362,6 +383,9 @@ pub const SPARES: [f32; 6] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0];
 pub const TAG_LEASTS: [f32; 6] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
 /// How long a car just made "it" may be kept from making another so, in seconds.
 pub const TAG_BACKS: [f32; 6] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+/// How long the flag must be held, or the hill, to win keep-away or king of the
+/// hill outright, in seconds.
+pub const GOALS: [f32; 5] = [20.0, 30.0, 45.0, 60.0, 90.0];
 
 /// A number of seconds as the menus show it: "Off" for none, "No limit" for no
 /// end, minutes for whole ones and seconds otherwise.
@@ -399,6 +423,8 @@ pub enum Extra {
     Spared,
     TagLeast,
     TagBack,
+    /// And how long wins keep-away and king of the hill.
+    Goal,
     VSync,
     Fullscreen,
     Smoothing,
@@ -420,6 +446,9 @@ impl Extra {
         match mode {
             Mode::Battle => &[Extra::Lives, Extra::BattleTime, Extra::Spared],
             Mode::Tag => &[Extra::TagLeast, Extra::TagBack],
+            Mode::Infection => &[Extra::BattleTime],
+            Mode::KeepAway => &[Extra::Goal, Extra::BattleTime, Extra::TagBack],
+            Mode::Hill => &[Extra::Goal, Extra::BattleTime],
             Mode::Race | Mode::Elimination => &[],
         }
     }
@@ -438,6 +467,7 @@ impl Extra {
             Extra::Spared => "Spared",
             Extra::TagLeast => "Late catch",
             Extra::TagBack => "No catch back",
+            Extra::Goal => "First to",
             Extra::VSync => "Frame rate",
             Extra::Fullscreen => "Full screen",
             Extra::Smoothing => "Smooth edges",
@@ -477,6 +507,7 @@ impl Settings {
             spared: 3,
             tag_least: 3,
             tag_back: 2,
+            goal: 1,
             vsync: true,
             fullscreen: false,
             smoothing: true,
@@ -509,6 +540,7 @@ impl Settings {
             ("spared", self.spared),
             ("tag_least", self.tag_least),
             ("tag_back", self.tag_back),
+            ("goal", self.goal),
             ("vsync", on(self.vsync)),
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
@@ -562,6 +594,7 @@ impl Settings {
                 "spared" if value < SPARES.len() => self.spared = value,
                 "tag_least" if value < TAG_LEASTS.len() => self.tag_least = value,
                 "tag_back" if value < TAG_BACKS.len() => self.tag_back = value,
+                "goal" if value < GOALS.len() => self.goal = value,
                 "vsync" => self.vsync = on,
                 "fullscreen" => self.fullscreen = on,
                 "smoothing" => self.smoothing = on,
@@ -625,6 +658,11 @@ impl Settings {
         TAG_BACKS[self.tag_back.min(TAG_BACKS.len() - 1)]
     }
 
+    /// How long the flag or the hill must be held to win, in seconds.
+    pub fn goal(&self) -> f32 {
+        GOALS[self.goal.min(GOALS.len() - 1)]
+    }
+
     /// Steps an extra setting on or back.
     pub fn turn(&mut self, extra: Extra, change: i32) {
         let flip = |on: &mut bool| *on = !*on;
@@ -656,6 +694,7 @@ impl Settings {
             Extra::Spared => step(&mut self.spared, SPARES.len()),
             Extra::TagLeast => step(&mut self.tag_least, TAG_LEASTS.len()),
             Extra::TagBack => step(&mut self.tag_back, TAG_BACKS.len()),
+            Extra::Goal => step(&mut self.goal, GOALS.len()),
             Extra::VSync => flip(&mut self.vsync),
             Extra::Fullscreen => flip(&mut self.fullscreen),
             Extra::Smoothing => flip(&mut self.smoothing),
@@ -683,6 +722,7 @@ impl Settings {
             Extra::Spared => seconds(self.spared()),
             Extra::TagLeast => seconds(self.tag_least()),
             Extra::TagBack => seconds(self.tag_back()),
+            Extra::Goal => seconds(self.goal()),
             Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
             Extra::Fullscreen => on(self.fullscreen),
             Extra::Smoothing => on(self.smoothing),
