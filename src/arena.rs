@@ -95,12 +95,15 @@ fn tinted<'de, D: Deserializer<'de>>(from: D) -> Result<Option<Color>, D::Error>
 }
 
 /// What a brick an arena's map lays is: a colour of its own by its place among
-/// them, where the map doesn't say, a white one, or the colour the map says.
+/// them, where the map doesn't say, a white one, the colour the map says, or one
+/// that changes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hue {
     Any,
     White,
     Is(Power),
+    /// Going from one colour to the next as it lies (`items`).
+    Changing,
 }
 
 /// A brick lying in an arena: where, (x, z), on whatever is uppermost there, or on
@@ -146,9 +149,10 @@ impl<'de> Deserialize<'de> for Brick {
             Some("yellow") => Hue::Is(Power::Yellow),
             Some("blue") => Hue::Is(Power::Blue),
             Some("green") => Hue::Is(Power::Green),
+            Some("changing") => Hue::Changing,
             Some(other) => {
                 return Err(D::Error::custom(format!(
-                    "a brick is white, red, yellow, blue or green, not {other}"
+                    "a brick is white, red, yellow, blue, green or changing, not {other}"
                 )));
             }
         };

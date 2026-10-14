@@ -285,6 +285,7 @@ pub fn send(
     clock: Res<Clock>,
     race: Res<Race>,
     session: Res<Session>,
+    mark: Res<super::modes::Mark>,
     mut wire: ResMut<Wire>,
     karts: Query<(&Kart, Option<&Remote>)>,
 ) {
@@ -306,6 +307,7 @@ pub fn send(
             clocks: [race.intro, race.countdown, race.time],
             own: Some(State::of(kart)),
             karts: all.clone(),
+            mark: mark.0,
         };
         let snapshot = encode(&snapshot);
         debug_assert!(snapshot.len() <= DATAGRAM, "a snapshot of {}", snapshot.len());
@@ -320,6 +322,7 @@ pub fn send(
             clocks: [race.intro, race.countdown, race.time],
             own: None,
             karts: all.clone(),
+            mark: mark.0,
         };
         wire.0.datagram(peer, encode(&snapshot));
     }

@@ -41,11 +41,46 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   `ghosts/` and `maps/`. What an earlier game left loose in the home folder
   (`~/.brick_racers_settings` and the rest) is moved in as a game that keeps
   things starts (`home::gather`).
+- **The map builder:** `src/builder.rs` (the port's own), "build a map" on the
+  main menu, makes a circuit or an arena in the game and changes one there is,
+  and keeps it as a file of the folder of maps (`map::save`), where the game
+  finds it like any other. What is built is a `Map` and nothing a file couldn't
+  say: a `builder::Draft` is written out after every change (`Map::written`,
+  `src/map/write.rs`, which a test reads back) and read again (`Map::tried`),
+  so what is wrong with it is said in `Map::read`'s own words. A new circuit
+  is drawn: it is no more than the straight its start is on, and its road is
+  laid on from the end of that, a corner where the pointer is clicked or
+  wherever a line dragged from the road's end bends (`draw::Stroke`, which puts
+  each corner outside the line by as much as the road will cut inside it, and
+  rounds it as the line was drawn), until it is brought back to the straight
+  behind the start (`Draft::close`); until then it is `open`, and drawn as a
+  bare road (`view::sketch`). Every corner is rounded to what is wanted of it or
+  to what there is room for (`draw::fitted`), and the start stays on the
+  straight between the last corner and the first, clear of their rounding by
+  `KEPT`. It is gone through a kind of thing at a time (`builder::Layer`); the
+  thing picked has rows that are turned up and down (`Draft::rows`, `turn`) and
+  rings it is dragged by (`Draft::handles`, `put`; `nudge` for the keys),
+  between a road's corners small squares that pull out another
+  (`Draft::mids`, `split`), and what a circuit has so far round its lap is
+  measured again when its corners are moved (`remeasure`). `src/builder/view.rs`
+  is its screen (`Screen::Build`): a map as `Track::made` builds it, with blocks
+  of the builder's own for the bricks `items::laid` lays, the grid and where each
+  hazard stands (the hazards' models are not shown), gizmos for the rest, and
+  panels (`builder::panel`) whose rows and buttons are pressed. Its pointer is
+  `builder::pointer::Pointer`, which `BRICK_POINTER` scripts for a demo. It
+  opens on a list of the maps there are; one of the game's own is opened as
+  another like it. `T` tries the map as it is, kept or not: a single race on it
+  under the name `builder::TRIAL` (`Circuits::try_out`), which comes back to the
+  builder however it ends (`view::come_back`). No real mouse or trackpad has
+  been tried on it: what has been seen was done by `BRICK_POINTER`.
 - **Our own circuits:** `src/track.rs` builds a map's road (`track::Road`) and
   what it has besides (byways, infields, speed pads and banked
   corners, each so far round the lap). Each road is a list of corners
   (`track::cornered`: x, height, z and the radius it is rounded to, with straights
-  between and the heights eased from one to the next), narrow, and folded in on
+  between and the heights eased from one to the next, and how wide the road is
+  there if not `WIDTH`, its width going evenly from one corner's middle to the
+  next's: `Road::widths`, `Track::half`, which whatever is laid across or beside
+  the road goes by), narrow, and folded in on
   itself so that it is never straight or level for long and one stretch runs
   beside, over or under another: stretches side by side are two barriers apart, and
   one over another is `DECK` above it. No corner is tighter than a car going flat
@@ -278,13 +313,40 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   its mark on the map is red, over the others', the player's own arrow too), and
   three that come of tag, in which nobody goes out: infection (every car a car that
   is "it" bumps is "it" too, after a three-second start; a car that is "it" is
-  no quicker than the rest; `Kart::stake` is how long a car went uncaught and the last
-  one uncaught wins), keep-away (the car that is "it" has the flag until another
+  no quicker than the rest; `Kart::stake` is how long a car went uncaught, and
+  what its catches were worth), keep-away (the car that is "it" has the flag until another
   bumps it; `stake` is how long each has held it) and king of the hill (a car
   alone on the hill, `Track::hill`, the middle of the highest of the arena's line
   with `modes::beacon` standing on it, is "it"; `stake` is how long each has been).
   The last two are won by the first to the host's "first to" (`Settings::goal`) or
-  by whoever has most when the time limit is up. The computer's cars go after
+  by whoever has most when the time limit is up. What makes these games more than their rules: a battle's host may have a car
+  with no lives left come back (`Settings::returns`: held a moment, its lives
+  again, and a knock-out against it, `Kart::downs`, which counts for more than
+  any lives; such a battle is over when its time is up); in tag what is fired
+  at the car that is "it" and hits it takes `TAG_HIT` seconds off its clock; a
+  game of infection is `ROUNDS` rounds, each begun by a car that hasn't begun
+  one, a car just caught whirls and catches nobody for a moment, and a catch is
+  worth `CATCH` seconds to whoever made it; in keep-away a car that has just
+  got the flag has a shield while it can't lose it, and after that a hit knocks
+  the flag loose, to lie where it fell (`modes::Mark`, told with the cars in
+  `Snapshot::mark`) for the first car to it; and the hill moves every
+  `HILL_MOVES` seconds among `Track::hills`, a car that is hit being no king
+  for a moment. The host may have any of them but infection played by two
+  teams (`Settings::teams`, `modes::team`: a player is of the team they picked on
+  the room's "team" row, which is there when the host's rules have teams, and
+  the rest, players and then the computer's cars, make the two level,
+  `Lineup::sided`; the host tells every game which each grid slot's car is of,
+  `Seat::side`, kept in `Settings::sides`): a team's
+  cars share what they have, a battle is over when one team has nobody left,
+  "it" is caught only from the other team, and a hill with one team's cars on
+  it is held. Whoever leads a session's series alone is "it" first in tag and
+  infection and is not given the flag (`modes::leader`). The display says
+  what happens as it happens, with a sound (`modes::Feed`, worked out on each
+  game from what it is told of the cars), and lists every car and what it has
+  down the left, in its team's colour, as the map's marks are. A session's
+  host may have a series' races follow one another without a vote
+  (`Session::rolling`, "between races" on the "session" page; `ROLLS_AFTER`).
+  The computer's cars go after
   whoever the game says (`kart::ai_drive`'s `wanted`), a king stops where it
   is, and in infection a car not yet caught runs from those that are when they
   are near (`FLEE_FROM`), by whichever open way leads farthest from them. The host's "rules" page
@@ -327,6 +389,20 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   for one in the front (`items::for_place`). It is recoloured only while that car
   is still some way off, so cars in a bunch have the colours of the first of them.
   A rule that makes every brick one colour, or leaves them out, has its way.
+  The "by place" rule has every coloured brick of a circuit so, in any race; an
+  arena has no places to go by, and its bricks are left as they are. In the
+  games of the tag family every coloured brick of the arena is instead a colour
+  for whether the car coming to it is after another, red or green, or being got
+  away from, yellow or blue (`modes::chasing`: in tag and infection the car that
+  is "it" is after the rest; in keep-away and king of the hill the rest are
+  after it, its own team apart); a battle's are as its arena lays them.
+- **Changing bricks:** the port's own. A coloured brick that goes from colour to
+  colour as it lies, red, yellow, blue, green and round, each for
+  `items::BRICK_CHANGE`, and gives whichever it is when it is taken
+  (`Pickup::turn`). Every coloured brick is one under the "changing" rule, and
+  an arena's map may lay one (`colour = "changing"`); none of the game's maps
+  does. Online each game turns them itself from when the host last told of the
+  brick, so their colour is not sent as it changes.
 - **Lobby server:** `crates/lobby` (with `crates/lobby-api`, which the game shares). It
   only lists sessions. The root `Dockerfile` builds its image and nothing of the game.
 
@@ -337,8 +413,8 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
 - If the original does something the port has no feature for yet, build the feature.
   Don't leave a stand-in without saying so.
 - What the port adds to the original (replays, photo mode, reversed circuits, the brick
-  rules, elimination, quick steering, faster cars, the video options, online play and
-  its battle and tag) is off until asked for, and says in its
+  rules, elimination, quick steering, faster cars, the video options, the map
+  builder, online play and its battle and tag) is off until asked for, and says in its
   module comment that it is the port's own.
 - Units: the game's are Z-up; ours are Y-up, with one game unit `physics::UNIT` of
   ours. Use `scenery::to_world` for positions.
@@ -377,6 +453,8 @@ menu instead. These combine with it:
 | `BRICK_POWER=green2@4,red0@6` | power-ups the player fires (colour, level, time) |
 | `BRICK_EVENTS=18@3` | circuit events to set off, and when |
 | `BRICK_KEYS=Escape@4,Down@4.5,E@6+0.5` | keys to press, when, and for how long held (a demo's keys are bound as a new game's are: `W` or `Up` is the accelerator; `P` is photo mode; `R` at the finish is the replay; where bricks are placed `I`, `J`, `K` and `L` move the brick, `R` turns it, `Enter` adds it, which takes most of a second as it drops onto the car, and only where it fits, which on one of the game's own cars is nowhere until `Back` has taken a brick off, `Tab` and `T` are the next brick and set, `Left` and `Right` turn the car, `Up` and `Down` raise and lower the view and `C` puts it back; on the driver page "done" waits a second or two for the driver's move before the page changes) |
+| `BRICK_BUILD=FIGURE8\|circuit\|arena\|list` | begin in the map builder: on that map being changed (one of the game's own as another like it), on a new circuit, which is a start to draw a road from, or a new arena, or on its list. `H` there says its keys; `BRICK_KEYS` names any letter, and `Tab`, `Comma`, `Period`, `Back`, `Shift`, `Alt` and `F5`, which keeps the map, in `BRICK_MAPS`' folder if a demo names one and nowhere if not. `T` tries it, and in that race `Escape`, `Down`, `Down`, `Enter`, `Up`, `Enter` comes back |
+| `BRICK_POINTER=g44:0@1,down@1.2,g150:-40@2,up@2.1,[Keep]@3,down@3.1,up@3.2` | what the builder's pointer does, instead of the mouse: each step and the second it happens at. `x:y` is a place on the window (its own units, 1280 by 720 to begin with), `gx:z` a place on the map's ground (`gx:z:y` so high over it), `[words]` whatever on a panel says that (`[+#2]` the third from the top that says `+`); the pointer goes evenly to each from where it was at the step before. `down`, `up` are the left button, `rdown`, `rup` the right and `mdown`, `mup` the middle; `wheel:3` turns the wheel, nearer. A drag is more than five units of the window from where the button went down, and a ground place is found again each frame, so a script that slides the view gives window places |
 | `BRICK_HOME=<folder>` | where everything kept is (default `~/.brickracers`); each of the next has its own place in it |
 | `BRICK_MAPS=<folder>` | a folder of maps (default `~/.brickracers/maps`; a demo without it has the game's own and no others, and a demo writes nothing there). `BRICK_MAPS=maps` races the files of the repo as they are, without building again |
 | `BRICK_SETTINGS=<file>` | where settings are kept (default `~/.brickracers/settings`; demos neither read nor write it) |
@@ -395,7 +473,7 @@ menu instead. These combine with it:
 | `BRICK_MIRROR=1`, `BRICK_REVERSE=1` | race the circuit mirrored, or the other way round |
 | `BRICK_ELIMINATION=1` | the last car goes out each lap |
 | `BRICK_SPEED=2` | how many times as fast as the original's the cars are, the computer's too (1 to 2 by quarters; `Kart::pace`; online it is the host's that counts) |
-| `BRICK_BRICKS=red\|yellow\|blue\|green\|none\|random` | what the circuit's bricks are made |
+| `BRICK_BRICKS=red\|yellow\|blue\|green\|none\|random\|changing\|place` | what the circuit's bricks are made (`changing` goes from colour to colour as it lies; `place` is a colour for the place of the car coming) |
 | `BRICK_OPPONENTS=1` | how many of the computer's cars race |
 | `BRICK_PHOTOS=<folder>` | where photo mode saves (default `screenshots/`) |
 | `BRICK_GHOSTS=<folder>` | where best time-race runs are kept (default `~/.brickracers/ghosts`) |
@@ -404,6 +482,8 @@ menu instead. These combine with it:
 | `BRICK_NET=join:Demo` | join the session of that title once the lobby lists it |
 | `BRICK_NET=dial:<address>` | join the session hosted at that address, which its host's log says ("hosting Demo at ..."), without the lobby |
 | `BRICK_MODE=battle\|tag\|elimination\|infection\|keepaway\|hill` | how the race a demo hosts is won (`BRICK_NET=host:1` hosts one against the computer's cars alone) |
+| `BRICK_TEAMS=1`, `BRICK_RETURNS=1` | the game a demo hosts is played by two teams; a car knocked out of its battle comes back |
+| `BRICK_SIDE=blue\|gold` | the team the player picks in the room, for a game played by teams |
 | `BRICK_SESSION`, `BRICK_NAME`, `BRICK_CAR`, `BRICK_PASSWORD` | the title hosted under (default `Demo`), the player's name, who they race as (a code from `roster::NAMES`, such as `PH`, or a number for that one of the garage's racers), the password set or given |
 | `BRICK_LOBBY=http://localhost:18096` | which lobby to use (default the one on the homelab) |
 | `RUST_LOG=blockracers::hazards=debug` | per-module logging |
@@ -416,12 +496,14 @@ with something to type into are reached by `BRICK_MENU` and `BRICK_NET` and not
 through the menus; in the room, `Enter` is on "ready" to begin with. After a race
 the room opens on its results, where `Enter` is on "OK". The room is a column of
 rows down its left, in the order `Down` goes through them ("ready", the vote, what
-to race as, "build a racer", then the host's "race rules", "session" and "start
-now"), with everyone's minifigure on its right and the next race said under them. The room's other pages
+to race as, "build a racer", "team" when the host's rules have teams, on which
+`Enter` goes from either to blue to gold, then the host's "race rules",
+"session" and "start now"), with everyone's minifigure on its right and the next race said under them. The room's other pages
 (the last race, and the host's page for the password, the player limit and putting
 a player out) are reached with `BRICK_KEYS`. In a race online the question `Escape`
 asks opens on "no": `Escape@13,Up@13.4,Enter@13.8` gives the race up. In the room
-while a race is on, the row for it is the first under "build a racer". Two `Down`s from
+while a race is on, the row for it is the first under "build a racer", or under
+"team" where that is. Two `Down`s from
 "ready" is what to race as, which `Left` and `Right` change, and one `Down` is
 "vote for a circuit", the page the next race's circuit is voted for on (`Enter` on a
 circuit votes for it; the rest of how the race is run is the host's, on "rules"); "build a racer", under what to race as, opens the garage, and `Escape` there comes back.

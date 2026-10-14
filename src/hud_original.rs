@@ -56,6 +56,18 @@ const IT: Color = Color::srgb(1.0, 0.25, 0.2);
 /// How far in from the edge of the screen the car that is "it" is pointed to while
 /// it is out of the picture, and the size it is written at there.
 const IT_INSET: f32 = 6.0;
+/// Where what has just happened in a game is said, and where the cars are listed,
+/// and the sizes they are written at.
+const FEED_TOP: f32 = 64.0;
+const FEED_SIZE: f32 = 0.55;
+const BOARD_TOP: f32 = 124.0;
+const BOARD_LEFT: f32 = 12.0;
+const BOARD_SIZE: f32 = 0.42;
+
+/// Whether the race is one of a session's.
+fn online_game(role: &crate::net::Role) -> bool {
+    *role != crate::net::Role::Offline
+}
 const IT_ASIDE: f32 = 0.8;
 /// The side of the square the player's arrow is drawn in.
 const ARROW_SPAN: f32 = 20.0;
@@ -124,6 +136,8 @@ pub struct Art {
     /// The marks of the car that is "it" in a game of tag, which are red: another
     /// racer's, and the player's own. The port's own.
     it: [Handle<Image>; 2],
+    /// The marks of the two teams' cars (`net::modes::TEAMS`). The port's own.
+    teams: [Handle<Image>; 2],
 }
 
 /// What the display remembers from frame to frame.
@@ -289,6 +303,7 @@ pub fn load(
         image(mark([255, 64, 51]), &mut images).0,
         image(arrow([255, 64, 51]), &mut images).0,
     ];
+    let teams = [[89, 166, 255], [255, 209, 51]].map(|colour| image(mark(colour), &mut images).0);
     let arrow = image(arrow([0, 255, 0]), &mut images).0;
     commands.insert_resource(Art {
         faces,
@@ -299,6 +314,7 @@ pub fn load(
         white,
         arrow,
         it,
+        teams,
     });
 }
 
@@ -675,9 +691,10 @@ pub fn draw(
         Single<(&Camera, &Transform), With<Camera3d>>,
         Query<(&Kart, &Transform), Without<Camera3d>>,
         ResMut<Assets<Image>>,
-        Res<crate::frontend::idle::Idle>,
+        (Res<crate::frontend::idle::Idle>, Res<crate::net::modes::Feed>),
     ),
 ) {
+    let (idle, feed) = idle;
     for root in &roots {
         commands.entity(root).despawn();
     }
@@ -750,6 +767,46 @@ pub fn draw(
         frame.write("font_ths", &words, at, 0.6, Color::WHITE);
     }
 
+    // The port's own: in a game that laps don't end, what has just happened is said
+    // across the top, and down the left is every car and what it has, the best
+    // first: the car that is "it" in red, the player's own in white, and the rest
+    // in their team's colour where there are teams.
+    if settings.lapless() && online_game(&role) && race.phase != Phase::Intro {
+        use crate::net::modes;
+        for (n, (words, left)) in feed.lines.iter().rev().enumerate() {
+            let at = Vec2::new(
+                (width - frame.width("font_ths", words, FEED_SIZE)) / 2.0,
+                FEED_TOP + n as f32 * line * FEED_SIZE,
+            );
+            let fade = (left / 0.5).clamp(0.0, 1.0);
+            frame.write("font_ths", words, at, FEED_SIZE, Color::WHITE.with_alpha(fade));
+        }
+        let mut row = BOARD_TOP;
+        let sides = modes::totals(&settings, karts.iter().map(|k| k.0));
+        if modes::team(&settings, 0).is_some() {
+            for (side, (name, colour)) in modes::TEAMS.iter().enumerate() {
+                let words = format!("{name} {}", sides[side].max(0.0).ceil() as u32);
+                frame.write("font_ths", &words, Vec2::new(BOARD_LEFT, row), BOARD_SIZE, *colour);
+                row += line * BOARD_SIZE;
+            }
+            row += line * BOARD_SIZE * 0.3;
+        }
+        let mut listed: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
+        listed.sort_by_key(|kart| kart.place);
+        for kart in listed {
+            let colour = match (kart.it, kart.slot == player.slot, modes::team(&settings, kart.slot)) {
+                _ if kart.out.is_some() => Color::srgb(0.45, 0.45, 0.45),
+                (true, ..) => IT,
+                (_, true, _) => Color::WHITE,
+                (_, _, Some(side)) => modes::TEAMS[side].1,
+                _ => Color::srgb(0.8, 0.8, 0.8),
+            };
+            let words = format!("{} {}", kart.name, modes::tally(&settings, kart));
+            frame.write("font_ths", &words, Vec2::new(BOARD_LEFT, row), BOARD_SIZE, colour);
+            row += line * BOARD_SIZE;
+        }
+    }
+
     // The port's own: online, the other players' names go over their cars, smaller
     // the further off they are, so that a person can be told from the computer.
     let online = *role != crate::net::Role::Offline;
@@ -771,7 +828,8 @@ pub fn draw(
     let (lens, eye) = *camera;
     for (kart, shown) in cars.iter().filter(|(kart, _)| {
         let other = kart.slot != player.slot;
-        (people.contains(&kart.slot) || (other && (kart.it || battle))) && kart.out.is_none()
+        let sided = crate::net::modes::team(&settings, kart.slot).is_some();
+        (people.contains(&kart.slot) || (other && (kart.it || battle || sided))) && kart.out.is_none()
     }) {
         let above = shown.translation + Vec3::Y * TAG_HEIGHT;
         let away = above.distance(eye.translation);
@@ -801,6 +859,12 @@ pub fn draw(
             (false, true, true) => (format!("{} {lives}", kart.name), Color::WHITE),
             (false, true, false) => (lives.to_string(), Color::WHITE),
             (false, false, _) => (kart.name.to_string(), Color::WHITE),
+        };
+        // By teams a car's words are its team's colour, unless they are red.
+        let side = crate::net::modes::team(&settings, kart.slot);
+        let colour = match side {
+            Some(side) if colour == Color::WHITE => crate::net::modes::TEAMS[side].1,
+            _ => colour,
         };
         let colour = if battle && lives <= 1 { IT } else { colour };
         let size = match aside {
@@ -1052,8 +1116,11 @@ pub fn draw(
                 // marks of any cars it is among.
                 others.sort_by_key(|k| k.0.it);
                 for (kart, _) in others {
+                    let side = crate::net::modes::team(&settings, kart.slot);
                     let (image, rect) = if kart.it {
                         (art.it[0].clone(), None)
+                    } else if let Some(side) = side {
+                        (art.teams[side].clone(), None)
                     } else {
                         (handle.clone(), Some(Rect::new(0.0, 0.0, MARKER, MARKER)))
                     };

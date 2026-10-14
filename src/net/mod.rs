@@ -178,6 +178,44 @@ impl Lineup {
             .map(|seat| (seat.slot as usize, &seat.car))
     }
 
+    /// Puts the cars in the two teams of a game played by teams: a player who
+    /// picked one in theirs, and the rest, players and then the computer's cars,
+    /// in whichever has fewer as each is come to. Neither team is left with
+    /// nobody: the last car goes over to one that would be.
+    pub fn sided(seats: &mut [Seat], voters: &[Voter]) {
+        let pick = |seat: &Seat| {
+            let voter = voters.iter().find(|voter| Some(voter.peer) == seat.peer)?;
+            voter.side.filter(|side| *side < 2)
+        };
+        let picks: Vec<Option<u8>> = seats.iter().map(pick).collect();
+        let mut count = [0; 2];
+        for side in picks.iter().flatten() {
+            count[*side as usize] += 1;
+        }
+        for (seat, pick) in seats.iter_mut().zip(&picks) {
+            seat.side = pick.unwrap_or_else(|| {
+                // Level, a car is of the team its place on the grid makes it.
+                let side = match count[0].cmp(&count[1]) {
+                    std::cmp::Ordering::Less => 0,
+                    std::cmp::Ordering::Equal => seat.slot % 2,
+                    std::cmp::Ordering::Greater => 1,
+                };
+                count[side as usize] += 1;
+                side
+            });
+        }
+        if let (Some(empty), [.., last]) = (count.iter().position(|n| *n == 0), &mut *seats) {
+            if count[1 - empty] > 1 {
+                last.side = empty as u8;
+            }
+        }
+    }
+
+    /// The teams the cars are of, a bit to a grid slot (`Settings::sides`).
+    pub fn sides(seats: &[Seat]) -> u8 {
+        seats.iter().fold(0, |sides, seat| sides | (seat.side & 1) << seat.slot.min(7))
+    }
+
     /// Players take the grid from the back, the host last of all as a player alone
     /// is, and the computer's cars fill it from the front.
     pub fn seat(players: &[(Peer, String, Ride)], opponents: usize) -> Vec<Seat> {
@@ -191,12 +229,14 @@ impl Lineup {
                 peer: Some(*peer),
                 name: name.clone(),
                 car: car.clone(),
+                side: ((slots - 1 - i) % 2) as u8,
             });
         let computers = (0..opponents.min(slots.saturating_sub(players.len()))).map(|slot| Seat {
             slot: slot as u8,
             peer: None,
             name: String::new(),
             car: Ride::Slot,
+            side: (slot % 2) as u8,
         });
         humans.chain(computers).collect()
     }
@@ -232,6 +272,9 @@ const ABSENT: usize = 32;
 const REDIAL_FOR: f32 = 30.0;
 const REDIAL_EVERY: f32 = 2.0;
 const SILENT: f32 = 5.0;
+/// How long the result of a race is looked at before the next of a series that
+/// rolls on is begun, in seconds.
+pub const ROLLS_AFTER: f32 = 8.0;
 
 /// A player's game dialling its host again.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -284,6 +327,9 @@ pub struct Session {
     pub watching: Vec<Peer>,
     /// How many races the session's series is of; none if it is not run as one.
     pub series: u8,
+    /// The races of a series follow one another without a vote between: the same
+    /// again, once its result has been looked at (`ROLLS_AFTER`).
+    pub rolling: bool,
     /// Players who have gone, and what they had, should they come back.
     pub absent: Vec<Absent>,
     /// What the host gave this game to come back by.
@@ -441,11 +487,13 @@ fn pump(
     }
 }
 
-/// Starts the race for everyone in the session, to be run by `rules`.
+/// Starts the race for everyone in the session, to be run by `rules`, the cars
+/// in the teams those in the room (`voters`) have picked.
 pub fn start(
     commands: &mut Commands,
     session: &mut Session,
     wire: &mut Wire,
+    voters: &[Voter],
     rules: &Rules,
     settings: &mut Settings,
     circuits: &Circuits,
@@ -462,7 +510,9 @@ pub fn start(
             .iter()
             .map(|member| (member.peer, member.name.clone(), member.car.clone())),
     );
-    let seats = Lineup::seat(&players, settings.opponents);
+    let mut seats = Lineup::seat(&players, settings.opponents);
+    Lineup::sided(&mut seats, voters);
+    settings.sides = Lineup::sides(&seats);
     settings.rivals = Some(seats.len().saturating_sub(1));
     (session.racing, session.watching) = (Some(rules.clone()), Vec::new());
     let start = encode(&ToPlayer::Start {
@@ -494,6 +544,7 @@ fn fresh_room(session: &Session, hosting: bool, settings: &Settings, circuits: &
             ballot: ballot.clone(),
             link: None,
             points: 0,
+            side: None,
         }]
     } else {
         Vec::new()
@@ -680,7 +731,7 @@ fn session(
     karts: Query<(Entity, &kart::Kart, Option<&Remote>)>,
     (mut lineup, mut told): (Option<ResMut<Lineup>>, ResMut<scene::Told>),
     mut prediction: ResMut<client::Prediction>,
-    mut measured: Local<f32>,
+    (mut measured, mut looked): (Local<f32>, Local<f32>),
 ) {
     let remotes = || {
         karts
@@ -819,6 +870,7 @@ fn session(
                                 ballot: None,
                                 link: None,
                                 points,
+                                side: None,
                             });
                             ToPlayer::Welcome {
                                 you: peer,
@@ -919,6 +971,11 @@ fn session(
                         voter.ready = ready;
                     }
                 }
+                ToHost::Side(side) => {
+                    if let Some(voter) = room.voters.iter_mut().find(|voter| voter.peer == peer) {
+                        voter.side = side.filter(|side| *side < 2);
+                    }
+                }
                 ToHost::Back => {
                     session.watching.retain(|watching| *watching != peer);
                     for (entity, _) in remotes().filter(|(_, remote)| remote.peer == peer) {
@@ -962,13 +1019,26 @@ fn session(
         }
         // The host's own wishes are in the room with everyone else's.
         if let Some(own) = room.voters.iter_mut().find(|voter| voter.peer == HOST) {
-            (own.ballot, own.ready) = (room.ballot.clone(), room.ready);
+            (own.ballot, own.ready, own.side) = (room.ballot.clone(), room.ready, room.side);
         }
-        // The vote is taken between races, and the race it settles on begun.
+        // The vote is taken between races, and the race it settles on begun. A
+        // series that rolls on has its last race again instead, a moment after
+        // that one's result came up, until it has been run to its end.
+        let rolls = session.rolling
+            && session.series > 0
+            && (1..session.series).contains(&room.raced)
+            && !session.members.is_empty();
+        *looked = if *screen.get() == Screen::Menu && rolls {
+            *looked + time.delta_secs()
+        } else {
+            0.0
+        };
         if *screen.get() == Screen::Menu {
             let fallback = Rules::of(&settings, &circuits);
             let mut dice = crate::meshgen::Rng(time.elapsed().subsec_nanos() | 1);
-            if let Some(rules) = room.tick(time.delta_secs(), &fallback, &mut dice) {
+            let again = room.last.clone().filter(|_| *looked >= ROLLS_AFTER);
+            if let Some(rules) = again.or_else(|| room.tick(time.delta_secs(), &fallback, &mut dice)) {
+                *looked = 0.0;
                 let rules = rules.fitted(&circuits);
                 room.last = Some(rules.clone());
                 // A series that has been run to its end is begun again.
@@ -979,6 +1049,7 @@ fn session(
                     &mut commands,
                     session,
                     &mut wire,
+                    &room.voters,
                     &rules,
                     &mut settings,
                     &circuits,
@@ -1091,6 +1162,7 @@ fn session(
                         let name = &circuits.0[settings.circuit].name;
                         info!("racing {} ({name}) with {} cars", rules.circuit, seats.len());
                         settings.rivals = Some(seats.len().saturating_sub(1));
+                        settings.sides = Lineup::sides(&seats);
                         room.ready = false;
                         commands.insert_resource(Lineup {
                             seats,
@@ -1176,12 +1248,13 @@ fn session(
             return;
         }
         // The host is told what the player here wants whenever that changes.
-        let wishes = (room.ballot.clone(), room.ready);
+        let wishes = (room.ballot.clone(), room.ready, room.side);
         if session.you != HOST && room.sent.as_ref() != Some(&wishes) {
             if let Some(ballot) = &wishes.0 {
                 wire.0.send(HOST, encode(&ToHost::Vote(ballot.clone())));
             }
             wire.0.send(HOST, encode(&ToHost::Ready(wishes.1)));
+            wire.0.send(HOST, encode(&ToHost::Side(wishes.2)));
             room.sent = Some(wishes);
         }
         // And what they race as, which the host had first when they joined.
@@ -1251,11 +1324,19 @@ fn auto(
     lobby: Res<lobby::Lobby>,
     mut auto: ResMut<Auto>,
     mut session: ResMut<Session>,
+    mut room: Option<ResMut<Room>>,
     mut wire: Option<ResMut<Wire>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     let var =
         |name: &str, otherwise: &str| std::env::var(name).unwrap_or_else(|_| otherwise.to_string());
+    // `BRICK_SIDE=blue` or `gold`: the team picked in the room.
+    let side = ["blue", "gold"].iter().position(|side| *side == var("BRICK_SIDE", ""));
+    if let (Some(room), Some(side)) = (&mut room, side) {
+        if room.side != Some(side as u8) {
+            room.side = Some(side as u8);
+        }
+    }
     if let Ok(name) = std::env::var("BRICK_NAME") {
         settings.name = name;
     }
@@ -1288,10 +1369,16 @@ fn auto(
             }) {
                 *started = true;
                 let rules = Rules::of(&settings, &circuits).fitted(&circuits);
+                // The host's own pick may not have reached the room's list yet.
+                let mut voters = room.as_ref().map(|room| room.voters.clone()).unwrap_or_default();
+                for own in voters.iter_mut().filter(|voter| voter.peer == HOST) {
+                    own.side = room.as_ref().and_then(|room| room.side);
+                }
                 start(
                     &mut commands,
                     &mut session,
                     wire,
+                    &voters,
                     &rules,
                     &mut settings,
                     &circuits,
@@ -1397,6 +1484,8 @@ pub fn enter_race(
     commands.insert_resource(Pending::default());
     commands.insert_resource(host::Flow::default());
     commands.insert_resource(modes::Play::default());
+    commands.insert_resource(modes::Mark::default());
+    commands.insert_resource(modes::Feed::default());
     commands.insert_resource(client::Prediction::default());
 }
 
@@ -1415,6 +1504,8 @@ pub fn plugin(app: &mut App) {
         .init_resource::<Pending>()
         .init_resource::<host::Flow>()
         .init_resource::<modes::Play>()
+        .init_resource::<modes::Mark>()
+        .init_resource::<modes::Feed>()
         .init_resource::<kart::Bumps>()
         .init_resource::<client::Prediction>()
         .init_resource::<scene::Told>()

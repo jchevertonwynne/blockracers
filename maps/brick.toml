@@ -21,8 +21,10 @@ author = "Brick Racers"
 # is only a height on the way. The first is the start. The height is that of the
 # middle of the corner, and is eased from one to the next. A road is 16 across
 # from barrier to barrier, so two stretches side by side are 18 apart or more, and
-# one over another is 8 above it. A car going flat out slides round a corner of
-# 18 and no tighter.
+# one over another is 8 above it; a corner may say it is wider or narrower there,
+# from 10 to 48, as a fifth number, and the road goes evenly from the width it is
+# at one corner to the width at the next. A car going flat out slides round a
+# corner of 18 and no tighter.
 corners = [
     [-52, 0, 8, 0],
     [88, 0, 8, 32],

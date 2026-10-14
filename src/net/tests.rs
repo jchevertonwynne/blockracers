@@ -87,6 +87,7 @@ fn game_drawn(role: Role, link: impl Link, you: Peer, opponents: usize, frames: 
                 ballot: None,
                 link: None,
                 points: 0,
+                side: None,
             }],
             ..default()
         })
@@ -543,6 +544,7 @@ fn a_room_votes_and_its_race_begins_for_everyone() {
                 ballot: None,
                 link: None,
                 points: 0,
+                side: None,
             }]
         } else {
             Vec::new()
@@ -1566,6 +1568,7 @@ fn a_full_grid_is_told_in_one_datagram() {
         clocks: [1.0, 2.0, 3.0],
         own: Some(State::of(karts[0])),
         karts: karts.iter().map(|k| Sight::of(k)).collect(),
+        mark: Some(Vec3::ONE),
     };
     let length = encode(&snapshot).len();
     assert!(
@@ -1711,6 +1714,7 @@ fn fought(map: &crate::map::Map, mode: crate::menu::Mode, seed: u32) -> App {
                 ballot: None,
                 link: None,
                 points: 0,
+                side: None,
             }],
             ..default()
         })
@@ -1854,7 +1858,9 @@ fn fought_over(key: &str) {
     let map = crate::map::named(key);
     for mode in [crate::menu::Mode::Battle, crate::menu::Mode::Tag] {
         let game = played(map, mode, 7, 60.0);
-        assert!(game.time > 30.0, "{key} {mode:?} was over in {}s", game.time);
+        // It is over when the car it is seen from is out, which in tag is as soon
+        // as a clock that was hit a time or two has run down.
+        assert!(game.time > 20.0, "{key} {mode:?} was over in {}s", game.time);
         assert!(game.high > 0.08, "{key} {mode:?}: {} of the time on high ground", game.high);
         assert!(game.covered > 0.25, "{key} {mode:?}: over {} of the floor", game.covered);
         assert!(game.slow < 0.15, "{key} {mode:?}: stopped {} of the time", game.slow);
@@ -1981,4 +1987,73 @@ fn the_games_nobody_goes_out_of_are_played_in_every_arena() {
         println!("{key} hill: {kings} kings, {changes} changes, most {most:.0}s in {time:.0}s");
         assert!(kings >= 1 && most > 3.0, "{key}: {kings} were king, for {most}s at the most");
     }
+}
+
+/// A series that rolls on has its last race again, without a vote, a moment after
+/// that one's result came up; one that doesn't waits for the room.
+#[test]
+fn a_series_that_rolls_on_runs_its_last_race_again() {
+    let state = |app: &App| *app.world().resource::<State<Screen>>().get();
+    for rolling in [false, true] {
+        let mut pair = Pair::new(0, 0.0);
+        for _ in 0..30 {
+            pair.step();
+        }
+        let circuits = Circuits::find();
+        let rules = Rules::of(&Settings::new(&circuits), &circuits);
+        for app in [&mut pair.host, &mut pair.guest] {
+            app.insert_state(Screen::Menu);
+        }
+        let mut session = pair.host.world_mut().resource_mut::<Session>();
+        (session.series, session.rolling) = (3, rolling);
+        let mut room = pair.host.world_mut().resource_mut::<Room>();
+        (room.raced, room.last) = (1, Some(rules.clone()));
+        for _ in 0..(ROLLS_AFTER * 60.0) as usize + 30 {
+            pair.step();
+        }
+        let begun = state(&pair.host) == Screen::Loading && state(&pair.guest) == Screen::Loading;
+        assert_eq!(begun, rolling, "with a series that rolls on: {rolling}");
+    }
+}
+
+/// A game by teams has each player in the team they picked, and the rest where
+/// they make the two most nearly level; neither team is left with nobody.
+#[test]
+fn players_are_of_the_team_they_picked() {
+    let player = |peer: Peer| (peer, format!("P{peer}"), Ride::Slot);
+    let voter = |peer: Peer, side: Option<u8>| Voter {
+        peer,
+        name: format!("P{peer}"),
+        ready: false,
+        ballot: None,
+        link: None,
+        points: 0,
+        side,
+    };
+    let of = |seats: &[Seat], side: u8| seats.iter().filter(|seat| seat.side == side).count();
+    // Nobody having picked, they are of one and the other by turns, as the grid goes.
+    let mut seats = Lineup::seat(&[player(HOST), player(1), player(2)], 3);
+    Lineup::sided(&mut seats, &[voter(HOST, None), voter(1, None), voter(2, None)]);
+    assert!(seats.iter().all(|seat| seat.side == seat.slot % 2));
+    assert_eq!(Lineup::sides(&seats), crate::menu::SIDES);
+    // Three who all pick one team have it, and the computer's cars are the other.
+    Lineup::sided(&mut seats, &[voter(HOST, Some(1)), voter(1, Some(1)), voter(2, Some(1))]);
+    assert!(seats.iter().all(|seat| seat.side == seat.peer.is_some() as u8));
+    // Two against one is made up to three a side.
+    Lineup::sided(&mut seats, &[voter(HOST, Some(0)), voter(1, Some(1)), voter(2, Some(0))]);
+    let side = |peer: Peer| seats.iter().find(|seat| seat.peer == Some(peer)).unwrap().side;
+    assert_eq!([side(HOST), side(1), side(2)], [0, 1, 0]);
+    assert_eq!([of(&seats, 0), of(&seats, 1)], [3, 3]);
+    // And the game is told of it by grid slot.
+    let mut settings = Settings::new(&Circuits(Vec::new()));
+    (settings.teams, settings.mode) = (true, crate::menu::Mode::Battle);
+    settings.sides = Lineup::sides(&seats);
+    for seat in &seats {
+        assert_eq!(modes::team(&settings, seat.slot as usize), Some(seat.side as usize));
+    }
+    // With nobody else to be the other team, the last to have picked goes over.
+    let mut seats = Lineup::seat(&[player(HOST), player(1)], 0);
+    Lineup::sided(&mut seats, &[voter(HOST, Some(0)), voter(1, Some(0))]);
+    assert_eq!([of(&seats, 0), of(&seats, 1)], [1, 1]);
+    assert_eq!(seats[0].side, 0);
 }

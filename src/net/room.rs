@@ -32,6 +32,9 @@ pub struct Voter {
     pub link: Option<Quality>,
     /// What they have scored in the session's races so far.
     pub points: u32,
+    /// Which of the two teams they would be of in a game played by teams, if
+    /// they have said (`Lineup::sided`).
+    pub side: Option<u8>,
 }
 
 /// How a car's race went.
@@ -69,9 +72,11 @@ pub struct Room {
     pub raced: u8,
     /// The last things said in the room, oldest first.
     pub chat: Vec<String>,
-    /// What the player here has asked for, and whether they are ready.
+    /// What the player here has asked for, whether they are ready, and the team
+    /// they have picked.
     pub ballot: Option<Rules>,
     pub ready: bool,
+    pub side: Option<u8>,
     /// The host wants the race begun now.
     pub begin: bool,
     /// Counts up whenever the room changes, for whatever draws it.
@@ -83,7 +88,7 @@ pub struct Room {
     pub maps: Vec<String>,
     /// What was last sent, so that it is sent again only when it changes.
     pub(super) told: Vec<u8>,
-    pub(super) sent: Option<(Option<Rules>, bool)>,
+    pub(super) sent: Option<(Option<Rules>, bool, Option<u8>)>,
     pub(super) rode: Option<Ride>,
 }
 
@@ -225,6 +230,8 @@ mod tests {
             tag_least: 3,
             tag_back: 2,
             goal: 1,
+            teams: false,
+            returns: false,
         }
     }
 
@@ -236,6 +243,7 @@ mod tests {
             ballot,
             link: None,
             points: 0,
+            side: None,
         }
     }
 

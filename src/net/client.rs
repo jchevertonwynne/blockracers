@@ -103,6 +103,7 @@ pub fn receive(
     mut p: ResMut<Prediction>,
     mut sfx: ResMut<crate::audio::Sfx>,
     clock: Res<Clock>,
+    mut mark: ResMut<super::modes::Mark>,
     mut karts: Query<(Entity, &mut Kart, Has<Player>, Has<Puppet>)>,
 ) {
     let dt = time.delta_secs();
@@ -129,6 +130,9 @@ pub fn receive(
         return;
     };
     (p.latest, p.quiet) = (Some(snapshot.tick), 0.0);
+    if mark.0 != snapshot.mark {
+        mark.0 = snapshot.mark;
+    }
     [race.intro, race.countdown, race.time] = snapshot.clocks;
     race.phase = match snapshot.stage {
         Stage::Intro => Phase::Intro,
@@ -156,8 +160,9 @@ pub fn receive(
         } else if let Some(state) = &snapshot.own {
             kart.place = standing.map_or(kart.place, |standing| standing.place as usize);
             // What it has left of a battle or a game of tag is the host's to say.
-            (kart.stake, kart.it) =
-                standing.map_or((kart.stake, kart.it), |standing| (standing.stake, standing.it));
+            if let Some(standing) = standing {
+                (kart.stake, kart.it, kart.downs) = (standing.stake, standing.it, standing.downs);
+            }
             // A white brick taken sounds as it does where the race is run, a note
             // higher for each one carried.
             if state.whites() > kart.whites {

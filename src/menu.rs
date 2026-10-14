@@ -13,6 +13,8 @@ pub enum Screen {
     Race,
     /// Between two races of a circuit: straight on to the next.
     Loading,
+    /// The map builder (`builder`), the port's own.
+    Build,
 }
 
 pub struct Circuit {
@@ -148,6 +150,44 @@ impl Circuits {
                 Ok(self.0.len() - 1)
             }
         }
+    }
+
+    /// Takes a map made or changed in the builder, in place of the one of its
+    /// name or as another.
+    pub fn keep(&mut self, map: Map) {
+        let group = self.own();
+        match self.0.iter_mut().find(|c| c.race.is_none() && c.key() == map.key) {
+            Some(had) => {
+                (had.name, had.author) = (map.name.clone(), map.author.clone());
+                (had.map, had.hosts) = (Some(map), None);
+            }
+            None => self.0.push(Circuit {
+                name: map.name.clone(),
+                author: map.author.clone(),
+                race: None,
+                map: Some(map),
+                hosts: None,
+                group,
+            }),
+        }
+    }
+
+    /// Takes a map the builder has in hand to be raced as it is, kept or not:
+    /// which circuit it is, until the builder takes it away again.
+    pub fn try_out(&mut self, text: &str) -> Result<usize, String> {
+        let key = crate::builder::TRIAL;
+        self.0.retain(|c| c.key() != key);
+        let map = Map::tried(key, text)?;
+        let group = self.own();
+        self.0.push(Circuit {
+            name: map.name.clone(),
+            author: map.author.clone(),
+            race: None,
+            map: Some(map),
+            hosts: None,
+            group,
+        });
+        Ok(self.0.len() - 1)
     }
 
     /// The set the port's own maps are in, after the game's circuits.
@@ -334,6 +374,13 @@ pub struct Settings {
     pub tag_back: usize,
     /// Keep-away and king of the hill online: which of `GOALS` wins them.
     pub goal: usize,
+    /// The games laps don't end are played by two teams (`net::modes::team`),
+    /// and which each grid slot's car is of in the race being run: a bit to a
+    /// slot, set for the second team. The host's to say (`net::Lineup::seat`).
+    pub teams: bool,
+    pub sides: u8,
+    /// A car with no lives left in a battle comes back to it (`net::modes::battle`).
+    pub returns: bool,
     pub vsync: bool,
     pub fullscreen: bool,
     /// Edges smoothed by multisampling.
@@ -355,9 +402,10 @@ pub struct Settings {
 }
 
 /// What may be done with a circuit's bricks: left alone, every coloured one made the
-/// same colour, none put out at all, or each coloured one a colour picked afresh every
-/// time it appears.
-pub const BRICK_RULES: [&str; 7] = [
+/// same colour, none put out at all, each coloured one a colour picked afresh every
+/// time it appears, each going from colour to colour as it lies, or each a colour
+/// for the place of the car coming to it (`items`).
+pub const BRICK_RULES: [&str; 9] = [
     "Normal",
     "All red",
     "All yellow",
@@ -365,9 +413,16 @@ pub const BRICK_RULES: [&str; 7] = [
     "All green",
     "None",
     "Random",
+    "Changing",
+    "By place",
 ];
-/// The rule that picks colours afresh.
+/// The teams the cars are of until a host says: the even grid slots against the odd.
+pub const SIDES: u8 = 0b101010;
+/// The rule that picks colours afresh, the one that has them change, and the one
+/// that has them go by place.
 pub const RANDOM_BRICKS: usize = 6;
+pub const CHANGING_BRICKS: usize = 7;
+pub const PLACED_BRICKS: usize = 8;
 
 /// How fast the cars may be, the computer's among them, the original's being one
 /// (`Kart::pace`).
@@ -425,6 +480,10 @@ pub enum Extra {
     TagBack,
     /// And how long wins keep-away and king of the hill.
     Goal,
+    /// And whether they are played by two teams, and whether a car knocked out
+    /// of a battle comes back.
+    Teams,
+    Returns,
     VSync,
     Fullscreen,
     Smoothing,
@@ -444,11 +503,17 @@ impl Extra {
     /// What the host says of a race that is won as `mode` is, and of no other.
     pub fn of(mode: Mode) -> &'static [Extra] {
         match mode {
-            Mode::Battle => &[Extra::Lives, Extra::BattleTime, Extra::Spared],
-            Mode::Tag => &[Extra::TagLeast, Extra::TagBack],
+            Mode::Battle => &[
+                Extra::Lives,
+                Extra::BattleTime,
+                Extra::Spared,
+                Extra::Returns,
+                Extra::Teams,
+            ],
+            Mode::Tag => &[Extra::TagLeast, Extra::TagBack, Extra::Teams],
             Mode::Infection => &[Extra::BattleTime],
-            Mode::KeepAway => &[Extra::Goal, Extra::BattleTime, Extra::TagBack],
-            Mode::Hill => &[Extra::Goal, Extra::BattleTime],
+            Mode::KeepAway => &[Extra::Goal, Extra::BattleTime, Extra::TagBack, Extra::Teams],
+            Mode::Hill => &[Extra::Goal, Extra::BattleTime, Extra::Teams],
             Mode::Race | Mode::Elimination => &[],
         }
     }
@@ -468,6 +533,8 @@ impl Extra {
             Extra::TagLeast => "Late catch",
             Extra::TagBack => "No catch back",
             Extra::Goal => "First to",
+            Extra::Teams => "Teams",
+            Extra::Returns => "Knocked out",
             Extra::VSync => "Frame rate",
             Extra::Fullscreen => "Full screen",
             Extra::Smoothing => "Smooth edges",
@@ -508,6 +575,9 @@ impl Settings {
             tag_least: 3,
             tag_back: 2,
             goal: 1,
+            teams: false,
+            sides: SIDES,
+            returns: false,
             vsync: true,
             fullscreen: false,
             smoothing: true,
@@ -541,6 +611,8 @@ impl Settings {
             ("tag_least", self.tag_least),
             ("tag_back", self.tag_back),
             ("goal", self.goal),
+            ("teams", on(self.teams)),
+            ("returns", on(self.returns)),
             ("vsync", on(self.vsync)),
             ("fullscreen", on(self.fullscreen)),
             ("smoothing", on(self.smoothing)),
@@ -595,6 +667,8 @@ impl Settings {
                 "tag_least" if value < TAG_LEASTS.len() => self.tag_least = value,
                 "tag_back" if value < TAG_BACKS.len() => self.tag_back = value,
                 "goal" if value < GOALS.len() => self.goal = value,
+                "teams" => self.teams = on,
+                "returns" => self.returns = on,
                 "vsync" => self.vsync = on,
                 "fullscreen" => self.fullscreen = on,
                 "smoothing" => self.smoothing = on,
@@ -695,6 +769,8 @@ impl Settings {
             Extra::TagLeast => step(&mut self.tag_least, TAG_LEASTS.len()),
             Extra::TagBack => step(&mut self.tag_back, TAG_BACKS.len()),
             Extra::Goal => step(&mut self.goal, GOALS.len()),
+            Extra::Teams => flip(&mut self.teams),
+            Extra::Returns => flip(&mut self.returns),
             Extra::VSync => flip(&mut self.vsync),
             Extra::Fullscreen => flip(&mut self.fullscreen),
             Extra::Smoothing => flip(&mut self.smoothing),
@@ -723,6 +799,8 @@ impl Settings {
             Extra::TagLeast => seconds(self.tag_least()),
             Extra::TagBack => seconds(self.tag_back()),
             Extra::Goal => seconds(self.goal()),
+            Extra::Teams => on(self.teams),
+            Extra::Returns => if self.returns { "Comes back" } else { "For good" }.to_string(),
             Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
             Extra::Fullscreen => on(self.fullscreen),
             Extra::Smoothing => on(self.smoothing),

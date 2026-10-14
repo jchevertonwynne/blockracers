@@ -172,7 +172,7 @@ impl Replay {
         let number = (kart.s / STATION_GAP).round();
         let side = if number as i32 % 2 == 0 { 1.0 } else { -1.0 };
         let (line, _, right) = track.sample(number * STATION_GAP);
-        let at = line + right * side * (track.road + STATION_OUT);
+        let at = line + right * side * (track.tarmac_at(number * STATION_GAP) + STATION_OUT);
         let ground = track
             .collision
             .ground(at + Vec3::Y * 15.0, 40.0)

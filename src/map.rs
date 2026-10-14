@@ -27,13 +27,15 @@ use crate::gauntlet::Stood;
 use crate::landmarks::Landmark;
 use crate::meshgen::*;
 use crate::roadside::Look;
-use crate::track::{Banked, Byway, Jump, Padded, Road, Stretch, Track, Tunnel};
+use crate::track::{Banked, Byway, Jump, Padded, Road, Stretch, Track, Tunnel, WIDTH, WIDTHS};
 use bevy::prelude::*;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+
+pub mod write;
 
 /// What a map's file is called after its name.
 const EXTENSION: &str = "toml";
@@ -93,8 +95,9 @@ struct Sheet {
     name: String,
     #[serde(default)]
     author: String,
+    /// Each [x, height, z, radius], and how wide the road is there if it says.
     #[serde(default)]
-    corners: Vec<[f32; 4]>,
+    corners: Vec<Vec<f32>>,
     #[serde(default)]
     tunnels: Vec<Tunnel>,
     #[serde(default)]
@@ -144,7 +147,7 @@ struct Padding {
 }
 
 /// The colours a map may name.
-const COLOURS: [(&str, Color); 12] = [
+pub const COLOURS: [(&str, Color); 12] = [
     ("red", RED),
     ("blue", BLUE),
     ("yellow", YELLOW),
@@ -239,8 +242,18 @@ impl Map {
                 floor: sheet.floor.map_or([GREY, DARK_GREY], |floor| floor.map(|tint| tint.0)),
             }),
         };
+        // A road as wide as the game's all the way round says nothing of it.
+        if let Some(number) = sheet.corners.iter().position(|corner| !(4..=5).contains(&corner.len())) {
+            return Err(format!(
+                "corner {} is [x, height, z, radius], and how wide the road is there if it says",
+                number + 1
+            ));
+        }
+        let widths: Vec<f32> = sheet.corners.iter().map(|corner| corner.get(4).copied().unwrap_or(WIDTH)).collect();
+        let widths = if widths.iter().all(|&width| width == WIDTH) { Vec::new() } else { widths };
         let road = Road {
-            corners: sheet.corners,
+            corners: sheet.corners.iter().map(|corner| [corner[0], corner[1], corner[2], corner[3]]).collect(),
+            widths,
             tunnels: sheet.tunnels,
             jumps: sheet.jumps,
             byways: sheet.byways,
@@ -334,6 +347,18 @@ impl Map {
         if corners.len() < CORNERS.0 || corners.len() > CORNERS.1 {
             return Err(format!("a road has from {} to {} corners", CORNERS.0, CORNERS.1));
         }
+        if let Some(number) = road.widths.iter().position(|width| !(WIDTHS.0..=WIDTHS.1).contains(width)) {
+            return Err(format!(
+                "the road is {} wide at corner {}, and a road is from {} to {} wide",
+                road.widths[number],
+                number + 1,
+                WIDTHS.0,
+                WIDTHS.1
+            ));
+        }
+        if !road.widths.is_empty() && road.widths.len() != corners.len() {
+            return Err("a road says how wide it is at every corner or at none".into());
+        }
         let m = corners.len();
         let at = |i: usize| Vec2::new(corners[i % m][0], corners[i % m][2]);
         // How far along each of its two straights a corner's rounding reaches.
@@ -401,7 +426,7 @@ impl Map {
                 return Err(format!("the bank from {} is too steep", bank.from));
             }
         }
-        if let Some(pad) = road.pads.iter().find(|pad| !on(pad.at) || pad.right.abs() > crate::track::ROAD_HW) {
+        if let Some(pad) = road.pads.iter().find(|pad| !on(pad.at) || pad.right.abs() > line.tarmac_at(pad.at)) {
             return Err(format!("the pad at {} is not on the road", pad.at));
         }
         let nearest = |[x, z]: [f32; 2]| line.nearest(Vec3::new(x, 0.0, z));
@@ -532,6 +557,7 @@ pub fn kept(demo: bool, keeping: bool) -> Vec<Map> {
     let Some(folder) = folder(demo) else {
         return maps;
     };
+    *FOLDER.lock().unwrap() = Some(folder.clone());
     if keeping {
         stock_up(&folder, &STOCK);
     }
@@ -566,6 +592,29 @@ pub fn kept(demo: bool, keeping: bool) -> Vec<Map> {
     // The order they were found in, but the circuits first.
     maps.sort_by_key(Map::arena);
     maps
+}
+
+/// The folder this game's maps are kept in, once `kept` has looked: none for a
+/// demo that names none.
+static FOLDER: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Keeps a map made in the game (`crate::builder`) as a file of the folder: the
+/// file, or why there is none.
+pub fn save(key: &str, text: &str) -> Result<PathBuf, String> {
+    let folder = FOLDER.lock().unwrap().clone().ok_or("a demo keeps no maps unless BRICK_MAPS names a folder")?;
+    save_in(&folder, key, text)
+}
+
+pub fn save_in(folder: &Path, key: &str, text: &str) -> Result<PathBuf, String> {
+    Map::tried(key, text)?;
+    let file = folder.join(format!("{}.{EXTENSION}", key.to_ascii_lowercase()));
+    crate::home::write(&file, text).map_err(|error| format!("could not write {}: {error}", file.display()))?;
+    Ok(file)
+}
+
+/// Whether a map is one the game carries, by what it is known by.
+pub fn carried(key: &str) -> bool {
+    STOCK.iter().any(|stock| stock.0 == key)
 }
 
 /// Whether something is what a map may be known by.

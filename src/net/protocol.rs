@@ -118,6 +118,9 @@ pub struct Snapshot {
     pub own: Option<State>,
     /// Every car, the player's too.
     pub karts: Vec<Sight>,
+    /// Where the thing a game is played for lies, when it is nobody's: the flag
+    /// of keep-away, knocked out of the hands of whoever had it (`modes::Mark`).
+    pub mark: Option<Vec3>,
 }
 
 /// How a race is to be run: what the host's `Settings` say of it.
@@ -144,6 +147,10 @@ pub struct Rules {
     pub tag_back: u8,
     /// Which of `menu::GOALS` wins keep-away and king of the hill.
     pub goal: u8,
+    /// Whether a game laps don't end is played by teams, and whether a car
+    /// knocked out of a battle comes back to it.
+    pub teams: bool,
+    pub returns: bool,
 }
 
 /// What a circuit is known by between games: its folder in the game's data, or
@@ -179,6 +186,8 @@ impl Rules {
             tag_least: settings.tag_least as u8,
             tag_back: settings.tag_back as u8,
             goal: settings.goal as u8,
+            teams: settings.teams,
+            returns: settings.returns,
         }
     }
 
@@ -187,6 +196,11 @@ impl Rules {
     pub fn map(&self, circuits: &Circuits) -> Option<String> {
         let circuit = circuits.0.iter().find(|c| key(c) == self.circuit)?;
         circuit.map.as_ref().map(|map| map.text.clone())
+    }
+
+    /// Whether a race run by these is played by two teams (`modes::team`).
+    pub fn sided(&self) -> bool {
+        self.teams && self.mode().lapless() && self.mode() != Mode::Infection
     }
 
     pub fn mode(&self) -> Mode {
@@ -231,6 +245,7 @@ impl Rules {
         settings.tag_least = (self.tag_least as usize).min(crate::menu::TAG_LEASTS.len() - 1);
         settings.tag_back = (self.tag_back as usize).min(crate::menu::TAG_BACKS.len() - 1);
         settings.goal = (self.goal as usize).min(crate::menu::GOALS.len() - 1);
+        (settings.teams, settings.returns) = (self.teams, self.returns);
         true
     }
 }
@@ -294,6 +309,8 @@ pub struct Seat {
     pub name: String,
     /// What a player races as.
     pub car: Ride,
+    /// Which of the two teams the car is of, where the game is played by teams.
+    pub side: u8,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -332,6 +349,8 @@ pub enum ToHost {
     Say(String),
     /// What the player races as from now on, changed in the room.
     Ride(Ride),
+    /// The team the player would be of, or that they don't mind.
+    Side(Option<u8>),
 }
 
 #[derive(Serialize, Deserialize, Clone)]

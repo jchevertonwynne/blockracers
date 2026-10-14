@@ -18,11 +18,18 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
-/// Half-width of the tarmac.
+/// Half-width of the tarmac, where the road is as wide as the game's are.
 pub const ROAD_HW: f32 = 6.0;
-/// Lateral offset of the inner face of the barrier.
+/// Lateral offset of the inner face of the barrier, likewise.
 pub const WALL: f32 = 8.0;
 const KERB: f32 = 0.8;
+/// How far the tarmac's edge is inside the barrier, whatever the road's width:
+/// the kerb and the verge.
+pub const VERGE: f32 = WALL - ROAD_HW;
+/// How wide a road is from barrier to barrier where its map doesn't say, and the
+/// narrowest and widest a map may have it.
+pub const WIDTH: f32 = 2.0 * WALL;
+pub const WIDTHS: (f32, f32) = (10.0, 48.0);
 
 /// A circuit's road, as its map has it. The corners are each (x, height, z, radius):
 /// the road runs straight from each towards the next and is rounded at each to its
@@ -35,9 +42,15 @@ const KERB: f32 = 0.8;
 ///
 /// What it has besides is each so far round the lap, but its tunnels and jumps,
 /// which are where they are on the ground.
+///
+/// A road may be wider or narrower at a corner than `WIDTH` (`widths`, from barrier
+/// to barrier), and goes evenly from the width it is at one corner to the width it
+/// is at the next, from the middle of one to the middle of the other.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Road {
     pub corners: Vec<[f32; 4]>,
+    /// How wide it is at each corner, or nothing if it is `WIDTH` all the way round.
+    pub widths: Vec<f32>,
     pub tunnels: Vec<Tunnel>,
     pub jumps: Vec<Jump>,
     pub byways: Vec<Byway>,
@@ -273,6 +286,8 @@ pub struct Track {
     /// Unit tangent flattened onto the ground plane.
     pub flat: Vec<Vec3>,
     pub right: Vec<Vec3>,
+    /// How far each sample's barriers are from its middle: half the road's width.
+    pub half: Vec<f32>,
     /// 1 / turn radius.
     pub curv: Vec<f32>,
     pub spacing: f32,
@@ -541,8 +556,10 @@ const LINE_STEP: f32 = 0.5;
 /// that the road has no kink in it either and is never higher or lower than both (a
 /// monotone cubic): two corners at one height have level road between them, and a
 /// corner higher than those either side of it is a crest. `side` is -1 for the
-/// circuit mirrored.
-fn cornered(corners: &[[f32; 4]], side: f32) -> Vec<Vec3> {
+/// circuit mirrored. And how far each place's barriers are from its middle: half
+/// the road's width, which goes evenly from each corner's middle to the next's,
+/// each as wide as `widths` says, or `WIDTH` if it says nothing.
+fn cornered(corners: &[[f32; 4]], widths: &[f32], side: f32) -> (Vec<Vec3>, Vec<f32>) {
     let m = corners.len();
     let at = |i: usize| Vec2::new(corners[i % m][0], corners[i % m][2] * side);
     // Each corner's arc: where it begins and ends, and how far round it turns.
@@ -612,6 +629,7 @@ fn cornered(corners: &[[f32; 4]], side: f32) -> Vec<Vec3> {
         .map(|span| if span > 0.0 { span } else { total })
         .collect();
     let rise: Vec<f32> = (0..m).map(|i| (height(i + 1) - height(i)) / span[i]).collect();
+    let half = |i: usize| widths.get(i % m).copied().unwrap_or(WIDTH) / 2.0;
     let slope: Vec<f32> = (0..m)
         .map(|i| {
             let before = (i + m - 1) % m;
@@ -638,9 +656,9 @@ fn cornered(corners: &[[f32; 4]], side: f32) -> Vec<Vec3> {
                 + (t3 - 2.0 * t2 + t) * span[i] * slope[i]
                 + (3.0 * t2 - 2.0 * t3) * height(i + 1)
                 + (t3 - t2) * span[i] * slope[(i + 1) % m];
-            Vec3::new(p.x, y, p.y)
+            (Vec3::new(p.x, y, p.y), half(i) + (half(i + 1) - half(i)) * t)
         })
-        .collect()
+        .unzip()
 }
 
 fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
@@ -651,16 +669,38 @@ fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
 }
 
 impl Track {
-    /// The hill of king of the hill (`net::modes::hill`): the middle of the highest
-    /// of the line, which in an arena is the top of its high ground.
-    pub fn hill(&self) -> Vec3 {
+    /// The hills of king of the hill (`net::modes::hill`): the middle of the
+    /// highest of the line, which in an arena is the top of its high ground, and
+    /// the places a quarter, a half and three quarters of the way round the line
+    /// from there, where they are not too near one already had.
+    pub fn hills(&self) -> Vec<Vec3> {
         let top = self.pts.iter().map(|at| at.y).fold(f32::MIN, f32::max);
-        let high: Vec<Vec3> = self.pts.iter().copied().filter(|at| at.y > top - 0.5).collect();
-        let middle = high.iter().sum::<Vec3>() / high.len().max(1) as f32;
-        let nearest = high
-            .iter()
-            .min_by(|a, b| a.distance(middle).total_cmp(&b.distance(middle)));
-        nearest.copied().unwrap_or_default()
+        let high = |at: &&Vec3| at.y > top - 0.5;
+        let count = self.pts.iter().filter(high).count().max(1);
+        let middle = self.pts.iter().filter(high).sum::<Vec3>() / count as f32;
+        let near = |at: &Vec3| at.distance(middle);
+        let Some(first) = (0..self.pts.len())
+            .filter(|&at| high(&&self.pts[at]))
+            .min_by(|&a, &b| near(&self.pts[a]).total_cmp(&near(&self.pts[b])))
+        else {
+            return vec![Vec3::ZERO];
+        };
+        let mut hills = vec![self.pts[first]];
+        for quarter in 1..4 {
+            let at = self.pts[(first + self.pts.len() * quarter / 4) % self.pts.len()];
+            let apart = 4.0 * crate::net::modes::HILL_REACH;
+            if hills.iter().all(|hill: &Vec3| hill.distance(at) > apart) {
+                hills.push(at);
+            }
+        }
+        hills
+    }
+
+    /// Where the hill is when a race has run for `time`: it moves on every so often.
+    pub fn hill_at(&self, time: f32) -> Vec3 {
+        let hills = self.hills();
+        let moved = (time.max(0.0) / crate::net::modes::HILL_MOVES) as usize;
+        hills[moved % hills.len()]
     }
 
     /// The built-in brick circuit.
@@ -687,9 +727,12 @@ impl Track {
                     .iter()
                     .map(|c| Vec3::new(c[0], c[1], c[2] * side))
                     .collect();
-                Track::resampled(&splined(&points), crate::arena::LINE_ROAD)
+                Track::resampled(&splined(&points), &[], crate::arena::LINE_ROAD)
             }
-            None => Track::resampled(&cornered(&map.road.corners, side), ROAD_HW),
+            None => {
+                let (line, halves) = cornered(&map.road.corners, &map.road.widths, side);
+                Track::resampled(&line, &halves, ROAD_HW)
+            }
         }
     }
 
@@ -697,7 +740,7 @@ impl Track {
     fn shaped(map: &Map, mirror: bool) -> Self {
         let (mut track, road) = (Track::line(map, mirror), &map.road);
         if !map.arena() {
-            track.strays = (WALL + 4.0, DECK - 1.0);
+            track.strays = (track.widest() + 4.0, DECK - 1.0);
         }
         let side = if mirror { -1.0 } else { 1.0 };
         track.tunnels = road
@@ -739,7 +782,7 @@ impl Track {
                 let ease = ((i - from).min(to - i) as f32 / BANK_EASE).min(1.0);
                 let ease = ease * ease * (3.0 - 2.0 * ease);
                 track.bank[i] = tilt * ease * turn.signum();
-                track.pts[i].y += tilt * ease * WALL;
+                track.pts[i].y += tilt * ease * track.half[i];
             }
         }
         track.fwd = (0..n)
@@ -776,8 +819,8 @@ impl Track {
     }
 
     /// Whether a place beside sample `i` is on the other road of a level crossing,
-    /// within `reach` of its middle.
-    fn crossed(&self, i: usize, p: Vec3, reach: f32) -> bool {
+    /// between its barriers or no further than `beyond` outside them.
+    fn crossed(&self, i: usize, p: Vec3, beyond: f32) -> bool {
         let n = self.n();
         self.crossings.iter().any(|pair| {
             [(pair[0], pair[1]), (pair[1], pair[0])]
@@ -787,7 +830,7 @@ impl Track {
                     (0..=2 * CROSSING_SAMPLES).any(|step| {
                         let k = (other + n + step - CROSSING_SAMPLES) % n;
                         let from = p - self.pts[k];
-                        from.dot(self.right[k]).abs() < reach
+                        from.dot(self.right[k]).abs() < self.half[k] + beyond
                             && from.dot(self.flat[k]).abs() <= self.spacing
                     })
                 })
@@ -795,13 +838,14 @@ impl Track {
     }
 
     /// Whether nothing on another stretch of the road comes near sample `i`'s: no
-    /// other stretch's middle is within `reach` of it and between `below` under it
+    /// other stretch's barrier is within `gap` of its own, between `below` under it
     /// and `above` over it.
-    fn alone(&self, i: usize, reach: f32, below: f32, above: f32) -> bool {
+    fn alone(&self, i: usize, gap: f32, below: f32, above: f32) -> bool {
         (0..self.n())
             .filter(|&k| self.apart(i, k) > STRETCH)
             .all(|k| {
                 let higher = self.pts[k].y - self.pts[i].y;
+                let reach = self.half[i] + self.half[k] + gap;
                 xz_dist2(self.pts[i], self.pts[k]) >= reach * reach
                     || higher <= -below
                     || higher >= above
@@ -813,6 +857,31 @@ impl Track {
         (s / self.spacing).round() as usize % self.n()
     }
 
+    /// How far sample `i`'s barriers are from its middle, and its tarmac's edges.
+    pub fn wall(&self, i: usize) -> f32 {
+        self.half[i % self.n()]
+    }
+
+    pub fn tarmac(&self, i: usize) -> f32 {
+        self.wall(i) - VERGE
+    }
+
+    /// The same, so far round the lap.
+    pub fn wall_at(&self, s: f32) -> f32 {
+        let x = s.rem_euclid(self.length) / self.spacing;
+        let i = x as usize % self.n();
+        self.half[i] + (self.half[(i + 1) % self.n()] - self.half[i]) * x.fract()
+    }
+
+    pub fn tarmac_at(&self, s: f32) -> f32 {
+        self.wall_at(s) - VERGE
+    }
+
+    /// How far the barriers are from the middle where the road is widest.
+    pub fn widest(&self) -> f32 {
+        self.half.iter().copied().fold(WALL, f32::max)
+    }
+
     /// The place `lat` to the right of the middle of sample `i`'s road, on its bank.
     pub fn edge(&self, i: usize, lat: f32) -> Vec3 {
         self.pts[i] + self.right[i] * lat + Vec3::Y * lat * self.bank[i]
@@ -821,7 +890,7 @@ impl Track {
     /// The grass of an infield, as the quads it is laid in: each runs from one side of
     /// the corner to the other, between the places the barrier would have stood.
     pub fn grass(&self, infield: &Infield) -> Vec<[Vec3; 4]> {
-        let edge = |i: usize| self.edge(i, infield.side * WALL);
+        let edge = |i: usize| self.edge(i, infield.side * self.half[i]);
         (0..(infield.to - infield.from) / 2)
             .map(|k| (infield.from + k, infield.to - k))
             .map(|(near, far)| [edge(near), edge(near + 1), edge(far - 1), edge(far)])
@@ -874,7 +943,8 @@ impl Track {
                     };
                     // Across the road at either end it is as high as that road, and
                     // all its climbing is done between the two.
-                    let climbed = ((at - WALL) / (length - 2.0 * WALL).max(1.0)).clamp(0.0, 1.0);
+                    let (near, far) = (track.half[ends[0]], track.half[ends[1]]);
+                    let climbed = ((at - near) / (length - near - far).max(1.0)).clamp(0.0, 1.0);
                     from.y + (to.y - from.y) * climbed + bump
                 };
                 Branch {
@@ -940,18 +1010,18 @@ impl Track {
         let inside = |i: usize| -track.flat[i].cross(track.flat[(i + 1) % n]).y.signum();
         let walled = |i: usize, outside: bool| {
             let side = if outside { -inside(i) } else { inside(i) };
-            let barrier = track.edge(i, side * WALL);
+            let barrier = track.edge(i, side * track.half[i]);
             let covered = |stretch: &(usize, usize)| (stretch.0..stretch.1).contains(&i);
             // A banked corner is on the ground for all that its middle is lifted.
-            let lifted = track.pts[i].y - track.bank[i].abs() * WALL;
+            let lifted = track.pts[i].y - track.bank[i].abs() * track.half[i];
             track.curv[i] > if outside { BACKDROP_TURN } else { SCREEN_TURN }
                 && lifted < 0.3
                 && track.apart(i, 0) > SCREEN_OFF_LINE
                 && !track.tunnels.iter().chain(&track.jumps).any(covered)
                 && !branches.iter().any(|branch| branch.holds(barrier))
                 && !infields.iter().any(|infield| infield.opens(i, side))
-                && !track.crossed(i, barrier, WALL + 2.0)
-                && track.alone(i, 2.0 * WALL + 4.0, DECK - 1.0, DECK - 1.0)
+                && !track.crossed(i, barrier, 2.0)
+                && track.alone(i, 4.0, DECK - 1.0, DECK - 1.0)
         };
         let mut screens = Vec::new();
         for outside in [false, true] {
@@ -986,22 +1056,29 @@ impl Track {
         };
         for i in 0..n {
             let j = (i + 1) % n;
-            let mut strip = |from: f32, to: f32, surface: Surface| {
+            // Each from and to so far across the road at either sample, as a road's
+            // width has them there: from the tarmac's edge, or from the barrier.
+            let (h0, h1) = (track.half[i], track.half[j]);
+            let mut strip = |from: &dyn Fn(f32) -> f32, to: &dyn Fn(f32) -> f32, surface: Surface| {
                 let corners = [
-                    track.edge(i, from),
-                    track.edge(i, to),
-                    track.edge(j, to),
-                    track.edge(j, from),
+                    track.edge(i, from(h0)),
+                    track.edge(i, to(h0)),
+                    track.edge(j, to(h1)),
+                    track.edge(j, from(h1)),
                 ];
                 quads.push((corners, surface));
             };
-            strip(-ROAD_HW - KERB, ROAD_HW + KERB, Surface::default());
+            strip(&|h| -(h - VERGE) - KERB, &|h| h - VERGE + KERB, Surface::default());
             // At a crossing the other road's tarmac is what lies where the verge was.
             for side in [-1.0, 1.0] {
-                let middle = track.edge(i, side * (WALL + ROAD_HW + KERB) / 2.0);
-                if !track.crossed(i, middle, WALL) {
-                    let (near, far) = (side * (ROAD_HW + KERB), side * WALL);
-                    strip(near.min(far), near.max(far), grass);
+                let middle = track.edge(i, side * (h0 + h0 - VERGE + KERB) / 2.0);
+                if !track.crossed(i, middle, 0.0) {
+                    let near = move |h: f32| side * (h - VERGE + KERB);
+                    let far = move |h: f32| side * h;
+                    match side < 0.0 {
+                        true => strip(&far, &near, grass),
+                        false => strip(&near, &far, grass),
+                    }
                 }
             }
             // Beside a jump they are as high as a car in the air, and where a wall
@@ -1015,7 +1092,7 @@ impl Track {
                     } else {
                         wall.map_or(3.0, |wall| wall.height().max(3.0))
                     };
-                let (mut a, mut b) = (track.edge(i, side * WALL), track.edge(j, side * WALL));
+                let (mut a, mut b) = (track.edge(i, side * h0), track.edge(j, side * h1));
                 // There is none across the end of a byway, before an infield, or
                 // across the other road of a crossing. One that begins outside a
                 // byway's end runs up to the byway's own barrier and stops there,
@@ -1024,7 +1101,7 @@ impl Track {
                 let ends = [held(a), held(b)];
                 if ends == [true, true]
                     || infields.iter().any(|infield| infield.opens(i, side))
-                    || track.crossed(i, (a + b) / 2.0, WALL)
+                    || track.crossed(i, (a + b) / 2.0, 0.0)
                 {
                     continue;
                 }
@@ -1065,7 +1142,7 @@ impl Track {
                 ));
                 for side in [-1.0, 1.0] {
                     let (mut a, mut b) = (p + across * side, q + across * side);
-                    let over = [track.on_road(a, WALL), track.on_road(b, WALL)];
+                    let over = [track.on_road(a, 0.0), track.on_road(b, 0.0)];
                     if over == [true, true] {
                         continue;
                     }
@@ -1076,7 +1153,7 @@ impl Track {
                         let (mut on, mut off) = if over[0] { (a, b) } else { (b, a) };
                         for _ in 0..8 {
                             let middle = (on + off) / 2.0;
-                            if track.on_road(middle, WALL) {
+                            if track.on_road(middle, 0.0) {
                                 on = middle;
                             } else {
                                 off = middle;
@@ -1106,7 +1183,7 @@ impl Track {
             let reach = (GATE_REACH.0 + 1.0, GATE_REACH.1 + 1.0);
             while gate > 0
                 && i < n
-                && (jumped(i) || !track.alone(i, 2.0 * WALL + 3.0, reach.0, reach.1))
+                && (jumped(i) || !track.alone(i, 3.0, reach.0, reach.1))
             {
                 i += 1;
             }
@@ -1115,7 +1192,7 @@ impl Track {
             }
         }
         for (gate, &i) in places.iter().enumerate() {
-            let (p, r) = (track.pts[i], track.right[i] * (WALL + 1.0));
+            let (p, r) = (track.pts[i], track.right[i] * (track.half[i] + 1.0));
             let (low, high) = (Vec3::Y * -GATE_REACH.0, Vec3::Y * GATE_REACH.1);
             let corners = [p - r + low, p + r + low, p + r + high, p - r + high];
             for tri in [
@@ -1160,13 +1237,14 @@ impl Track {
                     // A road with nowhere such has it where it was first wanted.
                     at = wanted.min(n - 1);
                     break;
-                } else if !track.alone(at, ZONE_RADIUS + WALL + 0.5, ZONE_RADIUS, ZONE_RADIUS) {
+                } else if !track.alone(at, ZONE_RADIUS - WALL + 0.5, ZONE_RADIUS, ZONE_RADIUS) {
                     at += 1;
                 } else {
                     break;
                 }
             }
-            track.course.zones.push((track.pts[at], ZONE_RADIUS, zone));
+            // Across the road, however wide it is there.
+            track.course.zones.push((track.pts[at], ZONE_RADIUS - WALL + track.half[at], zone));
             last = at;
         }
         track
@@ -1174,11 +1252,12 @@ impl Track {
 
     /// Fits a closed spline through `ctrl` and resamples it at even spacing.
     pub fn from_loop(ctrl: &[Vec3], road: f32) -> Self {
-        Track::resampled(&splined(ctrl), road)
+        Track::resampled(&splined(ctrl), &[], road)
     }
 
-    /// A closed line, resampled at even spacing.
-    fn resampled(dense: &[Vec3], road: f32) -> Self {
+    /// A closed line, resampled at even spacing, with how far its barriers are from
+    /// its middle at each place of it: `VERGE` outside `road` if it doesn't say.
+    fn resampled(dense: &[Vec3], halves: &[f32], road: f32) -> Self {
         let d = dense.len();
         let mut cum = vec![0.0; d + 1];
         for i in 0..d {
@@ -1189,6 +1268,7 @@ impl Track {
         let spacing = length / n as f32;
 
         let mut pts = Vec::with_capacity(n);
+        let mut half = Vec::with_capacity(n);
         let mut j = 0;
         for k in 0..n {
             let target = k as f32 * spacing;
@@ -1197,6 +1277,10 @@ impl Track {
             }
             let t = (target - cum[j]) / (cum[j + 1] - cum[j]);
             pts.push(dense[j].lerp(dense[(j + 1) % d], t));
+            half.push(match halves.get(j).zip(halves.get((j + 1) % d)) {
+                Some((&from, &to)) => from + (to - from) * t,
+                None => road + VERGE,
+            });
         }
 
         let fwd: Vec<Vec3> = (0..n)
@@ -1215,6 +1299,7 @@ impl Track {
             fwd,
             flat,
             right,
+            half,
             curv,
             spacing,
             length,
@@ -1240,9 +1325,12 @@ impl Track {
         }
     }
 
-    /// The lateral offset nearest `wanted` that is open at distance `s`.
+    /// The lateral offset nearest `wanted` that is open at distance `s`: `wanted`
+    /// being so far across a road as wide as `road` says, and as far across one
+    /// that is wider or narrower there.
     pub fn lane(&self, s: f32, wanted: f32) -> f32 {
         let s = s.rem_euclid(self.length);
+        let wanted = wanted * self.tarmac_at(s) / self.road;
         self.lanes
             .iter()
             .filter(|lane| s >= lane.from && s <= lane.to)
@@ -1276,7 +1364,7 @@ impl Track {
             .map(|place| {
                 // The first place on a grid is the one furthest back.
                 let s = finish + 8.0 + ((5 - place) / 2) as f32 * 6.0;
-                let lat = self.road * if place % 2 == 0 { 0.375 } else { -0.375 };
+                let lat = self.tarmac_at(s) * if place % 2 == 0 { 0.375 } else { -0.375 };
                 (
                     self.surface_point(s, lat),
                     -self.sample(s).1.with_y(0.0).normalize(),
@@ -1326,6 +1414,7 @@ impl Track {
             (branch.along, branch.right) = (-branch.along, -branch.right);
             branch.ends = [(n - branch.ends[1]) % n, (n - branch.ends[0]) % n];
         }
+        self.half[1..].reverse();
         self.bank[1..].reverse();
         for bank in &mut self.bank {
             *bank = -*bank;
@@ -1430,12 +1519,13 @@ impl Track {
         in_sight.or(level.first()).copied().unwrap_or_else(|| self.nearest(pos))
     }
 
-    /// Whether a place is on the road proper: within `reach` of the racing line to
-    /// either side, on its level.
-    pub fn on_road(&self, p: Vec3, reach: f32) -> bool {
+    /// Whether a place is on the road proper: between its barriers, or no further
+    /// than `beyond` outside them (inside them if that is less than nothing), on
+    /// its level.
+    pub fn on_road(&self, p: Vec3, beyond: f32) -> bool {
         let i = self.nearest(p);
         let from = p - self.pts[i];
-        from.dot(self.right[i]).abs() < reach
+        from.dot(self.right[i]).abs() < self.half[i] + beyond
             && from.dot(self.flat[i]).abs() < 2.0 * self.spacing
             && from.y.abs() < 3.0
     }
@@ -1443,11 +1533,11 @@ impl Track {
     /// Whether each sample's road is carried over another stretch of the circuit, so
     /// that what holds it up has to leave the way underneath clear.
     pub(crate) fn bridged(&self) -> Vec<bool> {
-        let reach = (WALL + 4.0).powi(2);
-        let edges = [-WALL - 0.8, 0.0, WALL + 0.8];
         (0..self.n())
             .map(|i| {
-                self.pts.iter().any(|&below| {
+                let edges = [-self.half[i] - 0.8, 0.0, self.half[i] + 0.8];
+                self.pts.iter().enumerate().any(|(k, &below)| {
+                    let reach = (self.half[k] + 4.0).powi(2);
                     self.pts[i].y - below.y > 6.0
                         && edges
                             .iter()
@@ -1492,8 +1582,11 @@ impl Track {
             let j = (i + 1) % n;
             let (p0, p1) = (self.pts[i], self.pts[j]);
             let (r0, r1) = (self.right[i], self.right[j]);
-            let at = |lat: f32| (self.edge(i, lat), self.edge(j, lat));
-            let strip = |b: &mut BrickMesh, from: f32, to: f32, lift: f32, c: Color| {
+            // So far across the road at either sample, as the road's width has it
+            // there: from its middle, from the tarmac's edge or from the barrier.
+            let (h0, h1) = (self.half[i], self.half[j]);
+            let at = |lat: &dyn Fn(f32) -> f32| (self.edge(i, lat(h0)), self.edge(j, lat(h1)));
+            let strip = |b: &mut BrickMesh, from: &dyn Fn(f32) -> f32, to: &dyn Fn(f32) -> f32, lift: f32, c: Color| {
                 let ((a0, a1), (b0, b1)) = (at(from), at(to));
                 let l = up * lift;
                 b.quad(a0 + l, b0 + l, b1 + l, a1 + l, c);
@@ -1505,36 +1598,46 @@ impl Track {
             } else {
                 road[(i / 2) % 2]
             };
-            strip(&mut b, -ROAD_HW, ROAD_HW, 0.0, surface);
+            strip(&mut b, &|h| VERGE - h, &|h| h - VERGE, 0.0, surface);
             // Over a crossing the road has no line down it, and neither road's kerb
             // or verge lies across the other.
             let middle = (p0 + p1) / 2.0;
-            if i % 6 < 2 && !self.crossed(i, middle, WALL) {
-                strip(&mut b, -0.2, 0.2, 0.02, WHITE);
+            if i % 6 < 2 && !self.crossed(i, middle, 0.0) {
+                strip(&mut b, &|_| -0.2, &|_| 0.2, 0.02, WHITE);
             }
             let kerb = if (i / 2) % 2 == 0 { RED } else { WHITE };
             for side in [-1.0, 1.0] {
-                let beside = middle + (r0 + r1) / 2.0 * side * (ROAD_HW + WALL) / 2.0;
-                if self.crossed(i, beside, WALL + 1.0) {
+                let beside = middle + (r0 + r1) / 2.0 * side * (h0 - VERGE + h0) / 2.0;
+                if self.crossed(i, beside, 1.0) {
                     continue;
                 }
-                let (near, far) = (side * ROAD_HW, side * (ROAD_HW + KERB));
-                strip(&mut b, near.min(far), near.max(far), 0.01, kerb);
-                let (near, far) = (far, side * WALL);
-                strip(&mut b, near.min(far), near.max(far), 0.0, LIME);
+                // Each from the side nearer the road's left to the further.
+                let tarmac = move |h: f32| side * (h - VERGE);
+                let kerbed = move |h: f32| side * (h - VERGE + KERB);
+                let walled = move |h: f32| side * h;
+                match side > 0.0 {
+                    true => {
+                        strip(&mut b, &tarmac, &kerbed, 0.01, kerb);
+                        strip(&mut b, &kerbed, &walled, 0.0, LIME);
+                    }
+                    false => {
+                        strip(&mut b, &kerbed, &tarmac, 0.01, kerb);
+                        strip(&mut b, &walled, &kerbed, 0.0, LIME);
+                    }
+                }
             }
 
             let barrier = if (i / 3) % 2 == 0 { WHITE } else { RED };
             for side in [-1.0, 1.0] {
-                let (a0, a1) = at(side * (WALL + 0.4));
+                let (a0, a1) = at(&|h| side * (h + 0.4));
                 let rot = Transform::IDENTITY.looking_to(a1 - a0, up).rotation;
                 let mid = (a0 + a1) / 2.0;
                 // There is none across the end of a byway, before an infield, or
                 // across the other road of a crossing.
-                let (e0, e1) = at(side * WALL);
+                let (e0, e1) = at(&|h| side * h);
                 if self.branches.iter().any(|branch| branch.holds(e0) && branch.holds(e1))
                     || self.infields.iter().any(|infield| infield.opens(i, side))
-                    || self.crossed(i, mid, WALL)
+                    || self.crossed(i, mid, 0.0)
                 {
                     continue;
                 }
@@ -1547,7 +1650,7 @@ impl Track {
                 // corner goes.
                 let screen = self.screens.iter().find(|screen| screen.stands(i, side));
                 if let Some(screen) = screen {
-                    let (b0, b1) = at(side * (WALL + 0.8 + SCREEN_THICK / 2.0));
+                    let (b0, b1) = at(&|h| side * (h + 0.8 + SCREEN_THICK / 2.0));
                     let (mid, long) = ((b0 + b1) / 2.0, a0.distance(a1) / 2.0 + 0.3);
                     let (high, coping) = (screen.height(), 0.5);
                     let footing = (0.4 * high).min(1.0);
@@ -1575,7 +1678,7 @@ impl Track {
                     if screen.outside {
                         // On the face of it, just clear of the wall: a band, and on
                         // every other stretch of the band an arrowhead.
-                        let (f0, f1) = at(side * (WALL + 0.74));
+                        let (f0, f1) = at(&|h| side * (h + 0.74));
                         let on = |along: f32, high: f32| f0.lerp(f1, along) + up * high;
                         let mut face = |corners: [Vec3; 4], colour: Color| {
                             let [p, q, r, t] = corners;
@@ -1585,7 +1688,7 @@ impl Track {
                         let (low, high) = (1.6, 4.8);
                         face([on(0.0, low), on(1.0, low), on(1.0, high), on(0.0, high)], YELLOW);
                         if i % 2 == 0 {
-                            let (g0, g1) = at(side * (WALL + 0.68));
+                            let (g0, g1) = at(&|h| side * (h + 0.68));
                             let on = |along: f32, high: f32| g0.lerp(g1, along) + up * high;
                             let (middle, tip) = ((low + high) / 2.0, 0.95);
                             let arms = [(high - 0.3, middle), (low + 0.3, middle)];
@@ -1603,7 +1706,7 @@ impl Track {
                 // the higher the road the higher it, up to what the barrier stops:
                 // from up there nothing below is seen but what is a long way off,
                 // and from below nothing of what is on it.
-                let raised = (p0.y + p1.y) / 2.0 - self.bank[i].abs() * WALL;
+                let raised = (p0.y + p1.y) / 2.0 - self.bank[i].abs() * h0;
                 let parapet = parapet(raised);
                 let covered = |stretch: &(usize, usize)| (stretch.0..stretch.1).contains(&i);
                 if parapet > 0.1 && screen.is_none() && !self.tunnels.iter().chain(&self.jumps).any(covered) {
@@ -1617,7 +1720,7 @@ impl Track {
 
                 // Embankment under raised sections, visible from both sides.
                 if (p0.y > 0.05 || p1.y > 0.05) && !span(i) {
-                    let (o0, o1) = at(side * (WALL + 0.8));
+                    let (o0, o1) = at(&|h| side * (h + 0.8));
                     let (g0, g1) = (o0.with_y(-0.1), o1.with_y(-0.1));
                     b.quad(o0, o1, g1, g0, TAN);
                     b.quad(o1, o0, g0, g1, TAN);
@@ -1635,7 +1738,7 @@ impl Track {
                 if let Some(under) = under {
                     let foot = self.pts[under].y + 1.05;
                     for side in [-1.0, 1.0] {
-                        let base = (p0 + r0 * side * (WALL + 0.4)).with_y(foot);
+                        let base = (p0 + r0 * side * (h0 + 0.4)).with_y(foot);
                         b.cyl(base, 0.4, p0.y - 0.85 - foot, Quat::IDENTITY, WHITE);
                     }
                 }
@@ -1644,7 +1747,7 @@ impl Track {
                 // A bridge: a deck under the road, banked as it is, and nothing under that.
                 let lean = (up - (r0 + r1) / 2.0 * self.bank[i]).normalize();
                 let rot = Transform::IDENTITY.looking_to(p1 - p0, lean).rotation;
-                let half = Vec3::new(WALL + 0.8, 0.4, p0.distance(p1) / 2.0 + 0.05);
+                let half = Vec3::new((h0 + h1) / 2.0 + 0.8, 0.4, p0.distance(p1) / 2.0 + 0.05);
                 b.cuboid((p0 + p1) / 2.0 - lean * 0.45, half, rot, GREY);
             }
             if let Some(&(from, to)) = self.tunnels.iter().find(|t| (t.0..t.1).contains(&i)) {
@@ -1658,7 +1761,7 @@ impl Track {
                     (false, true) => (GREY, 0.0),
                     (false, false) => (Color::srgb(0.56, 0.58, 0.59), 0.0),
                 };
-                let across = (r0 + r1).normalize() * (WALL + 0.8 + TUNNEL_THICK / 2.0);
+                let across = (r0 + r1).normalize() * ((h0 + h1) / 2.0 + 0.8 + TUNNEL_THICK / 2.0);
                 let wall = Vec3::new(TUNNEL_THICK / 2.0 + extra, TUNNEL_HEIGHT / 2.0, length);
                 for side in [-1.0, 1.0] {
                     b.cuboid(
@@ -1669,7 +1772,7 @@ impl Track {
                     );
                 }
                 let roof = Vec3::new(
-                    WALL + 0.8 + TUNNEL_THICK + extra,
+                    (h0 + h1) / 2.0 + 0.8 + TUNNEL_THICK + extra,
                     TUNNEL_THICK / 2.0 + extra,
                     length,
                 );
@@ -1684,7 +1787,7 @@ impl Track {
             if span(i) != span((i + n - 1) % n) {
                 // Where the embankment stops for the bridge: its end, and a pier at
                 // each corner.
-                let (a, c) = (p0 - r0 * (WALL + 0.8), p0 + r0 * (WALL + 0.8));
+                let (a, c) = (p0 - r0 * (h0 + 0.8), p0 + r0 * (h0 + 0.8));
                 let (a0, c0) = (a.with_y(-0.1), c.with_y(-0.1));
                 b.quad(a, c, c0, a0, TAN);
                 b.quad(c, a, a0, c0, TAN);
@@ -1699,7 +1802,8 @@ impl Track {
         // A crossing is a plate over both roads, with a yellow box on it.
         for &[first, second] in &self.crossings {
             let (along, across) = (self.flat[first], self.flat[second]);
-            let reach = (ROAD_HW + KERB) / along.cross(across).y.abs().max(0.2);
+            let tarmac = self.half[first].max(self.half[second]) - VERGE;
+            let reach = (tarmac + KERB) / along.cross(across).y.abs().max(0.2);
             let centre = (self.pts[first] + self.pts[second]) / 2.0;
             let corner = |a: f32, c: f32, lift: f32| centre + along * a + across * c + up * lift;
             // Seen from above, whichever way the two roads cross.
@@ -1780,7 +1884,7 @@ impl Track {
                 let wide = 2.0 * branch.road / STRIPS as f32;
                 for lane in 0..STRIPS {
                     let from = -branch.road + wide * lane as f32;
-                    if !self.on_road(mid + branch.right * (from + wide / 2.0), ROAD_HW + KERB) {
+                    if !self.on_road(mid + branch.right * (from + wide / 2.0), KERB - VERGE) {
                         strip(&mut b, from, from + wide, 0.012, dirt[(k / 2) % 2]);
                     }
                 }
@@ -1788,7 +1892,7 @@ impl Track {
                 let portal = roofed != branch.roofed(branch.place(p).0 - 4.0)
                     || roofed != branch.roofed(branch.place(q).0 + 4.0);
                 for side in [-1.0, 1.0] {
-                    if self.on_road(mid + branch.right * side * branch.wall, WALL) {
+                    if self.on_road(mid + branch.right * side * branch.wall, 0.0) {
                         continue;
                     }
                     let (near, far) = (side * branch.road, side * branch.wall);
@@ -1830,21 +1934,23 @@ impl Track {
             }
         }
 
-        // Chequered start line and gantry.
+        // Chequered start line and gantry, as wide as the road is there.
         let rot = Transform::IDENTITY.looking_to(self.fwd[0], up).rotation;
         let chequer = |i: i32, row: i32| if (i + row) % 2 == 0 { WHITE } else { BLACK };
+        let across = self.wall_at(0.0);
+        let (squares, banner) = (across.ceil() as i32, ((across + 4.6) / 2.1).round() as i32);
         for row in 0..2 {
-            for i in -8..8 {
+            for i in -squares..squares {
                 let c = self.point(row as f32 + 0.5, i as f32 + 0.5) + up * 0.03;
                 b.cuboid(c, Vec3::new(0.5, 0.01, 0.5), rot, chequer(i, row));
             }
-            for i in -6..6 {
+            for i in -banner..banner {
                 let c = self.point(0.0, (i as f32 + 0.5) * 2.1) + up * (8.5 + row as f32);
                 b.cuboid(c, Vec3::new(1.05, 0.5, 0.4), rot, chequer(i, row));
             }
         }
         for side in [-1.0, 1.0] {
-            let c = self.point(0.0, side * (WALL + 1.6)) + up * 5.0;
+            let c = self.point(0.0, side * (self.wall_at(0.0) + 1.6)) + up * 5.0;
             b.brick(c, Vec3::new(0.8, 5.0, 0.8), rot, YELLOW, (2, 2));
         }
         b.build()
@@ -1866,7 +1972,7 @@ impl Track {
             .flat_map(|screen| {
                 let clear = if screen.outside { 5.0 } else { INSIDE_CLEAR };
                 (screen.from..screen.to)
-                    .map(move |i| (self.edge(i, screen.side * (WALL + 1.3)), clear))
+                    .map(move |i| (self.edge(i, screen.side * (self.half[i] + 1.3)), clear))
             })
             .collect();
         // Over the circuit's own ground and a little way round it; round an arena,
@@ -1887,14 +1993,11 @@ impl Track {
         };
         for _ in 0..SCATTERED {
             let pos = Vec3::new(rng.range(least.x, most.x), 0.0, rng.range(least.z, most.z));
-            let clear = self
-                .pts
-                .iter()
-                .map(|&p| xz_dist2(p, pos))
-                .fold(f32::MAX, f32::min)
-                .sqrt();
             // How far it is to the nearest barrier: nothing is bigger than that.
-            let room = clear - WALL - 1.0;
+            let clear = (0..self.n())
+                .map(|i| xz_dist2(self.pts[i], pos).sqrt() - self.half[i])
+                .fold(f32::MAX, f32::min);
+            let room = clear - 1.0;
             if room < 1.5
                 || fences.iter().any(|fence| fence.shades(pos))
                 || walls.iter().any(|&(wall, clear)| xz_dist2(wall, pos) < clear * clear)
@@ -2228,7 +2331,7 @@ mod tests {
             } else {
                 1
             };
-            let crossing = |i: usize, gap: Vec3| t.crossed(i, gap, WALL);
+            let crossing = |i: usize, gap: Vec3| t.crossed(i, gap, 0.0);
             assert_eq!(t.branches.len(), byways, "{layout}");
             for branch in &t.branches {
                 // Each runs between two places on the line, and is the shorter way.
@@ -2255,7 +2358,7 @@ mod tests {
                     assert!(t.collision.wall(middle + lift, out + lift).is_some());
                 }
                 // It keeps clear of the rest of the road, tunnels and jumps too.
-                assert!(!t.on_road(middle, WALL + branch.wall), "{layout}");
+                assert!(!t.on_road(middle, branch.wall), "{layout}");
                 for stretch in t.tunnels.iter().chain(&t.jumps) {
                     assert!(!(stretch.0..stretch.1).contains(&from));
                     assert!(!(stretch.0..stretch.1).contains(&to));
@@ -2322,7 +2425,7 @@ mod tests {
                     let ground = t.collision.ground(on + Vec3::Y * 2.0, 4.0).unwrap();
                     assert!(ground.surface.rolling_resistance >= LAWN_DRAG, "{layout}");
                     assert!(
-                        a.distance(d) < 2.0 || !t.on_road(on, WALL - 1.0),
+                        a.distance(d) < 2.0 || !t.on_road(on, -1.0),
                         "{layout} {on}"
                     );
                     assert!(t.collision.wall(t.pts[middle] + lift, on + lift).is_none());
@@ -2404,7 +2507,7 @@ mod tests {
                 for i in screen.from..screen.to {
                     let barrier = t.edge(i, screen.side * WALL);
                     assert!(!t.branches.iter().any(|branch| branch.holds(barrier)));
-                    assert!(!t.crossed(i, barrier, WALL));
+                    assert!(!t.crossed(i, barrier, 0.0));
                 }
             }
             // Turned round, each is the same wall, on what is then the other side.
@@ -2457,5 +2560,44 @@ mod tests {
                 "{s} {lat} -> {s2} {lat2}"
             );
         }
+    }
+
+    #[test]
+    fn a_road_goes_evenly_from_one_width_to_the_next() {
+        // An oval as wide as the game's along the start, thirty wide along the far
+        // straight, and twelve at its last corner.
+        let text = "name = \"Oval\"\ncorners = [[0, 0, 0, 0], [100, 0, 0, 30], [100, 0, 80, 30, 30], [-100, 0, 80, 30, 30], [-100, 0, 0, 30, 12]]\n";
+        let map = Map::tried("OVAL", text).unwrap();
+        assert_eq!(map.road.widths, [WIDTH, WIDTH, 30.0, 30.0, 12.0]);
+        let track = Track::made(&map, false);
+        let at = |x: f32, z: f32| track.nearest(Vec3::new(x, 0.0, z));
+        let (start, far) = (at(0.0, 0.0), at(0.0, 80.0));
+        assert_eq!((track.half[start], track.half[far]), (WALL, 15.0));
+        // From the last corner to the start it narrows to six either side and
+        // widens again to eight: evenly, so at each sample a little more.
+        let (west, first) = (at(-100.0, 40.0), at(-50.0, 0.0));
+        assert!(track.half[west] > track.half[first] && track.half[first] < WALL, "{} {}", track.half[west], track.half[first]);
+        let steps: Vec<f32> = (0..20).map(|k| track.half[(start + track.n() - 20 + k) % track.n()]).collect();
+        let rises: Vec<f32> = steps.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(rises.iter().all(|&rise| (rise - rises[0]).abs() < 1e-3 && rise > 0.0), "{rises:?}");
+        // Its barriers are where its width says, and a car is on the road out to
+        // them and no further: thirteen out on the far straight, and not at the start.
+        let barrier = |i: usize| {
+            let middle = track.pts[i] + Vec3::Y;
+            let hit = track.collision.wall(middle, middle + track.right[i] * 30.0).unwrap();
+            hit.point.distance(middle)
+        };
+        assert!((barrier(far) - 15.0).abs() < 0.1 && (barrier(start) - WALL).abs() < 0.1);
+        assert!(track.on_road(track.edge(far, 13.0), 0.0) && !track.on_road(track.edge(start, 13.0), 0.0));
+        // The computer's cars keep as far across it as they would on a road as
+        // wide as the game's, for its width.
+        let s = far as f32 * track.spacing;
+        assert!((track.lane(s, 3.0) - 3.0 * 13.0 / ROAD_HW).abs() < 1e-3);
+        assert_eq!(track.lane(start as f32 * track.spacing, 3.0), 3.0);
+        // And it can be built every way, and raced the other way.
+        assert!(crate::items::laid(&track).iter().all(|brick| track.on_road(brick.1, 0.0)));
+        let mut back = Track::made(&map, true);
+        back.reverse();
+        assert_eq!(back.half.len(), track.n());
     }
 }

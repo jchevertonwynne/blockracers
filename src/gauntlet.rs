@@ -37,7 +37,7 @@ use crate::meshgen::*;
 use crate::physics::UNIT;
 use crate::scenery::{mirror, to_world};
 use crate::map::Map;
-use crate::track::{Lane, Track, WALL};
+use crate::track::{Lane, Track};
 use crate::world::{self, LoadedWorld};
 use bevy::prelude::*;
 use serde::Deserialize;
@@ -96,8 +96,8 @@ const ARK_UNDER: f32 = 17.0;
 const ARK_BERTH: f32 = 2.0;
 /// How far apart the stones are, and how near the dragon is come, where a map
 /// doesn't say.
-const STONES_APART: f32 = 20.0;
-const DRAGON_REACH: f32 = 70.0;
+pub(crate) const STONES_APART: f32 = 20.0;
+pub(crate) const DRAGON_REACH: f32 = 70.0;
 
 /// What each hazard takes from the race it belongs to: models, then emitters. In
 /// the order of the races.
@@ -212,10 +212,10 @@ const LANE_WARNING: f32 = 60.0;
 type Curse = (f32, [(f32, f32); 3]);
 /// How far round the place that sets a curse off a car is that does.
 const CURSE_REACH: f32 = 12.0;
-/// How far from the middle of the road the legs of the hammer's frame stand and
-/// the cannons' muzzles are.
-const FRAME_OUT: f32 = WALL + 3.0;
-const CANNON_OUT: f32 = WALL + 5.0;
+/// How far outside the road's barrier the legs of the hammer's frame stand and the
+/// cannons' muzzles are.
+const FRAME_OUT: f32 = 3.0;
+const CANNON_OUT: f32 = 5.0;
 
 /// The brick-built parts of the gauntlet.
 #[derive(Resource)]
@@ -401,7 +401,8 @@ impl Builder<'_> {
     /// down the middle of the road with bricks to be had beside it, which the
     /// computer's cars keep to the left of. The gate itself is `tag`'s.
     fn shut_lane(&mut self, site: Site, tag: usize) {
-        self.wall(tag, site.at(0.0, 0.0, 0.0), site.at(0.0, WALL, 0.0), 9.0);
+        let wall = self.track.wall_at(site.s);
+        self.wall(tag, site.at(0.0, 0.0, 0.0), site.at(0.0, wall, 0.0), 9.0);
         self.wall(
             0,
             site.at(0.0, 0.0, 0.0),
@@ -419,11 +420,11 @@ impl Builder<'_> {
             );
         }
         for (right, power) in [(0.25, Power::Red), (0.5, Power::Green), (0.75, Power::Yellow)] {
-            let at = site.at(14.0, right * WALL, BRICK_HEIGHT);
+            let at = site.at(14.0, right * wall, BRICK_HEIGHT);
             self.world.bricks.push((Some(power), to_world(at)));
         }
         for right in [0.375, 0.625] {
-            let at = site.at(24.0, right * WALL, BRICK_HEIGHT);
+            let at = site.at(24.0, right * wall, BRICK_HEIGHT);
             self.world.bricks.push((None, to_world(at)));
         }
         self.keep_left(site, LANE_WARNING, LANE_LENGTH + 5.0, -2.0);
@@ -432,11 +433,8 @@ impl Builder<'_> {
     /// Has the computer's cars keep `most` or further to the left from `before` the
     /// site to `after` it.
     fn keep_left(&mut self, site: Site, before: f32, after: f32, most: f32) {
-        let (least, most) = if mirror() {
-            (-most, self.track.road)
-        } else {
-            (-self.track.road, most)
-        };
+        let road = self.track.tarmac_at(site.s);
+        let (least, most) = if mirror() { (-most, road) } else { (-road, most) };
         self.track.lanes.push(Lane {
             from: site.s - before,
             to: site.s + after,
@@ -462,12 +460,13 @@ impl Builder<'_> {
                 last: None,
             },
         ));
-        for side in [-FRAME_OUT, FRAME_OUT] {
+        let out = self.track.wall_at(site.s) + FRAME_OUT;
+        for side in [-out, out] {
             self.plinth(site.at(0.0, side, 18.6), 1.3, GREY);
         }
         self.beam(
-            site.at(0.0, -FRAME_OUT, 18.0),
-            site.at(0.0, FRAME_OUT, 18.0),
+            site.at(0.0, -out, 18.0),
+            site.at(0.0, out, 18.0),
             0.8,
             DARK_GREY,
         );
@@ -499,8 +498,9 @@ impl Builder<'_> {
 
     /// Two cannons, one either side, each firing at the road as cars come up to it.
     fn cannons(&mut self, site: Site) {
+        let out = self.track.wall_at(site.s) + CANNON_OUT;
         for (i, side) in [1.0, -1.0].into_iter().enumerate() {
-            let muzzle = site.at(-6.0 * side, CANNON_OUT * side, 5.5);
+            let muzzle = site.at(-6.0 * side, out * side, 5.5);
             let targets = [(-20.0, -4.0), (-9.0, 3.0), (3.0, -2.0), (14.0, 4.0)];
             let targets = targets
                 .iter()
@@ -640,9 +640,9 @@ pub fn load(
             }
             Sort::Saucer => b.saucer(site),
             Sort::Lava => b.lava(&mut places, site),
-            Sort::Field => b.field(site, at(s, right + WALL / 2.0)),
+            Sort::Field => b.field(site, at(s, right + plain.wall_at(s) / 2.0)),
             Sort::Pillar => b.pillar(site),
-            Sort::Barrels => b.barrels(site, at(s, right + WALL / 2.0)),
+            Sort::Barrels => b.barrels(site, at(s, right + plain.wall_at(s) / 2.0)),
             Sort::Crane => b.crane(site),
             Sort::Warp => b.warp(&mut places, site, at(stood.out.unwrap_or(s), 0.0)),
             Sort::Smoke => b.smoke(site),
@@ -834,6 +834,7 @@ impl Builder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::track::WALL;
 
     /// Every model a map's hazards take.
     fn wanted(map: &Map) -> Vec<&'static str> {

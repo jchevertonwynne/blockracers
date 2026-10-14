@@ -185,6 +185,8 @@ pub struct Kart {
     /// lives, or the seconds of its clock; and that it is "it".
     pub stake: f32,
     pub it: bool,
+    /// How many times it has been knocked out of a battle that cars come back to.
+    pub downs: u8,
     /// How many times the car has been spun round or thrown into the air, which is
     /// what a battle counts: a car that drives for itself is over being thrown
     /// within the step, so the timers don't say.
@@ -317,7 +319,7 @@ impl Kart {
             }
             _ => {
                 let s = -8.0 - (slot / 2) as f32 * 6.0;
-                let lat = track.road
+                let lat = track.tarmac_at(s)
                     * if slot.is_multiple_of(2) {
                         -0.375
                     } else {
@@ -374,6 +376,7 @@ impl Kart {
             out: None,
             stake: 0.0,
             it: false,
+            downs: 0,
             hits: 0,
             laps: LapTimes::default(),
             held: None,
@@ -975,7 +978,7 @@ impl Ai {
             let (along, across) = branch.place(k.pos);
             if (0.0..branch.length()).contains(&along)
                 && across.abs() < branch.wall
-                && !track.on_road(k.pos, crate::track::WALL + BYWAY_MOUTH)
+                && !track.on_road(k.pos, BYWAY_MOUTH)
             {
                 self.byway = Some(b);
             }
@@ -1479,6 +1482,7 @@ pub fn ai_drive(
     mut rng: ResMut<Rng>,
     loaded: Option<Res<LoadedWorld>>,
     settings: Res<Settings>,
+    mark: Option<Res<crate::net::modes::Mark>>,
     mut q: Query<(&mut Kart, &mut Ai, &mut Controls, Has<Player>, Option<&Remote>)>,
 ) {
     let dt = time.delta_secs();
@@ -1499,6 +1503,9 @@ pub fn ai_drive(
     // The cars that are "it", and what that is to the rest (`net::modes`).
     let its: Vec<usize> = q.iter().filter(|x| x.0.it).map(|x| x.0.slot).collect();
     let mode = settings.mode;
+    // Where the hill is just now, and where a flag nobody has lies.
+    let top = track.hill_at(race.time);
+    let loose = mark.and_then(|mark| mark.0).filter(|_| mode == Mode::KeepAway);
     // The nearest other car between two distances inside a cone ahead.
     let ahead = |k: &Kart, (min, max, cone): (f32, f32, f32)| {
         let forward = k.rot * Vec3::NEG_Z;
@@ -1664,7 +1671,6 @@ pub fn ai_drive(
             // In king of the hill the line takes everyone up to the hill, and a
             // driver with nobody to go for makes for the middle of it once that
             // is near: from farther off the straight way there may be over an edge.
-            let top = track.hill();
             let near = top.distance(k.pos);
             if mode == Mode::Hill
                 && ai.quarry.is_none()
@@ -1673,6 +1679,10 @@ pub fn ai_drive(
                 && clear(top)
             {
                 ai.quarry = Some(top);
+            }
+            // A flag lying loose is made for by whoever can see it.
+            if let Some(flag) = loose.filter(|flag| (flag.y - k.pos.y).abs() < QUARRY_LEVEL && clear(*flag)) {
+                ai.quarry = Some(flag);
             }
             ai.drive(&k, &mut c, &track, &mut rng, dt);
             // Its king stays where it is until someone comes to push it off.
@@ -2165,7 +2175,7 @@ fn place_key(k: &Kart, lapless: bool) -> (u8, f32) {
     match (k.out, k.finished) {
         (Some(time), _) => (0, time),
         (None, Some(time)) => (2, -time),
-        (None, None) if lapless => (1, k.stake),
+        (None, None) if lapless => (1, crate::net::modes::worth(k)),
         (None, None) => (1, k.progress),
     }
 }
@@ -2537,6 +2547,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_road_much_wider_and_narrower_than_the_game_s_is_driven_round() {
+        // Forty wide at one corner and eleven at the next, and as wide as the
+        // game's elsewhere, each width easing into the next.
+        let text = "name = \"Wide\"\ncorners = [[0, 0, 0, 0], [150, 0, 0, 30], [150, 0, -120, 30, 40], [-150, 0, -120, 30, 11], [-150, 0, 0, 30]]\n";
+        let map = crate::map::Map::tried("WIDE", text).unwrap();
+        let track = Track::made(&map, false);
+        let mut kart = Kart::new(&track, 0);
+        let mut c = Controls { throttle: 1.0, ..default() };
+        let dt = 1.0 / 60.0;
+        let (mut frames, mut touching) = (0, 0);
+        for _ in 0..(lapping_time(&track) / dt) as usize {
+            let speed = kart.vel.length();
+            let to = track.point(kart.s + 9.0 + speed * 0.32, 0.0) - kart.pos;
+            let off = wrap_angle((-to.x).atan2(-to.z) - kart.yaw);
+            c.steer = if off.abs() > 0.05 { off.signum() } else { 0.0 };
+            kart.advance(&c, &track, dt);
+            if kart.lap >= 2 {
+                frames += 1;
+                touching += kart.wall_contact as usize;
+            }
+        }
+        assert!(kart.lap >= 4 && touching * 100 < frames, "{} laps, at a wall {touching} frames of {frames}", kart.lap);
+        // Its grid is across the road where the cars line up.
+        let lined = Kart::new(&track, 1);
+        assert!(track.on_road(lined.pos, -1.0));
+        // And the computer's cars race round it together, each way, keeping to
+        // lanes as far across it as it is wide.
+        for reverse in [false, true] {
+            let mut track = Track::made(&map, false);
+            if reverse {
+                track.reverse();
+            }
+            let mut karts: Vec<Kart> = (0..6).map(|slot| Kart::new(&track, slot)).collect();
+            let mut drivers: Vec<Ai> = (0..6).map(|slot| Ai::new(1.0 - 0.03 * slot as f32, slot)).collect();
+            let mut controls: Vec<Controls> = (0..6).map(|_| Controls::default()).collect();
+            let (mut rng, dt) = (Rng(7), 1.0 / 60.0);
+            for _ in 0..(1.3 * lapping_time(&track) / dt) as usize {
+                for i in 0..6 {
+                    drivers[i].drive(&karts[i], &mut controls[i], &track, &mut rng, dt);
+                    karts[i].advance(&controls[i], &track, dt);
+                }
+                for second in 1..6 {
+                    let (before, after) = karts.split_at_mut(second);
+                    for first in before {
+                        meet(first, &mut after[0], None);
+                    }
+                }
+            }
+            let laps: Vec<i32> = karts.iter().map(|kart| kart.lap).collect();
+            assert!(laps.iter().all(|&lap| lap >= 3), "reversed {reverse}: {laps:?}");
+        }
+    }
+
     /// In an arena the computer's car keeps moving along the line when it has
     /// nobody to go after, and goes straight for a car in sight when it has: here
     /// one standing on the far side of the open floor, which it reaches.
@@ -2740,7 +2804,7 @@ mod tests {
                         let (along, across) = branch.place(kart.pos);
                         let middle = (along - branch.length() / 2.0).abs() < 4.0
                             && across.abs() < branch.wall
-                            && !track.on_road(kart.pos, crate::track::WALL);
+                            && !track.on_road(kart.pos, 0.0);
                         taken[b] += (middle && !inside[b]) as usize;
                         inside[b] = middle;
                     }

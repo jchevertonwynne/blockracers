@@ -3,6 +3,7 @@ mod assets;
 mod audio;
 mod beams;
 mod build;
+mod builder;
 mod camera;
 mod cheats;
 mod championship;
@@ -230,29 +231,8 @@ fn main() {
         let keys = std::env::var("BRICK_KEYS").unwrap_or_default();
         let keys = keys.split(',').filter_map(|press| {
             let (key, at) = press.split_once('@')?;
-            let key = match key {
-                "Enter" => KeyCode::Enter,
-                "Esc" => KeyCode::Escape,
-                "Up" => KeyCode::ArrowUp,
-                "Down" => KeyCode::ArrowDown,
-                "Escape" => KeyCode::Escape,
-                "Tab" => KeyCode::Tab,
-                "Left" => KeyCode::ArrowLeft,
-                "Right" => KeyCode::ArrowRight,
-                "P" => KeyCode::KeyP,
-                "R" => KeyCode::KeyR,
-                "W" => KeyCode::KeyW,
-                "E" => KeyCode::KeyE,
-                "T" => KeyCode::KeyT,
-                "Back" => KeyCode::Backspace,
-                "Comma" => KeyCode::Comma,
-                "Period" => KeyCode::Period,
-                "I" => KeyCode::KeyI,
-                "J" => KeyCode::KeyJ,
-                "K" => KeyCode::KeyK,
-                "L" => KeyCode::KeyL,
-                "C" => KeyCode::KeyC,
-                _ => return None,
+            let Some(key) = demo_key(key) else {
+                return None;
             };
             let (at, held) = at.split_once('+').unwrap_or((at, "0"));
             Some((key, at.parse().ok()?, held.parse().ok()?))
@@ -337,6 +317,9 @@ fn main() {
     }) {
         settings.mode = mode;
     }
+    // `BRICK_TEAMS=1` has it played by two teams, and `BRICK_RETURNS=1` has a car
+    // knocked out of a battle come back to it.
+    (settings.teams, settings.returns) = (set("BRICK_TEAMS"), set("BRICK_RETURNS"));
     // `BRICK_SPEED=2` has the cars that many times as fast, or as near as there is.
     if let Some(pace) = std::env::var("BRICK_SPEED").ok().and_then(|pace| pace.parse::<f32>().ok()) {
         settings.speed = menu::SPEEDS
@@ -345,7 +328,7 @@ fn main() {
             .unwrap_or(menu::SPEEDS.len() - 1);
     }
     if let Ok(colour) = std::env::var("BRICK_BRICKS") {
-        settings.bricks = ["normal", "red", "yellow", "blue", "green", "none", "random"]
+        settings.bricks = ["normal", "red", "yellow", "blue", "green", "none", "random", "changing", "place"]
             .iter()
             .position(|&c| c == colour)
             .unwrap_or(0);
@@ -411,8 +394,11 @@ fn main() {
                     .after(bevy::input::InputSystems)
                     .before(input::read),
             );
-            // A demo online waits at the menu for its session's race to begin.
-            app.insert_state(if on_menu || auto.is_some() {
+            // A demo online waits at the menu for its session's race to begin, and
+            // `BRICK_BUILD` begins in the map builder.
+            app.insert_state(if std::env::var("BRICK_BUILD").is_ok() {
+                Screen::Build
+            } else if on_menu || auto.is_some() {
                 Screen::Menu
             } else if std::env::var("BRICK_LOADING").is_ok() {
                 // `BRICK_LOADING=<seconds>`: a demo of the loading screen.
@@ -464,6 +450,7 @@ fn main() {
             film::plugin,
             loading::plugin,
             lighting::plugin,
+            builder::view::plugin,
         ))
         .add_systems(
             Update,
@@ -565,8 +552,11 @@ fn main() {
                 )
                     .chain(),
                 kart::sync_karts,
-                net::modes::glow.after(kart::sync_karts),
-                net::modes::beacon,
+                (
+                    net::modes::glow.after(kart::sync_karts),
+                    net::modes::beacon,
+                    net::modes::notice,
+                ),
                 kart::sync_wheels,
                 cheats::hide_parts,
                 cheats::fast_forward,
@@ -809,6 +799,37 @@ fn setup_brick_world(
         })),
         Transform::from_xyz(0.0, -0.08, 0.0),
     ));
+}
+
+/// A key as `BRICK_KEYS` names it: a letter, a digit, `F5`, or its name.
+fn demo_key(name: &str) -> Option<KeyCode> {
+    const LETTERS: [KeyCode; 26] = [
+        KeyCode::KeyA, KeyCode::KeyB, KeyCode::KeyC, KeyCode::KeyD, KeyCode::KeyE, KeyCode::KeyF, KeyCode::KeyG,
+        KeyCode::KeyH, KeyCode::KeyI, KeyCode::KeyJ, KeyCode::KeyK, KeyCode::KeyL, KeyCode::KeyM, KeyCode::KeyN,
+        KeyCode::KeyO, KeyCode::KeyP, KeyCode::KeyQ, KeyCode::KeyR, KeyCode::KeyS, KeyCode::KeyT, KeyCode::KeyU,
+        KeyCode::KeyV, KeyCode::KeyW, KeyCode::KeyX, KeyCode::KeyY, KeyCode::KeyZ,
+    ];
+    Some(match name {
+        "Enter" => KeyCode::Enter,
+        "Esc" | "Escape" => KeyCode::Escape,
+        "Up" => KeyCode::ArrowUp,
+        "Down" => KeyCode::ArrowDown,
+        "Left" => KeyCode::ArrowLeft,
+        "Right" => KeyCode::ArrowRight,
+        "Tab" => KeyCode::Tab,
+        "Back" => KeyCode::Backspace,
+        "Comma" => KeyCode::Comma,
+        "Period" => KeyCode::Period,
+        "Shift" => KeyCode::ShiftLeft,
+        "Alt" => KeyCode::AltLeft,
+        "F5" => KeyCode::F5,
+        letter => {
+            let [letter] = letter.as_bytes() else {
+                return None;
+            };
+            *LETTERS.get(letter.to_ascii_uppercase().checked_sub(b'A')? as usize)?
+        }
+    })
 }
 
 /// Presses the keys a demo asks for, each for one frame.

@@ -21,7 +21,7 @@
 //! inside a corner; or where a hazard has something standing (`Track::clearings`).
 
 use crate::meshgen::*;
-use crate::track::{INSIDE_CLEAR, SCREEN_TURN, STRETCH, Track, WALL, xz_dist2};
+use crate::track::{INSIDE_CLEAR, SCREEN_TURN, STRETCH, Track, xz_dist2};
 use bevy::prelude::*;
 use serde::Deserialize;
 
@@ -41,18 +41,19 @@ const SOON: f32 = 110.0;
 /// samples before the bend to so many after.
 const INSIDE_TURN: f32 = 1.0 / 60.0;
 const INSIDE_ROUND: (usize, usize) = (20, 10);
-/// The nearest two stretches of road can be and have a wall between them, and the
-/// furthest: further off than that the other is left to the hedges.
-const NEAREST: f32 = 2.0 * (WALL + 0.8) + WALL_THICK + 0.8;
+/// How far apart two stretches' barriers must be to have a wall between them, and
+/// the furthest apart their middles can be: further off than that the other is
+/// left to the hedges.
+const NEAREST: f32 = 2.0 * 0.8 + WALL_THICK + 0.8;
 const FURTHEST: f32 = 64.0;
 /// How nearly level two stretches are that have a wall between them; and how far
 /// ahead of a place or behind it the other stretch may be, for each unit it is out
 /// to the side, and still be beside it.
 const LEVEL: f32 = 4.0;
 const ABEAM: f32 = 0.6;
-/// How far from the middle of a road its hedge is, and how high off the ground a
+/// How far outside a road's barrier its hedge is, and how high off the ground a
 /// road may be and have one: under a road that is higher, a hedge hides nothing.
-const HEDGE_OUT: f32 = WALL + 6.0;
+const HEDGE_OUT: f32 = 6.0;
 const HEDGE_ROAD: f32 = 1.5;
 /// Nothing stands this near where the road crosses itself on the level.
 const CROSSING_SIGHT: f32 = 44.0;
@@ -82,15 +83,15 @@ pub struct Fence {
 #[serde(default, deny_unknown_fields)]
 pub struct Look {
     #[serde(deserialize_with = "crate::map::colour")]
-    wall: Color,
+    pub wall: Color,
     #[serde(deserialize_with = "crate::map::colour")]
-    footing: Color,
+    pub footing: Color,
     #[serde(deserialize_with = "crate::map::colour")]
-    coping: Color,
+    pub coping: Color,
     /// What caps the piers that stand along it.
     #[serde(deserialize_with = "crate::map::colour")]
-    cap: Color,
-    battlements: bool,
+    pub cap: Color,
+    pub battlements: bool,
 }
 
 impl Default for Look {
@@ -145,16 +146,16 @@ pub fn fences(track: &Track) -> Vec<Fence> {
             .iter()
             .any(|crossing| xz_dist2(track.pts[crossing[0]], p) < near)
     };
-    // Clear of every road that is not well over its top, and of every byway.
+    // Clear of every road that is not well over its top, and of every byway, by
+    // `by` outside its barriers.
     let clear = |p: Vec3, top: f32, by: f32| {
-        track
-            .pts
-            .iter()
-            .all(|&q| xz_dist2(p, q) >= by * by || q.y > top + 1.0)
-            && track.branches.iter().all(|branch| {
-                let by = branch.wall + by - WALL;
-                branch.pts.iter().all(|&q| xz_dist2(p, q) >= by * by)
-            })
+        (0..n).all(|k| {
+            let (q, by) = (track.pts[k], track.half[k] + by);
+            xz_dist2(p, q) >= by * by || q.y > top + 1.0
+        }) && track.branches.iter().all(|branch| {
+            let by = branch.wall + by;
+            branch.pts.iter().all(|&q| xz_dist2(p, q) >= by * by)
+        })
     };
     // The walls first, then the hedges, each side of the road in turn. A place
     // where something already stands is left: two stretches see the one wall
@@ -174,7 +175,7 @@ pub fn fences(track: &Track) -> Vec<Fence> {
                         // then only as far as the corner between the two, which
                         // has walls of its own.
                         (Some((k, apart)), false)
-                            if apart >= NEAREST
+                            if apart >= track.half[i] + track.half[k] + NEAREST
                                 && !covered(k)
                                 && (track.apart(i, k) as f32 * track.spacing > SOON
                                     || track.curv[i].max(track.curv[k]) < SCREEN_TURN) =>
@@ -195,7 +196,7 @@ pub fn fences(track: &Track) -> Vec<Fence> {
                             if here.y < HEDGE_ROAD
                                 && !track.screens.iter().any(|screen| screen.stands(i, side)) =>
                         {
-                            let p = here + track.right[i] * side * HEDGE_OUT;
+                            let p = here + track.right[i] * side * (track.half[i] + HEDGE_OUT);
                             let low = inside(track, i, side);
                             let high = if low { LOW } else { HEIGHT };
                             (p, here.y + high, HEDGE_THICK, low)
@@ -204,7 +205,7 @@ pub fn fences(track: &Track) -> Vec<Fence> {
                     };
                     let p = p.with_y(top);
                     let stood = out.iter().any(|fence| fence.near(p, TAKEN));
-                    (!stood && !sighted(p) && clear(p, top, WALL + 0.8 + by / 2.0 + 0.3))
+                    (!stood && !sighted(p) && clear(p, top, 0.8 + by / 2.0 + 0.3))
                         .then_some((p, low))
                 })
                 .collect();
@@ -357,6 +358,7 @@ pub fn draw(track: &Track, look: &Look, fences: &[Fence], b: &mut BrickMesh) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::track::WALL;
     use crate::track::{SCREEN_THICK, parapet};
 
     /// How far on round the lap the road is that a car will be on next.
@@ -385,22 +387,23 @@ mod tests {
         for i in 0..n {
             let j = (i + 1) % n;
             for side in [-1.0, 1.0] {
-                let at = |lat: f32, high: f32| {
-                    let (a, b) = (track.edge(i, side * lat), track.edge(j, side * lat));
+                // So far outside the barriers, however wide the road is there.
+                let at = |out: f32, high: f32| {
+                    let (a, b) = (track.edge(i, side * (track.half[i] + out)), track.edge(j, side * (track.half[j] + out)));
                     (a.with_y(a.y + high), b.with_y(b.y + high))
                 };
                 if let Some(screen) = track.screens.iter().find(|screen| screen.stands(i, side)) {
-                    let (a, b) = at(WALL + 0.8 + SCREEN_THICK / 2.0, screen.height());
+                    let (a, b) = at(0.8 + SCREEN_THICK / 2.0, screen.height());
                     blinds.push((a, b, 0.0));
                 }
                 if track.tunnels.iter().any(|t| (t.0..t.1).contains(&i)) {
-                    let (a, b) = at(WALL + 1.6, 10.0);
+                    let (a, b) = at(1.6, 10.0);
                     blinds.push((a, b, 0.0));
                 }
                 // A bank is solid to the ground; a bridge only as deep as its deck.
                 let raised = (track.pts[i].y + track.pts[j].y) / 2.0;
                 if raised > 0.8 {
-                    let (a, b) = at(WALL + 0.4, 0.9 + parapet(raised));
+                    let (a, b) = at(0.4, 0.9 + parapet(raised));
                     let foot = if bridged[i] || bridged[j] { raised - 0.85 } else { 0.0 };
                     blinds.push((a, b, foot));
                 }

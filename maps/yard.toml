@@ -188,8 +188,9 @@ grid = [
 ]
 
 # The bricks, each where it lies, [x, z], on whatever is uppermost there. One
-# may say its `colour` (white, red, yellow, blue or green; without, each is a
-# colour of its own), and that it is `low`: on the floor, though something is over it.
+# may say its `colour` (white, red, yellow, blue or green, or changing, which
+# goes from one colour to the next as it lies; without, each is a colour of its
+# own), and that it is `low`: on the floor, though something is over it.
 bricks = [
     # The white ones, on the bridge and its piers.
     { at = [0, -10], colour = "white" },

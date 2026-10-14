@@ -24,13 +24,14 @@ pub struct Standing {
     /// What it has left in a battle or a game of tag, and that it is "it".
     pub stake: f32,
     pub it: bool,
+    pub downs: u8,
 }
 
 impl Standing {
     pub fn put(self, k: &mut Kart) {
         (k.lap, k.place, k.progress, k.finished) =
             (self.lap, self.place as usize, self.progress, self.finished);
-        (k.stake, k.it) = (self.stake, self.it);
+        (k.stake, k.it, k.downs) = (self.stake, self.it, self.downs);
     }
 }
 
@@ -78,6 +79,7 @@ pub struct Sight {
     progress: f32,
     finished: Option<f32>,
     stake: f32,
+    downs: u8,
 }
 
 impl Sight {
@@ -119,6 +121,7 @@ impl Sight {
             progress: k.progress,
             finished: k.finished,
             stake: k.stake,
+            downs: k.downs,
         }
     }
 
@@ -162,6 +165,7 @@ impl Sight {
             progress: self.progress,
             finished: self.finished,
             stake: self.stake,
+            downs: self.downs,
             it: self.bits & Self::IT != 0,
         }
     }

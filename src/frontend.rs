@@ -75,6 +75,8 @@ const ICON: f32 = 32.0;
 const DISABLED: Color = Color::srgb_u8(75, 75, 75);
 const NORMAL: Color = Color::srgb_u8(118, 107, 15);
 const SELECTED: Color = Color::srgb_u8(246, 230, 6);
+/// How far under the main menu's "build" the port's "build a map" is.
+const BUILDER_UNDER: f32 = 29.0;
 /// Labels and banners.
 const LABEL: Color = Color::srgb_u8(239, 239, 239);
 /// How far to the right of the options' last button the port's own is, and where
@@ -309,7 +311,7 @@ impl Page {
     /// The item a page opens on.
     fn first(self) -> usize {
         match self {
-            Page::Main => 2,
+            Page::Main => 3,
             // Past the extras, to the first of the original's own.
             Page::Options => 1,
             // Past the selectors, to something to choose; and to "no".
@@ -399,6 +401,8 @@ enum Action {
     Dial,
     Refresh,
     Ready,
+    /// The team the player would be of, in a game played by two.
+    Side,
     Begin,
     Leave,
     /// Who to race as online.
@@ -410,6 +414,7 @@ enum Action {
     /// series is of, and beginning the points again.
     Listed,
     Length,
+    Rolling,
     ResetPoints,
     /// Going to the race that is on, and finding the session a code is for.
     Enter,
@@ -434,6 +439,8 @@ enum Action {
     Language,
     /// Giving up everything that has been won: the port's own.
     Forget,
+    /// Going to the map builder: the port's own.
+    Builder,
 }
 
 enum Widget {
@@ -895,6 +902,12 @@ fn items(
                 text::BUILD,
                 Action::Go(Page::Garage),
                 None,
+            ),
+            // The port's own: making a circuit or an arena (`builder`).
+            plain(
+                art.place("main", "garage").min + Vec2::new(0.0, BUILDER_UNDER),
+                "BUILD A MAP",
+                Action::Builder,
             ),
             button(
                 "main",
@@ -1391,6 +1404,14 @@ fn items(
             ));
             // To the garage, to build a racer or change one, and back here.
             items.push(plain(row(0), "BUILD A RACER", Action::Go(Page::Garage)));
+            // Which team to be of, where the host has the next race played by two.
+            if wired.room.hosts().is_some_and(Rules::sided) {
+                let team = match wired.room.side {
+                    Some(side) => format!("TEAM: {}", TEAMS[side as usize % 2]),
+                    None => "TEAM: EITHER".to_string(),
+                };
+                items.push(plain(row(0), &team, Action::Side));
+            }
             // How the race is run, its circuit apart, is the host's to say, and so
             // is the session and when the race begins.
             if wired.role == Role::Host {
@@ -1451,6 +1472,17 @@ fn items(
                     listed(wired.session.unlisted).into(),
                     Action::Listed,
                 ),
+                selector(
+                    wide(line(4)),
+                    None,
+                    if wired.session.rolling {
+                        "STRAIGHT ON"
+                    } else {
+                        "A VOTE"
+                    }
+                    .into(),
+                    Action::Rolling,
+                ),
             ];
             // Each player, to be put out: asked twice, so that it isn't done by a slip.
             items.extend(wired.session.members.iter().enumerate().map(|(n, member)| {
@@ -1460,7 +1492,7 @@ fn items(
                     format!("REMOVE {}", member.name)
                 };
                 plain(
-                    Vec2::new(3.0, 262.0 + 32.0 * n as f32),
+                    Vec2::new(3.0, 296.0 + 27.0 * n as f32),
                     &label,
                     Action::Remove(member.peer),
                 )
@@ -1472,7 +1504,7 @@ fn items(
                 } else {
                     "COPY ADDRESS"
                 };
-                items.push(plain(Vec2::new(330.0, 262.0), label, Action::CopyAddress));
+                items.push(plain(Vec2::new(330.0, 340.0), label, Action::CopyAddress));
             }
             let back = art.place("race", "goback").min;
             items.push(plain(
@@ -1611,6 +1643,10 @@ fn voter_places(n: usize, count: usize) -> (Rect, Rect, Rect) {
 const ROSTER_WIDTH: f32 = ROOM_ROSTER.max.x - ROOM_ROSTER.min.x;
 
 /// How a race is to be run, in a line: what `rules` say of it, its circuit apart.
+/// What the two teams of a game played by teams are called, by the colours the
+/// race display has them in.
+const TEAMS: [&str; 2] = ["BLUE", "GOLD"];
+
 fn said(rules: &Rules) -> String {
     // A battle and a game of tag aren't run by the lap.
     let mode = rules.mode();
@@ -1942,6 +1978,12 @@ fn notes(
                     (true, false) => format!("YOU, {link}"),
                     (false, _) => link,
                 };
+                // And everyone the team each has picked, where there are teams.
+                let link = match voter.side.filter(|_| room.hosts().is_some_and(Rules::sided)) {
+                    Some(side) if link.is_empty() => TEAMS[side as usize % 2].to_string(),
+                    Some(side) => format!("{link}, {}", TEAMS[side as usize % 2]),
+                    None => link,
+                };
                 notes.push((under, link, "font_ths", LABEL, true));
             }
             // Under those: the clock, a race that is on, how many are ready, or how
@@ -2058,6 +2100,7 @@ fn notes(
                 beside(FIELD[1], "PLAYERS"),
                 beside(line(2), "SERIES"),
                 beside(line(3), "FOUND"),
+                beside(line(4), "BETWEEN RACES"),
             ];
             if !wired.session.code.is_empty() {
                 let code = format!("CODE {}", wired.session.code);
@@ -2171,7 +2214,7 @@ fn enter(
     art: Option<Res<Art>>,
 ) {
     *menu = Menu::default();
-    menu.focus = 2;
+    menu.focus = Page::Main.first();
     // `MenuManager`: a test drive ends back in the garage (`c_flagReturnToGarage`).
     if circuits.end_test_drive(&mut settings) {
         (menu.page, menu.focus) = (Page::Garage, Page::Garage.first());
@@ -2873,6 +2916,7 @@ fn input(
             }
             Action::Listed if menu.page == Page::Host => online.unlisted = !online.unlisted,
             Action::Listed => session.unlisted = !session.unlisted,
+            Action::Rolling => session.rolling = !session.rolling,
             Action::Length => {
                 let at = SERIES
                     .iter()
@@ -3116,6 +3160,17 @@ fn input(
                 sfx.play(id::MENU_SELECT);
                 (room.ready, room.revision) = (!room.ready, room.revision + 1);
             }
+            // Either, the one, the other, and round.
+            Action::Side => {
+                sfx.play(id::MENU_SELECT);
+                room.side = match room.side {
+                    None => Some(0),
+                    Some(0) => Some(1),
+                    Some(_) => None,
+                };
+                room.revision += 1;
+                menu.drawn = false;
+            }
             Action::Begin => {
                 sfx.play(id::MENU_CONFIRM);
                 room.begin = true;
@@ -3156,6 +3211,7 @@ fn input(
             Action::Quit => {
                 exit.write(AppExit::Success);
             }
+            Action::Builder => next.set(Screen::Build),
             _ => {}
         }
     }
@@ -3699,6 +3755,7 @@ fn the_winner_of_a_race_online_is_who_celebrates() {
         ballot: None,
         link: None,
         points: 0,
+        side: None,
     };
     let built = Cosmetics {
         hat: 4,

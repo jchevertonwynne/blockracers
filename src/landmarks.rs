@@ -46,11 +46,11 @@ const GANTRY_LEGS: f32 = 10.6;
 const GANTRY_HEIGHT: f32 = 15.0;
 
 impl Landmark {
-    fn length() -> f32 {
+    pub(crate) fn length() -> f32 {
         80.0
     }
 
-    fn radius() -> f32 {
+    pub(crate) fn radius() -> f32 {
         30.0
     }
 
