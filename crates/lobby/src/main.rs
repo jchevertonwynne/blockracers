@@ -1,69 +1,32 @@
 //! Runs the lobby. `-addr :8096` says where it listens, and `-otel-endpoint host:port`
-//! where its traces are sent; without one it sends none.
-
-use std::net::SocketAddr;
-
-use anyhow::{Context, Result, bail};
+//! where its traces are sent; without one it sends none. Both are read as the
+//! cluster's other apps read theirs.
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
-    let mut addr = ":8096".to_string();
-    let mut collector = String::new();
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-addr" => addr = args.next().context("-addr takes an address")?,
-            "-otel-endpoint" => {
-                collector = args
-                    .next()
-                    .context("-otel-endpoint takes a host and port")?
-            }
-            other => bail!("unknown argument {other}"),
-        }
-    }
-    // `:8096` is every address, as the cluster's other apps write it.
-    let addr = if addr.starts_with(':') {
-        format!("0.0.0.0{addr}")
-    } else {
-        addr
-    };
-    let addr: SocketAddr = addr
-        .parse()
-        .with_context(|| format!("{addr} is not an address such as :8096"))?;
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("listening on {addr}"))?;
-    let traces = if collector.is_empty() {
-        None
-    } else {
-        Some(lobby::tracing::init("blockracers", &collector)?)
-    };
-    println!("lobby listening on {addr}");
-    let served = axum::serve(listener, lobby::app())
-        .with_graceful_shutdown(stopped())
-        .await
-        .context("serving");
-    if let Some(traces) = traces {
-        // Off the runtime's own threads: sending what is left waits on them.
-        let sent = tokio::task::spawn_blocking(move || traces.shutdown())
-            .await
-            .context("sending the last traces")?;
-        if let Err(error) = sent {
-            eprintln!("the last traces were not sent: {error}");
-        }
-    }
-    served
-}
+async fn main() {
+    let flags = homelab::flags::Flags::new()
+        .string("addr", ":8096", "listen address")
+        .string(
+            "otel-endpoint",
+            "",
+            "host:port of an OTLP/gRPC trace collector; tracing is disabled if empty",
+        )
+        .parse();
 
-/// Done when the cluster, or a Ctrl-C, asks the server to stop.
-async fn stopped() {
-    use tokio::signal::unix::{SignalKind, signal};
-    let Ok(mut term) = signal(SignalKind::terminate()) else {
-        // Without the handler the server still runs; it is only stopped less gently.
-        return std::future::pending().await;
+    homelab::logging::init();
+
+    let traces = match homelab::trace::init("blockracers", flags.get("otel-endpoint")) {
+        Ok(t) => t,
+        Err(err) => {
+            tracing::error!(error = format!("{err:#}"), "init tracing");
+            std::process::exit(1);
+        }
     };
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = tokio::signal::ctrl_c() => {}
+    let served = homelab::serve::run(flags.get("addr"), lobby::app()).await;
+    // Once the server has stopped, so what is left to send is the last of it.
+    traces.shutdown().await;
+    if let Err(err) = served {
+        tracing::error!(error = format!("{err:#}"), "serve");
+        std::process::exit(1);
     }
 }

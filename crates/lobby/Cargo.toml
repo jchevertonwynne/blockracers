@@ -9,11 +9,11 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 getrandom = "0.4"
-anyhow = "1"
-# Traces, sent to the cluster's collector over gRPC as its other apps send theirs.
-opentelemetry = "0.33"
-opentelemetry_sdk = "0.33"
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "grpc-tonic"] }
+# Its logs, traces, metrics and serving, the same as the cluster's other apps
+# have theirs, so the dashboard reads it as it reads them. Without jemalloc: the
+# lobby has no heap worth profiling, and that leaves no C to build.
+homelab = { git = "https://github.com/jchevertonwynne/homelab-rs", tag = "v0.3.0", default-features = false }
+tracing = "0.1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

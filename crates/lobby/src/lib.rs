@@ -15,8 +15,6 @@
 //! Nothing is kept across a restart: a host whose session has gone is told so by its
 //! next beat (404) and lists it again.
 
-pub mod tracing;
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,7 +88,7 @@ impl Lobby {
 }
 
 pub fn app() -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/sessions", post(register).get(list))
         .route("/sessions/{id}", put(beat).delete(close))
         .route("/codes/{code}", get(find))
@@ -110,8 +108,10 @@ pub fn app() -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(MAX_BODY))
-        .route_layer(axum::middleware::from_fn(tracing::trace))
-        .with_state(Shared::default())
+        .with_state(Shared::default());
+    // The request metrics and a span for each request, as the cluster's other apps
+    // have them.
+    homelab::http::instrument(router)
 }
 
 /// Sixteen random bytes, in hex.
@@ -392,7 +392,27 @@ th, td {{ text-align: left; padding: .35rem .6rem .35rem 0; border-bottom: 1px s
     ))
 }
 
-async fn metrics(State(lobby): State<Shared>) -> String {
+/// What every app of the cluster's has — requests, the runtime, the process — and
+/// then the lobby's own.
+async fn metrics(State(lobby): State<Shared>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let common = homelab::metrics::handler().await;
+    let content_type = common.headers().get(header::CONTENT_TYPE).cloned();
+    let mut body = axum::body::to_bytes(common.into_body(), usize::MAX)
+        .await
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    body.push_str(&lobby_metrics(&lobby));
+    let mut answer = body.into_response();
+    if let Some(content_type) = content_type {
+        answer
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, content_type);
+    }
+    answer
+}
+
+fn lobby_metrics(lobby: &Lobby) -> String {
     let (sessions, players) = {
         let sessions = lobby.live();
         (
