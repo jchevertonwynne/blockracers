@@ -37,4 +37,4 @@ FROM scratch
 COPY --from=build /lobby /lobby
 USER 65532:65532
 ENTRYPOINT ["/lobby"]
-CMD ["-addr", ":8096"]
+CMD ["--addr", "0.0.0.0:8096"]
