@@ -20,8 +20,7 @@ struct Args {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    homelab::logging::init();
-    let traces = homelab::trace::init("blockracers", &args.otel_endpoint)?;
+    let traces = homelab::init("blockracers", &args.otel_endpoint)?;
     let served = homelab::serve::run(args.addr, lobby::app()).await;
     // Once the server has stopped, so what is left to send is the last of it.
     traces.shutdown().await;
