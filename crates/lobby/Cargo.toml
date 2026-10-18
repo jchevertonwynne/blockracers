@@ -12,7 +12,7 @@ getrandom = "0.4"
 # Its logs, traces, metrics and serving, the same as the cluster's other apps
 # have theirs, so the dashboard reads it as it reads them. Without jemalloc: the
 # lobby has no heap worth profiling, and that leaves no C to build.
-homelab = { git = "https://github.com/jchevertonwynne/homelab-rs", tag = "v0.4.1", default-features = false }
+homelab = { git = "https://github.com/jchevertonwynne/homelab-rs", tag = "v0.5.0", default-features = false }
 tracing = "0.1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
