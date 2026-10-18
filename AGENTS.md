@@ -301,7 +301,13 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   from the room they can go back to it, and someone with no car in a race watches
   it (`net::Watching`: on their game the car followed carries `Player`). A joiner's own car
   is driven ahead of the host and the others are shown where they will be by then
-  (`net::client`), so that what is seen and what is bumped into agree. How a race
+  (`net::client`, a jump in that glided over), so that what is seen and what is
+  bumped into agree. The host drives a player's car by one of their steps for each
+  of its own, a step that comes late driven in the place of as the one before and
+  never waited for, and changes how many it keeps in hand only when the connection
+  has changed (`host::Remote`); a test plays a race over a connection as uneven as
+  a real one and says how often the player's car is put right
+  (`an_uneven_connection_is_hardly_seen`). How a race
   online is won is the host's to say on "rules" (`menu::Mode`, sent in
   `net::protocol::Rules`): a race, elimination, or one of the two of `src/net/modes.rs`
   that laps don't end, a battle (three lives, a spin or a blow into the air takes
@@ -435,7 +441,7 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
 cargo build
 cargo test           # the game's tests; add -p lobby for the lobby server's
 cargo run            # the game, from the main menu
-cargo run -p lobby -- -addr 127.0.0.1:18096    # a lobby to test against
+cargo run -p lobby -- --addr 127.0.0.1:18096   # a lobby to test against
 cargo test real_endpoints -- --ignored         # two real endpoints; needs the internet
 ```
 

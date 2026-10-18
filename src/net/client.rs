@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
+use super::display::Shown;
 use super::protocol::{Drive, HOST, Inputs, RESENT, Stage, Tick, ToHost, encode};
 use super::state::Standing;
 use super::{Clock, Inbox, Puppet, Wire};
@@ -61,6 +62,16 @@ pub struct Prediction {
     /// The knocks the player's car has given each other car that the host's word of
     /// that car doesn't show yet, by grid slot.
     shunts: [Vec<Shunt>; 6],
+    /// Each other car as it was last shown, by grid slot.
+    glides: [Option<Glide>; 6],
+}
+
+/// Another car as it was last shown: where, how it was turned and how it was going.
+#[derive(Clone, Copy)]
+struct Glide {
+    pos: Vec3,
+    rot: Quat,
+    vel: Vec3,
 }
 
 /// A knock the player's car gave another: at which of the player's steps, how far
@@ -105,6 +116,7 @@ pub fn receive(
     clock: Res<Clock>,
     mut mark: ResMut<super::modes::Mark>,
     mut karts: Query<(Entity, &mut Kart, Has<Player>, Has<Puppet>)>,
+    mut drawn: Query<&mut Shown>,
 ) {
     let dt = time.delta_secs();
     // Between words from the host the clocks run on by themselves.
@@ -180,7 +192,10 @@ pub fn receive(
             race.phase = Phase::Finished;
         }
     }
-    let (Some(own), Some(state)) = (driven, &snapshot.own) else {
+    // A word that has the car driven further than this game has (in the place of
+    // steps the host hadn't heard while this game was stopped) is of a moment this
+    // game hasn't come to, and the car is left for the next to put right.
+    let (Some(own), Some(state), true) = (driven, &snapshot.own, snapshot.used < clock.tick) else {
         return;
     };
     let Ok((_, mut kart, ..)) = karts.get_mut(own) else {
@@ -230,7 +245,11 @@ pub fn receive(
         return;
     };
     (kart.cues, kart.touched, kart.honked, kart.sparks) = owed;
-    // What is seen stays where it was, and is brought across from there.
+    // What is seen stays where it was, and is brought across from there: the car is
+    // drawn on from where it now is, and as far from there as it was moved.
+    if let Ok(mut drawn) = drawn.get_mut(own) {
+        drawn.put(kart.pos, kart.rot);
+    }
     let moved = was.0 - kart.pos;
     p.corrected = moved.length();
     if p.corrected > JUMP {
@@ -239,12 +258,17 @@ pub fn receive(
         p.offset += moved;
         p.turn = (p.turn * was.1 * kart.rot.inverse()).normalize();
     }
+    if p.corrected > 0.01 {
+        debug!("put right by {:.2} at step {}", p.corrected, clock.tick);
+    }
 }
 
 /// How far ahead of the host's word another car is shown, at the most, in seconds,
 /// and the most it is taken to be speeding up or slowing by, a second.
 const LEAD: f32 = 0.35;
 const SURGE: f32 = 60.0;
+/// How quickly a jump in where another car is to be shown is made up, a second.
+const CATCH_UP: f32 = 10.0;
 
 /// The player's car bumps into another as that car is `lead` seconds from where it
 /// is shown, at the speed it is going: a step driven again is one from a moment ago,
@@ -382,21 +406,24 @@ pub fn puppets(
         while seen.len() > 2 && seen[1].0 as f32 <= shown {
             seen.pop_front();
         }
-        // The car as it was, and how its speed and heading were changing.
-        let (pose, surge, turning) = match (seen.front(), seen.get(1)) {
+        // The car as it was, and how its speed and heading were changing: by `turning`
+        // over the lead, by `turn` over a step.
+        let (pose, surge, turning, turn) = match (seen.front(), seen.get(1)) {
             (Some(&(from, a)), Some(&(to, b))) => {
                 let over = (to - from) as f32 * dt;
                 let pose = a.towards(
                     b,
                     ((shown - from as f32) / (to - from) as f32).clamp(0.0, 1.0),
                 );
+                let turned = b.rot * a.rot.inverse();
                 (
                     pose,
                     ((b.vel - a.vel) / over).clamp_length_max(SURGE),
-                    Quat::IDENTITY.slerp(b.rot * a.rot.inverse(), lead / over),
+                    Quat::IDENTITY.slerp(turned, lead / over),
+                    Quat::IDENTITY.slerp(turned, dt / over),
                 )
             }
-            (Some(&(_, only)), None) => (only, Vec3::ZERO, Quat::IDENTITY),
+            (Some(&(_, only)), None) => (only, Vec3::ZERO, Quat::IDENTITY, Quat::IDENTITY),
             _ => continue,
         };
         pose.put(&mut kart, race.time, dt);
@@ -408,25 +435,38 @@ pub fn puppets(
             kart.vel += surge * lead;
             kart.rot = (turning * kart.rot).normalize();
         }
+        // It goes on from where it was shown as it is going. Where it is to be shown
+        // jumps when what the host says of it changes (it was going faster or turning
+        // more than the last word had it), and the jump is made up over a moment.
+        let glide = &mut p.glides[kart.slot];
+        if let Some(was) = *glide
+            && was.pos.distance(kart.pos) < super::display::PUT
+        {
+            let keep = (-CATCH_UP * dt).exp();
+            let on = (
+                was.pos + (was.vel + kart.vel) * (0.5 * dt),
+                (turn * was.rot).normalize(),
+            );
+            kart.pos = kart.pos.lerp(on.0, keep);
+            kart.rot = kart.rot.slerp(on.1, keep).normalize();
+        }
+        *glide = Some(Glide {
+            pos: kart.pos,
+            rot: kart.rot,
+            vel: kart.vel,
+        });
         // Knocked by the player's car, it is shown knocked until the host's word is.
         kart.pos += knocked.0;
         kart.vel += knocked.1;
     }
 }
 
-/// Shows the player's car where it was seen before a correction, less each frame.
-pub fn smooth(
-    time: Res<Time>,
-    mut p: ResMut<Prediction>,
-    mut own: Query<&mut Transform, (With<Player>, Without<Puppet>)>,
-) {
+/// The player's car is drawn nearer where it was seen before a correction each frame
+/// (`display::blend` draws it there).
+pub fn smooth(time: Res<Time>, mut p: ResMut<Prediction>) {
     let keep = (-SMOOTHING * time.delta_secs()).exp();
     p.offset *= keep;
     p.turn = Quat::IDENTITY.slerp(p.turn, keep);
-    if let Ok(mut transform) = own.single_mut() {
-        transform.translation += p.offset;
-        transform.rotation = p.turn * transform.rotation;
-    }
 }
 
 /// Tells the host the race is loaded and its cars are on the grid.

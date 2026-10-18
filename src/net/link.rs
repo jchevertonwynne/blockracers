@@ -81,13 +81,16 @@ mod memory {
         cut: Vec<Peer>,
     }
 
-    /// A network in memory. Everything takes `delay` steps to arrive, and `loss` of
-    /// the datagrams don't.
+    /// A network in memory. Everything takes `delay` steps to arrive, a datagram up to
+    /// `jitter` more, and `loss` of the datagrams don't. A datagram sent while the
+    /// network is held up (`stalls`, from when to when) goes once it is going again.
     #[derive(Clone)]
     pub struct Hub {
         inner: Arc<Mutex<Inner>>,
         pub delay: u32,
         pub loss: f32,
+        pub jitter: u32,
+        pub stalls: Arc<Vec<(u32, u32)>>,
     }
 
     pub struct Memory {
@@ -102,12 +105,19 @@ mod memory {
                 inner: Arc::default(),
                 delay,
                 loss,
+                jitter: 0,
+                stalls: Arc::default(),
             }
         }
 
         /// Time passes.
         pub fn step(&self) {
-            self.inner.lock().unwrap().now += 1;
+            self.pass(1);
+        }
+
+        /// So much time passes.
+        pub fn pass(&self, time: u32) {
+            self.inner.lock().unwrap().now += time;
         }
 
         pub fn host(&self) -> Memory {
@@ -141,13 +151,13 @@ mod memory {
             let mut inner = self.inner.lock().unwrap();
             inner.sent += 2;
             let (due, order) = (inner.now + self.delay, inner.sent);
-            let ours = |event: &Event| {
-                matches!(event, Event::Message(from, _) | Event::Datagram(from, _) if *from == peer)
-            };
+            let ours = |event: &Event| matches!(event, Event::Message(from, _) | Event::Datagram(from, _) if *from == peer);
             let host = inner.queues.entry(HOST).or_default();
             host.retain(|(.., event)| !ours(event));
             host.push((due, order - 1, Event::Left(peer)));
-            inner.queues.insert(peer, vec![(due, order, Event::Lost(HOST))]);
+            inner
+                .queues
+                .insert(peer, vec![(due, order, Event::Lost(HOST))]);
             inner.cut.push(peer);
         }
     }
@@ -158,13 +168,18 @@ mod memory {
         }
 
         fn post(&self, to: Peer, event: Event) {
+            self.post_late(to, event, 0);
+        }
+
+        /// Posts something that takes `late` longer than the network's delay.
+        fn post_late(&self, to: Peer, event: Event, late: u32) {
             let mut inner = self.hub.inner.lock().unwrap();
             // Nothing goes by a way that has been cut, either way along it.
             if inner.cut.contains(&self.me) || inner.cut.contains(&to) {
                 return;
             }
             inner.sent += 1;
-            let (due, order) = (inner.now + self.hub.delay, inner.sent);
+            let (due, order) = (inner.now + self.hub.delay + late, inner.sent);
             inner
                 .queues
                 .entry(to)
@@ -180,7 +195,21 @@ mod memory {
 
         fn datagram(&mut self, to: Peer, bytes: Vec<u8>) {
             if self.dice.f() >= self.hub.loss {
-                self.post(to, Event::Datagram(self.me, bytes));
+                let mut late = if self.hub.jitter > 0 {
+                    (self.dice.f() * (self.hub.jitter + 1) as f32) as u32
+                } else {
+                    0
+                };
+                let now = self.hub.inner.lock().unwrap().now;
+                if let Some(&(_, until)) = self
+                    .hub
+                    .stalls
+                    .iter()
+                    .find(|(from, until)| (*from..*until).contains(&now))
+                {
+                    late += until - now;
+                }
+                self.post_late(to, Event::Datagram(self.me, bytes), late);
             }
         }
 

@@ -213,7 +213,9 @@ impl Lineup {
 
     /// The teams the cars are of, a bit to a grid slot (`Settings::sides`).
     pub fn sides(seats: &[Seat]) -> u8 {
-        seats.iter().fold(0, |sides, seat| sides | (seat.side & 1) << seat.slot.min(7))
+        seats
+            .iter()
+            .fold(0, |sides, seat| sides | (seat.side & 1) << seat.slot.min(7))
     }
 
     /// Players take the grid from the back, the host last of all as a player alone
@@ -444,12 +446,7 @@ pub struct Inbox {
 
 /// Reads what the link has brought. A message that can't be read is dropped: it is a
 /// game of another version, or not a game.
-fn pump(
-    role: Res<Role>,
-    apart: Res<Apart>,
-    wire: Option<ResMut<Wire>>,
-    mut inbox: ResMut<Inbox>,
-) {
+fn pump(role: Res<Role>, apart: Res<Apart>, wire: Option<ResMut<Wire>>, mut inbox: ResMut<Inbox>) {
     let Some(mut wire) = wire else { return };
     let hosting = apart.role(*role) == Role::Host;
     while let Some(event) = wire.0.poll() {
@@ -622,7 +619,11 @@ pub fn addressed(address: &str) -> Option<lobby_api::Session> {
 /// Someone has gone from the session a host keeps: what they had is kept, should
 /// they come back. Their car in a race is for whoever calls this to see to.
 fn depart(session: &mut Session, room: &mut Room, peer: Peer) {
-    let Some(at) = session.members.iter().position(|member| member.peer == peer) else {
+    let Some(at) = session
+        .members
+        .iter()
+        .position(|member| member.peer == peer)
+    else {
         return;
     };
     let member = session.members.remove(at);
@@ -811,9 +812,7 @@ fn session(
                     let stale = session
                         .members
                         .iter()
-                        .find(|member| {
-                            allowed && Some(member.token) == back && member.peer != peer
-                        })
+                        .find(|member| allowed && Some(member.token) == back && member.peer != peer)
                         .map(|member| member.peer);
                     if let Some(stale) = stale {
                         wire.0.close(stale);
@@ -1037,7 +1036,9 @@ fn session(
             let fallback = Rules::of(&settings, &circuits);
             let mut dice = crate::meshgen::Rng(time.elapsed().subsec_nanos() | 1);
             let again = room.last.clone().filter(|_| *looked >= ROLLS_AFTER);
-            if let Some(rules) = again.or_else(|| room.tick(time.delta_secs(), &fallback, &mut dice)) {
+            if let Some(rules) =
+                again.or_else(|| room.tick(time.delta_secs(), &fallback, &mut dice))
+            {
                 *looked = 0.0;
                 let rules = rules.fitted(&circuits);
                 room.last = Some(rules.clone());
@@ -1160,7 +1161,11 @@ fn session(
                     }
                     if rules.apply(&mut settings, &circuits) {
                         let name = &circuits.0[settings.circuit].name;
-                        info!("racing {} ({name}) with {} cars", rules.circuit, seats.len());
+                        info!(
+                            "racing {} ({name}) with {} cars",
+                            rules.circuit,
+                            seats.len()
+                        );
                         settings.rivals = Some(seats.len().saturating_sub(1));
                         settings.sides = Lineup::sides(&seats);
                         room.ready = false;
@@ -1331,7 +1336,9 @@ fn auto(
     let var =
         |name: &str, otherwise: &str| std::env::var(name).unwrap_or_else(|_| otherwise.to_string());
     // `BRICK_SIDE=blue` or `gold`: the team picked in the room.
-    let side = ["blue", "gold"].iter().position(|side| *side == var("BRICK_SIDE", ""));
+    let side = ["blue", "gold"]
+        .iter()
+        .position(|side| *side == var("BRICK_SIDE", ""));
     if let (Some(room), Some(side)) = (&mut room, side) {
         if room.side != Some(side as u8) {
             room.side = Some(side as u8);
@@ -1370,7 +1377,10 @@ fn auto(
                 *started = true;
                 let rules = Rules::of(&settings, &circuits).fitted(&circuits);
                 // The host's own pick may not have reached the room's list yet.
-                let mut voters = room.as_ref().map(|room| room.voters.clone()).unwrap_or_default();
+                let mut voters = room
+                    .as_ref()
+                    .map(|room| room.voters.clone())
+                    .unwrap_or_default();
                 for own in voters.iter_mut().filter(|voter| voter.peer == HOST) {
                     own.side = room.as_ref().and_then(|room| room.side);
                 }
@@ -1533,12 +1543,16 @@ pub fn plugin(app: &mut App) {
         .add_systems(
             Update,
             (
-                (display::blend, kart::player_input, latch)
+                (
+                    client::smooth.run_if(joined),
+                    display::blend,
+                    kart::player_input,
+                    latch,
+                )
                     .chain()
                     .before(kart::sync_karts)
                     .before(crate::racer_sounds::racer_sounds),
                 watch.before(kart::sync_karts),
-                client::smooth.after(kart::sync_karts).run_if(joined),
                 scene::follow_events
                     .before(crate::events::track_events)
                     .run_if(joined),

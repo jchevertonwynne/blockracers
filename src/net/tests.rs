@@ -227,6 +227,208 @@ fn a_poor_connection_costs_a_step_now_and_then() {
     assert!(corrections < 8, "the car was corrected {corrections} times");
 }
 
+/// How a real connection goes: each game draws its frames when it can, `frame` (in
+/// milliseconds, the host's and the player's) give or take `uneven`, in step neither
+/// with the race nor with the other game, so that a frame takes no step of the race,
+/// one or two, and now and then (`hitches`, a chance a frame) one takes a tenth of
+/// a second. A datagram takes up to `jitter` longer one time than the next, and about
+/// every `stall` seconds the network is held up for a twentieth to a tenth of one, as
+/// wireless networks are.
+#[derive(Clone, Copy)]
+struct Uneven {
+    ping: u32,
+    jitter: u32,
+    frame: [f32; 2],
+    uneven: f32,
+    hitches: f32,
+    stall: f32,
+    opponents: usize,
+}
+
+/// What a player saw on an `Uneven` connection.
+#[derive(Debug, Default)]
+struct Seen {
+    /// The corrections the player's own car was given: how many, the biggest, and
+    /// how far they moved it in all.
+    corrections: usize,
+    worst: f32,
+    total: f32,
+    /// Frames in which another car was seen to lurch, on the player's screen and on
+    /// the host's: to change its speed by more than `LURCH` from the frame before.
+    lurches: usize,
+    host_lurches: usize,
+}
+
+const LURCH: f32 = 25.0;
+
+/// Drives the player's car about for `seconds` on an `Uneven` connection.
+fn drive_about_unevenly(how: Uneven, seconds: f32) -> Seen {
+    let mut dice = crate::meshgen::Rng(0x0dd5);
+    // The network's time is counted in microseconds.
+    let mut hub = Hub::new(how.ping * 1000 / 2, 0.0);
+    hub.jitter = how.jitter * 1000;
+    let mut stalls = Vec::new();
+    let mut at = 0.0;
+    while how.stall > 0.0 && at < seconds {
+        at += how.stall * dice.range(0.5, 1.5);
+        let from = (at * 1e6) as u32;
+        stalls.push((from, from + (dice.range(0.05, 0.1) * 1e6) as u32));
+    }
+    hub.stalls = std::sync::Arc::new(stalls);
+    let (host, guest) = (hub.host(), hub.join());
+    let mut games = [
+        game(Role::Host, host, HOST, how.opponents),
+        game(Role::Client, guest, 1, how.opponents),
+    ];
+    let (mut now, mut next, mut last) = (0u32, [0u32, 7_000], [0u32; 2]);
+    let mut seen = Seen::default();
+    // Where the other car watched was drawn on each screen, and how fast it went.
+    let mut watched: [Option<(Vec3, Vec3)>; 2] = [None; 2];
+    while now < (seconds * 1e6) as u32 {
+        let which = (next[1] < next[0]) as usize;
+        hub.pass(next[which] - now);
+        now = next[which];
+        let app = &mut games[which];
+        let since = (now - last[which]) as f32 / 1e6;
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(since),
+        ));
+        if which == 1 {
+            let at = (now as f32 / 1e6) % 8.0;
+            press(app, KeyCode::KeyW, true);
+            press(app, KeyCode::KeyA, (2.0..3.3).contains(&at));
+            press(app, KeyCode::KeyD, (4.3..5.5).contains(&at));
+            press(app, KeyCode::ShiftLeft, (4.6..5.5).contains(&at));
+        }
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        if app.world().resource::<Race>().phase == Phase::Racing && now > 2_000_000 {
+            if which == 1 {
+                let corrected =
+                    std::mem::take(&mut app.world_mut().resource_mut::<Prediction>().corrected);
+                if corrected > 0.01 {
+                    seen.corrections += 1;
+                    seen.worst = seen.worst.max(corrected);
+                    seen.total += corrected;
+                }
+            }
+            // The first of the computer's cars, as it is drawn.
+            if how.opponents > 0 && since > 0.0 {
+                let at = car(app, 0).pos;
+                if let Some((was, going)) = watched[which] {
+                    let speed = (at - was) / since;
+                    if speed.distance(going) > LURCH {
+                        *[&mut seen.host_lurches, &mut seen.lurches][which] += 1;
+                    }
+                    watched[which] = Some((at, speed));
+                } else {
+                    watched[which] = Some((at, Vec3::ZERO));
+                }
+            }
+        }
+        last[which] = now;
+        let mut frame = how.frame[which] + dice.range(-how.uneven, how.uneven);
+        if dice.f() < how.hitches {
+            frame = 100.0;
+        }
+        next[which] = now + (frame * 1000.0) as u32;
+    }
+    seen
+}
+
+/// A connection with nothing uneven about it but its being a little late.
+const EVEN: Uneven = Uneven {
+    ping: 25,
+    jitter: 0,
+    frame: [1000.0 / 60.0; 2],
+    uneven: 0.0,
+    hitches: 0.0,
+    stall: 0.0,
+    opponents: 4,
+};
+
+/// Everything a real connection does now and then, all together.
+const ROUGH: Uneven = Uneven {
+    jitter: 4,
+    uneven: 2.0,
+    hitches: 0.005,
+    stall: 3.0,
+    ..EVEN
+};
+
+/// On a connection like a real one the player's car is put right as seldom, and by
+/// as little, as on an even one: a step that comes late is driven in the place of
+/// on the host, and not waited for. The other cars are seen to lurch hardly more
+/// often than the host sees them do, a jump in where they are shown made up over a
+/// moment.
+#[test]
+fn an_uneven_connection_is_hardly_seen() {
+    let seen = drive_about_unevenly(ROUGH, 30.0);
+    assert!(seen.corrections <= 3 && seen.worst < 0.5, "{seen:?}");
+    assert!(seen.lurches <= seen.host_lurches + 10, "{seen:?}");
+}
+
+#[test]
+#[ignore = "prints what a player sees on an uneven connection"]
+fn what_is_seen_on_an_uneven_connection() {
+    for (said, how) in [
+        ("even", EVEN),
+        (
+            "uneven frames, jitter",
+            Uneven {
+                jitter: 4,
+                uneven: 2.0,
+                ..EVEN
+            },
+        ),
+        (
+            "a slow host",
+            Uneven {
+                jitter: 4,
+                uneven: 3.0,
+                frame: [22.0, 1000.0 / 60.0],
+                ..EVEN
+            },
+        ),
+        (
+            "hitches",
+            Uneven {
+                jitter: 4,
+                uneven: 2.0,
+                hitches: 0.005,
+                ..EVEN
+            },
+        ),
+        (
+            "wireless stalls",
+            Uneven {
+                jitter: 4,
+                uneven: 2.0,
+                stall: 3.0,
+                ..EVEN
+            },
+        ),
+        ("all of it", ROUGH),
+        (
+            "far away",
+            Uneven {
+                ping: 120,
+                jitter: 15,
+                ..ROUGH
+            },
+        ),
+    ] {
+        let seen = drive_about_unevenly(how, 30.0);
+        println!(
+            "{said:>22}: {:3} corrections, biggest {:.2}, {:5.1} in all; \
+             the other car lurched {:3} times (on the host's screen {})",
+            seen.corrections, seen.worst, seen.total, seen.lurches, seen.host_lurches
+        );
+    }
+}
+
 /// The cars a player doesn't drive are shown where they will be by the moment the
 /// player's own car is at: a little ahead of where the host has them as it says so.
 #[test]
@@ -1043,7 +1245,11 @@ fn a_game_of_tag_is_told_to_the_player_and_ends_in_the_room() {
         (Screen::Menu, Screen::Menu)
     );
     let names = ["Guest", "Host"];
-    let (loser, winner) = if it == HOSTS { (names[1], names[0]) } else { (names[0], names[1]) };
+    let (loser, winner) = if it == HOSTS {
+        (names[1], names[0])
+    } else {
+        (names[0], names[1])
+    };
     for app in [&pair.host, &pair.guest] {
         let told: Vec<&str> = app
             .world()
@@ -1173,7 +1379,10 @@ fn elimination_goes_on_without_the_hosts_car() {
     for _ in 0..400 {
         pair.step();
     }
-    assert_eq!((state(&pair.host), state(&pair.guest)), (Screen::Menu, Screen::Menu));
+    assert_eq!(
+        (state(&pair.host), state(&pair.guest)),
+        (Screen::Menu, Screen::Menu)
+    );
     let room = pair.host.world().resource::<Room>();
     let told: Vec<&str> = room.results.iter().map(|finish| &*finish.name).collect();
     assert_eq!(told[1..], ["Guest", "Host"]);
@@ -1349,7 +1558,10 @@ fn held(host: &App, peer: Peer, name: &str) -> (Option<u32>, Option<Peer>) {
     let voter = room.voters.iter().find(|voter| voter.peer == peer);
     let lineup = host.world().resource::<Lineup>();
     let seat = lineup.seats.iter().find(|seat| seat.name == name);
-    (voter.map(|voter| voter.points), seat.and_then(|seat| seat.peer))
+    (
+        voter.map(|voter| voter.points),
+        seat.and_then(|seat| seat.peer),
+    )
 }
 
 /// A pair whose guest has fifty points, and what the guest was given to come back by.
@@ -1366,7 +1578,10 @@ fn scored() -> (Pair, u64) {
         .expect("the player in the room")
         .points = 50;
     let token = pair.guest.world().resource::<Session>().token;
-    assert!(token != 0, "the host should have given the player something to come back by");
+    assert!(
+        token != 0,
+        "the host should have given the player something to come back by"
+    );
     (pair, token)
 }
 
@@ -1438,7 +1653,10 @@ fn someone_back_before_they_were_missed_has_their_own_place() {
     comer(&mut pair, "Guest", token);
     let session = pair.host.world().resource::<Session>();
     let here: Vec<Peer> = session.members.iter().map(|member| member.peer).collect();
-    assert!(here == [2] && session.absent.is_empty(), "{here:?} are here");
+    assert!(
+        here == [2] && session.absent.is_empty(),
+        "{here:?} are here"
+    );
     assert_eq!(held(&pair.host, 2, "Guest"), (Some(50), Some(2)));
     assert_eq!(held(&pair.host, 1, "Guest").0, None);
 }
@@ -1454,7 +1672,10 @@ fn a_player_whose_way_to_the_host_breaks_dials_again() {
     let state = |app: &App| *app.world().resource::<State<Screen>>().get();
     let driven = |app: &mut App| {
         let mut remotes = app.world_mut().query::<&Remote>();
-        remotes.iter(app.world()).map(|remote| remote.peer).collect::<Vec<Peer>>()
+        remotes
+            .iter(app.world())
+            .map(|remote| remote.peer)
+            .collect::<Vec<Peer>>()
     };
     pair.hub.cut(1);
     for _ in 0..8 {
@@ -1526,7 +1747,10 @@ fn a_car_nothing_is_heard_of_is_the_computers_until_something_is() {
     }
     let stalled = |app: &mut App| {
         let mut remotes = app.world_mut().query::<&Remote>();
-        remotes.iter(app.world()).map(Remote::stalled).collect::<Vec<bool>>()
+        remotes
+            .iter(app.world())
+            .map(Remote::stalled)
+            .collect::<Vec<bool>>()
     };
     // Nothing pressed, the car has stayed on the grid.
     let grid = car(&mut pair.host, GUESTS).pos;
@@ -1537,7 +1761,10 @@ fn a_car_nothing_is_heard_of_is_the_computers_until_something_is() {
     }
     assert_eq!(stalled(&mut pair.host), [true]);
     let went = car(&mut pair.host, GUESTS).pos.distance(grid);
-    assert!(went > 20.0, "the computer should have driven the car on, and drove it {went}");
+    assert!(
+        went > 20.0,
+        "the computer should have driven the car on, and drove it {went}"
+    );
     for _ in 0..30 {
         pair.step();
     }
@@ -1648,12 +1875,23 @@ fn a_test_drive_in_a_session_is_driven_alone_and_ended_by_a_start() {
     assert_eq!(*world.resource::<Role>(), Role::Offline);
     // A map the host sends with a start comes after the test track, which is
     // the one to go, and the race loaded is the session's.
-    let brick = circuits.0.iter().find(|c| c.key() == "BRICK").unwrap().map().text.clone();
+    let brick = circuits
+        .0
+        .iter()
+        .find(|c| c.key() == "BRICK")
+        .unwrap()
+        .map()
+        .text
+        .clone();
     circuits.promise("THEIRS", "Their Circuit", "", false);
     assert!(circuits.end_test_drive(&mut world.resource_mut::<Settings>()));
     assert!(circuits.lend("THEIRS", &brick).is_ok());
     let keys: Vec<&str> = circuits.0.iter().map(|c| c.key()).collect();
-    assert!(keys.len() == count + 1 && keys[count] == "THEIRS" && !keys.contains(&crate::menu::TEST_TRACK));
+    assert!(
+        keys.len() == count + 1
+            && keys[count] == "THEIRS"
+            && !keys.contains(&crate::menu::TEST_TRACK)
+    );
     let settings = world.resource::<Settings>();
     assert_eq!((settings.circuit, settings.test_drive), (chosen, None));
     world.run_system_once(rejoin).unwrap();
@@ -1758,13 +1996,20 @@ fn played(map: &crate::map::Map, mode: crate::menu::Mode, seed: u32, seconds: f3
     const CELL: f32 = 10.0;
     let side = (2.0 * reach / CELL).ceil() as usize + 1;
     let cell = |p: Vec3| {
-        let (x, z) = (((p.x + reach) / CELL) as usize, ((p.z + reach) / CELL) as usize);
+        let (x, z) = (
+            ((p.x + reach) / CELL) as usize,
+            ((p.z + reach) / CELL) as usize,
+        );
         (x.min(side - 1), z.min(side - 1))
     };
     let mut open = vec![false; side * side];
     for x in 0..side {
         for z in 0..side {
-            let middle = Vec3::new((x as f32 + 0.5) * CELL - reach, 0.0, (z as f32 + 0.5) * CELL - reach);
+            let middle = Vec3::new(
+                (x as f32 + 0.5) * CELL - reach,
+                0.0,
+                (z as f32 + 0.5) * CELL - reach,
+            );
             open[x * side + z] = plan.open(middle, 2.0);
         }
     }
@@ -1790,7 +2035,16 @@ fn played(map: &crate::map::Map, mode: crate::menu::Mode, seed: u32, seconds: f3
         let cars: Vec<(usize, Vec3, f32, bool, bool, f32)> = world
             .query::<&Kart>()
             .iter(world)
-            .map(|k| (k.slot, k.pos, k.vel.length(), k.it, k.out.is_some() || k.finished.is_some(), k.stake))
+            .map(|k| {
+                (
+                    k.slot,
+                    k.pos,
+                    k.vel.length(),
+                    k.it,
+                    k.out.is_some() || k.finished.is_some(),
+                    k.stake,
+                )
+            })
             .collect();
         let playing: Vec<_> = cars.iter().filter(|car| !car.4).collect();
         if playing.len() < 2 {
@@ -1802,7 +2056,11 @@ fn played(map: &crate::map::Map, mode: crate::menu::Mode, seed: u32, seconds: f3
             high += (car.1.y > 2.0) as u32;
             slow += (car.2 < 5.0) as u32;
             if car.2 < 5.0 {
-                let place = ((car.1.x / 10.0).round() as i32 * 10, (car.1.y / 3.0).round() as i32 * 3, (car.1.z / 10.0).round() as i32 * 10);
+                let place = (
+                    (car.1.x / 10.0).round() as i32 * 10,
+                    (car.1.y / 3.0).round() as i32 * 3,
+                    (car.1.z / 10.0).round() as i32 * 10,
+                );
                 match out.stops.iter_mut().find(|stop| stop.0 == place) {
                     Some(stop) => stop.1 += 1,
                     None => out.stops.push((place, 1)),
@@ -1842,11 +2100,18 @@ fn played(map: &crate::map::Map, mode: crate::menu::Mode, seed: u32, seconds: f3
         }
     }
     let floor = open.iter().filter(|open| **open).count().max(1);
-    let trodden = open.iter().zip(&been).filter(|(open, been)| **open && **been).count();
+    let trodden = open
+        .iter()
+        .zip(&been)
+        .filter(|(open, been)| **open && **been)
+        .count();
     out.covered = trodden as f32 / floor as f32;
     let car_steps = car_steps.max(1) as f32;
-    (out.high, out.slow, out.apart) =
-        (high as f32 / car_steps, slow as f32 / car_steps, (apart / car_steps as f64) as f32);
+    (out.high, out.slow, out.apart) = (
+        high as f32 / car_steps,
+        slow as f32 / car_steps,
+        (apart / car_steps as f64) as f32,
+    );
     out
 }
 
@@ -1860,10 +2125,26 @@ fn fought_over(key: &str) {
         let game = played(map, mode, 7, 60.0);
         // It is over when the car it is seen from is out, which in tag is as soon
         // as a clock that was hit a time or two has run down.
-        assert!(game.time > 20.0, "{key} {mode:?} was over in {}s", game.time);
-        assert!(game.high > 0.08, "{key} {mode:?}: {} of the time on high ground", game.high);
-        assert!(game.covered > 0.25, "{key} {mode:?}: over {} of the floor", game.covered);
-        assert!(game.slow < 0.15, "{key} {mode:?}: stopped {} of the time", game.slow);
+        assert!(
+            game.time > 20.0,
+            "{key} {mode:?} was over in {}s",
+            game.time
+        );
+        assert!(
+            game.high > 0.08,
+            "{key} {mode:?}: {} of the time on high ground",
+            game.high
+        );
+        assert!(
+            game.covered > 0.25,
+            "{key} {mode:?}: over {} of the floor",
+            game.covered
+        );
+        assert!(
+            game.slow < 0.15,
+            "{key} {mode:?}: stopped {} of the time",
+            game.slow
+        );
         let done = game.hits.max(game.passes) as f32 * 60.0 / game.time;
         assert!(done >= 2.0, "{key} {mode:?}: {done} a minute");
     }
@@ -1906,7 +2187,10 @@ fn the_arenas_as_the_computers_cars_find_them() {
             let Some(map) = map else { continue };
             for mode in [crate::menu::Mode::Battle, crate::menu::Mode::Tag] {
                 let seeds = [7, 11, 23, 31, 43, 57];
-                let games: Vec<Played> = seeds.iter().map(|&seed| played(map, mode, seed, 240.0)).collect();
+                let games: Vec<Played> = seeds
+                    .iter()
+                    .map(|&seed| played(map, mode, seed, 240.0))
+                    .collect();
                 let count = games.len() as f32;
                 let mean = |of: &dyn Fn(&Played) -> f32| games.iter().map(of).sum::<f32>() / count;
                 let minutes = games.iter().map(|p| p.time).sum::<f32>() / 60.0;
@@ -1967,7 +2251,12 @@ fn tallied(key: &str, mode: crate::menu::Mode, seconds: f32) -> (f32, usize, u32
         was = its;
         most = cars.iter().map(|k| k.stake).fold(most, f32::max);
     }
-    (time, ever.iter().filter(|ever| **ever).count(), changes, most)
+    (
+        time,
+        ever.iter().filter(|ever| **ever).count(),
+        changes,
+        most,
+    )
 }
 
 /// The three games that come of tag are games among the computer's cars in every
@@ -1979,13 +2268,24 @@ fn the_games_nobody_goes_out_of_are_played_in_every_arena() {
     for key in ["YARD", "CROSSROADS", "RING", "TOWN"] {
         let (time, caught, _, _) = tallied(key, Mode::Infection, 90.0);
         println!("{key} infection: {caught} caught in {time:.0}s");
-        assert!(caught >= 3, "{key}: {caught} were ever \"it\" in {time}s of infection");
+        assert!(
+            caught >= 3,
+            "{key}: {caught} were ever \"it\" in {time}s of infection"
+        );
         let (time, held, changes, most) = tallied(key, Mode::KeepAway, 90.0);
-        println!("{key} keep-away: {held} held it, {changes} changes, most {most:.0}s in {time:.0}s");
-        assert!(held >= 2 && most > 5.0, "{key}: {held} held the flag, for {most}s at the most");
+        println!(
+            "{key} keep-away: {held} held it, {changes} changes, most {most:.0}s in {time:.0}s"
+        );
+        assert!(
+            held >= 2 && most > 5.0,
+            "{key}: {held} held the flag, for {most}s at the most"
+        );
         let (time, kings, changes, most) = tallied(key, Mode::Hill, 90.0);
         println!("{key} hill: {kings} kings, {changes} changes, most {most:.0}s in {time:.0}s");
-        assert!(kings >= 1 && most > 3.0, "{key}: {kings} were king, for {most}s at the most");
+        assert!(
+            kings >= 1 && most > 3.0,
+            "{key}: {kings} were king, for {most}s at the most"
+        );
     }
 }
 
@@ -2033,15 +2333,34 @@ fn players_are_of_the_team_they_picked() {
     let of = |seats: &[Seat], side: u8| seats.iter().filter(|seat| seat.side == side).count();
     // Nobody having picked, they are of one and the other by turns, as the grid goes.
     let mut seats = Lineup::seat(&[player(HOST), player(1), player(2)], 3);
-    Lineup::sided(&mut seats, &[voter(HOST, None), voter(1, None), voter(2, None)]);
+    Lineup::sided(
+        &mut seats,
+        &[voter(HOST, None), voter(1, None), voter(2, None)],
+    );
     assert!(seats.iter().all(|seat| seat.side == seat.slot % 2));
     assert_eq!(Lineup::sides(&seats), crate::menu::SIDES);
     // Three who all pick one team have it, and the computer's cars are the other.
-    Lineup::sided(&mut seats, &[voter(HOST, Some(1)), voter(1, Some(1)), voter(2, Some(1))]);
-    assert!(seats.iter().all(|seat| seat.side == seat.peer.is_some() as u8));
+    Lineup::sided(
+        &mut seats,
+        &[voter(HOST, Some(1)), voter(1, Some(1)), voter(2, Some(1))],
+    );
+    assert!(
+        seats
+            .iter()
+            .all(|seat| seat.side == seat.peer.is_some() as u8)
+    );
     // Two against one is made up to three a side.
-    Lineup::sided(&mut seats, &[voter(HOST, Some(0)), voter(1, Some(1)), voter(2, Some(0))]);
-    let side = |peer: Peer| seats.iter().find(|seat| seat.peer == Some(peer)).unwrap().side;
+    Lineup::sided(
+        &mut seats,
+        &[voter(HOST, Some(0)), voter(1, Some(1)), voter(2, Some(0))],
+    );
+    let side = |peer: Peer| {
+        seats
+            .iter()
+            .find(|seat| seat.peer == Some(peer))
+            .unwrap()
+            .side
+    };
     assert_eq!([side(HOST), side(1), side(2)], [0, 1, 0]);
     assert_eq!([of(&seats, 0), of(&seats, 1)], [3, 3]);
     // And the game is told of it by grid slot.
@@ -2049,7 +2368,10 @@ fn players_are_of_the_team_they_picked() {
     (settings.teams, settings.mode) = (true, crate::menu::Mode::Battle);
     settings.sides = Lineup::sides(&seats);
     for seat in &seats {
-        assert_eq!(modes::team(&settings, seat.slot as usize), Some(seat.side as usize));
+        assert_eq!(
+            modes::team(&settings, seat.slot as usize),
+            Some(seat.side as usize)
+        );
     }
     // With nobody else to be the other team, the last to have picked goes over.
     let mut seats = Lineup::seat(&[player(HOST), player(1)], 0);

@@ -7,15 +7,19 @@
 //! frame is being drawn, each car is put where it was between its last two steps,
 //! as far along as the frame is; before the race is next stepped it is put back.
 //! Everything that looks at the cars while drawing (the camera, the shadows, the
-//! map) sees them move evenly, and the race itself never sees the difference.
+//! map) sees them move evenly, and the race itself never sees the difference. A
+//! player's own car the host has put right is drawn where it was seen before, less
+//! each frame (`client::smooth`), and the camera follows it there.
 
 use bevy::prelude::*;
 
-use crate::kart::Kart;
+use super::Puppet;
+use super::client::Prediction;
+use crate::kart::{Kart, Player};
 
 /// Farther than this in one step is a car being put somewhere, not driven there, and
 /// is shown as it is.
-const PUT: f32 = 8.0;
+pub const PUT: f32 = 8.0;
 
 /// Where a car was at the end of each of the last two steps, and where it has been
 /// put for drawing, if it has.
@@ -24,6 +28,13 @@ pub struct Shown {
     before: (Vec3, Quat),
     now: (Vec3, Quat),
     drawn: Option<(Vec3, Quat)>,
+}
+
+impl Shown {
+    /// The car has been put somewhere, and not driven there: it is drawn on from there.
+    pub fn put(&mut self, pos: Vec3, rot: Quat) {
+        self.now = (pos, rot);
+    }
 }
 
 /// A step has ended: where the cars are now is what the next frames are drawn towards.
@@ -42,15 +53,22 @@ pub fn note(mut commands: Commands, mut karts: Query<(Entity, &Kart, Option<&mut
 }
 
 /// Puts the cars between their last two steps for the frame about to be drawn.
-pub fn blend(time: Res<Time<Fixed>>, mut karts: Query<(&mut Kart, &mut Shown)>) {
+pub fn blend(
+    time: Res<Time<Fixed>>,
+    p: Res<Prediction>,
+    mut karts: Query<(&mut Kart, &mut Shown, Has<Player>, Has<Puppet>)>,
+) {
     let along = time.overstep_fraction().clamp(0.0, 1.0);
-    for (mut kart, mut shown) in &mut karts {
+    for (mut kart, mut shown, own, puppet) in &mut karts {
         let (before, now) = (shown.before, shown.now);
-        let drawn = if before.0.distance_squared(now.0) > PUT * PUT {
+        let mut drawn = if before.0.distance_squared(now.0) > PUT * PUT {
             now
         } else {
             (before.0.lerp(now.0, along), before.1.slerp(now.1, along))
         };
+        if own && !puppet {
+            drawn = (drawn.0 + p.offset, (p.turn * drawn.1).normalize());
+        }
         (kart.pos, kart.rot) = drawn;
         shown.drawn = Some(drawn);
     }
