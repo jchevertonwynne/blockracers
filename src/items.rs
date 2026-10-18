@@ -365,8 +365,16 @@ impl Pickup {
         BrickMark(
             // A changing brick's colour is no news: every game turns it alike from
             // when it was last told of.
-            if self.changing && self.state == BrickState::Idle { self.home } else { self.power },
-            if self.changing && self.state == BrickState::Idle { self.home } else { self.next_power },
+            if self.changing && self.state == BrickState::Idle {
+                self.home
+            } else {
+                self.power
+            },
+            if self.changing && self.state == BrickState::Idle {
+                self.home
+            } else {
+                self.next_power
+            },
             self.state,
             self.next,
             (self.pos * 100.0).as_ivec3().to_array(),
@@ -560,7 +568,13 @@ fn any_colour(rng: &mut crate::meshgen::Rng) -> Power {
 
 impl ItemAssets {
     /// Makes a brick the colour it has become: another model, or another material.
-    fn recolour(&self, commands: &mut Commands, models: Option<&Models>, brick: Entity, pickup: &Pickup) {
+    fn recolour(
+        &self,
+        commands: &mut Commands,
+        models: Option<&Models>,
+        brick: Entity,
+        pickup: &Pickup,
+    ) {
         self.turned(commands, models, brick, pickup, None);
     }
 
@@ -576,7 +590,14 @@ impl ItemAssets {
     ) {
         if pickup.modelled {
             commands.entity(brick).despawn();
-            self.spawn_brick(commands, models, Pickup { spun, ..pickup.clone() });
+            self.spawn_brick(
+                commands,
+                models,
+                Pickup {
+                    spun,
+                    ..pickup.clone()
+                },
+            );
         } else {
             commands
                 .entity(brick)
@@ -810,12 +831,18 @@ pub fn more(track: &Track) -> Vec<(Power, Vec3)> {
     for row in 0..rows {
         let mut at = (2 * row + 1) * n / (2 * rows);
         // A pair that would lie on a jump lies just before it.
-        if let Some(jump) = track.jumps.iter().find(|jump| (jump.0..jump.1).contains(&at)) {
+        if let Some(jump) = track
+            .jumps
+            .iter()
+            .find(|jump| (jump.0..jump.1).contains(&at))
+        {
             at = jump.0.min(jump.1).saturating_sub(4);
         }
         for (i, side) in [-1.0, 1.0].into_iter().enumerate() {
             let over = track.edge(at, side * EXTRA_ACROSS * track.tarmac(at));
-            let ground = track.collision.ground(over + Vec3::Y * EXTRA_PROBE, EXTRA_PROBE * 2.0);
+            let ground = track
+                .collision
+                .ground(over + Vec3::Y * EXTRA_PROBE, EXTRA_PROBE * 2.0);
             let on = ground.map_or(over, |hit| hit.point);
             bricks.push((POWERS[(2 * row + i) % 4], on));
         }
@@ -835,7 +862,10 @@ const FEWEST_ROWS: usize = 8;
 /// past its lip, each infield a row of white ones across its grass, and each banked
 /// corner a coloured one high on the bank.
 pub fn laid(track: &Track) -> Vec<(Option<Power>, Vec3)> {
-    lain(track).into_iter().map(|(power, at, _)| (power, at)).collect()
+    lain(track)
+        .into_iter()
+        .map(|(power, at, _)| (power, at))
+        .collect()
 }
 
 /// Those, and whether each is one the map has changing from colour to colour.
@@ -844,7 +874,10 @@ fn lain(track: &Track) -> Vec<(Option<Power>, Vec3, bool)> {
     let n = track.n();
     // An arena has as many rows across its line as its map says, if it says.
     let asked = track.arena.as_ref().and_then(|plan| plan.rows);
-    let rows = asked.map_or(FEWEST_ROWS.max((track.length / ROW_SPACING).round() as usize), |rows| rows + 1);
+    let rows = asked.map_or(
+        FEWEST_ROWS.max((track.length / ROW_SPACING).round() as usize),
+        |rows| rows + 1,
+    );
     for row in 1..rows {
         // A row that would lie on a jump lies just before it.
         let mut at = row * n / rows;
@@ -905,9 +938,16 @@ fn lain(track: &Track) -> Vec<(Option<Power>, Vec3, bool)> {
             // On whatever is uppermost there, the floor or the high ground; or on
             // the floor, whatever is over it.
             let [x, z] = brick.at;
-            let (from, reach) = if brick.low { (ARENA_LOW, ARENA_LOW * 2.0) } else { (ARENA_HIGH, ARENA_HIGH * 2.0) };
+            let (from, reach) = if brick.low {
+                (ARENA_LOW, ARENA_LOW * 2.0)
+            } else {
+                (ARENA_HIGH, ARENA_HIGH * 2.0)
+            };
             let over = Vec3::new(x, from, z);
-            let on = track.collision.ground(over, reach).map_or(over.with_y(0.0), |hit| hit.point);
+            let on = track
+                .collision
+                .ground(over, reach)
+                .map_or(over.with_y(0.0), |hit| hit.point);
             let power = match brick.hue {
                 crate::arena::Hue::Any | crate::arena::Hue::Changing => Some(POWERS[i % 4]),
                 crate::arena::Hue::White => None,
@@ -964,8 +1004,17 @@ pub fn pickups(
     // another car.
     let racing = |k: &Kart| k.out.is_none() && k.finished.is_none();
     let field = karts.iter().filter(|(_, k)| racing(k)).count();
-    let ahead = |k: &Kart| karts.iter().filter(|(_, o)| racing(o) && o.place < k.place).count();
-    let it: Vec<usize> = karts.iter().filter(|(_, k)| k.it).map(|(_, k)| k.slot).collect();
+    let ahead = |k: &Kart| {
+        karts
+            .iter()
+            .filter(|(_, o)| racing(o) && o.place < k.place)
+            .count()
+    };
+    let it: Vec<usize> = karts
+        .iter()
+        .filter(|(_, k)| k.it)
+        .map(|(_, k)| k.slot)
+        .collect();
     let behind = |k: &Kart| {
         crate::net::modes::chasing(&settings, k, &it).unwrap_or(2 * (ahead(k) + 1) > field)
     };
@@ -1061,7 +1110,10 @@ pub fn pickups(
             sfx.emit(id::BRICK_RESPAWN, brick_sound(p.pos));
         }
         if p.turn() {
-            let spun = spins.iter().find(|spin| spin.1.parent() == entity).map(|spin| spin.0.time);
+            let spun = spins
+                .iter()
+                .find(|spin| spin.1.parent() == entity)
+                .map(|spin| spin.0.time);
             assets.turned(&mut commands, models.as_deref(), entity, &p, spun);
         }
         // A suited brick waiting to be taken becomes a colour for the car that is
@@ -1210,7 +1262,10 @@ pub fn show_pickups(
         pickup.timer += time.delta_secs();
         // A changing brick is turned here as it is on the host.
         if pickup.turn() {
-            let spun = spins.iter().find(|spin| spin.1.parent() == entity).map(|spin| spin.0.time);
+            let spun = spins
+                .iter()
+                .find(|spin| spin.1.parent() == entity)
+                .map(|spin| spin.0.time);
             assets.turned(&mut commands, models.as_deref(), entity, &pickup, spun);
         }
         pickup.show(&mut tf, &mut vis, time.elapsed_secs());
@@ -1897,7 +1952,11 @@ impl ItemAssets {
             crackle: 0.0,
             shocked: None,
         };
-        let transform = Transform::from_scale(Vec3::new(LIGHTNING_WIDTH, LIGHTNING_HEIGHT, LIGHTNING_RANGE));
+        let transform = Transform::from_scale(Vec3::new(
+            LIGHTNING_WIDTH,
+            LIGHTNING_HEIGHT,
+            LIGHTNING_RANGE,
+        ));
         commands.spawn((
             action,
             Mesh3d(self.cube.clone()),
@@ -2810,15 +2869,27 @@ fn an_extra_brick_is_a_colour_for_the_car_coming_to_it() {
     }
     // The car it is for is the nearest of those on their way to it.
     let car = |n: u32, x: f32, speed: f32, behind: bool| -> Coming {
-        (Entity::from_raw_u32(n).unwrap(), Vec3::X * x, Vec3::X * speed, behind)
+        (
+            Entity::from_raw_u32(n).unwrap(),
+            Vec3::X * x,
+            Vec3::X * speed,
+            behind,
+        )
     };
-    let cars = [car(1, -30.0, 20.0, false), car(2, -60.0, 20.0, true), car(3, 10.0, 20.0, true)];
+    let cars = [
+        car(1, -30.0, 20.0, false),
+        car(2, -60.0, 20.0, true),
+        car(3, 10.0, 20.0, true),
+    ];
     assert_eq!(due(&cars, Vec3::ZERO, None), Some((30.0, false)));
     assert_eq!(due(&cars, Vec3::ZERO, Some(cars[0].0)), Some((60.0, true)));
     // Not one that has gone by, is standing, or is too far off.
     assert_eq!(due(&cars[2..], Vec3::ZERO, None), None);
     assert_eq!(due(&[car(4, -30.0, 0.0, true)], Vec3::ZERO, None), None);
-    assert_eq!(due(&[car(5, -EXTRA_FAR - 1.0, 20.0, true)], Vec3::ZERO, None), None);
+    assert_eq!(
+        due(&[car(5, -EXTRA_FAR - 1.0, 20.0, true)], Vec3::ZERO, None),
+        None
+    );
     // Every circuit has as many pairs of them as it has stations, on its road.
     for map in crate::map::stock().into_iter().filter(|map| !map.arena()) {
         let track = Track::built(map);
@@ -2898,7 +2969,10 @@ fn a_changing_brick_goes_from_colour_to_colour_as_it_lies() {
         }
     }
     assert_eq!(seen.len(), 8, "{seen:?}");
-    assert!(seen.iter().zip(POWERS.iter().cycle()).all(|(a, b)| a == b), "{seen:?}");
+    assert!(
+        seen.iter().zip(POWERS.iter().cycle()).all(|(a, b)| a == b),
+        "{seen:?}"
+    );
     // Its colour is no news to another game, which turns it alike.
     let was = brick.mark();
     brick.timer = BRICK_CHANGE;
@@ -2906,8 +2980,15 @@ fn a_changing_brick_goes_from_colour_to_colour_as_it_lies() {
     // Not while it is away, and no other brick does.
     (brick.state, brick.timer) = (BrickState::Wait, BRICK_CHANGE * 2.0);
     assert!(!brick.turn());
-    let mut plain = Pickup { state: BrickState::Idle, timer: 9.0, ..Pickup::new(Some(Power::Red), Vec3::ZERO, 0.0, false) };
-    let mut white = Pickup { changing: true, ..plain.clone() };
+    let mut plain = Pickup {
+        state: BrickState::Idle,
+        timer: 9.0,
+        ..Pickup::new(Some(Power::Red), Vec3::ZERO, 0.0, false)
+    };
+    let mut white = Pickup {
+        changing: true,
+        ..plain.clone()
+    };
     white.power = None;
     assert!(!plain.turn() && !white.turn());
     // A map may lay one, which begins as a colour.

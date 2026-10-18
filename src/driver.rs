@@ -79,7 +79,10 @@ impl Driver {
     }
 
     fn roll(&mut self, of: u32) -> u32 {
-        self.luck = self.luck.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.luck = self
+            .luck
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         (self.luck >> 16) % of
     }
 }
@@ -133,7 +136,16 @@ pub fn react(driver: &mut Driver, figure: &mut Animated, seen: &Seen, dt: f32) -
         once(figure, part::HIT, part::DRIVING);
         return false;
     }
-    if [part::JOLT, 1, part::HIT, part::WIN, part::CHEERING, part::LOST].contains(&active) {
+    if [
+        part::JOLT,
+        1,
+        part::HIT,
+        part::WIN,
+        part::CHEERING,
+        part::LOST,
+    ]
+    .contains(&active)
+    {
         return false;
     }
     if seen.backing && seen.speed < 0.0 {
@@ -160,7 +172,11 @@ pub fn react(driver: &mut Driver, figure: &mut Animated, seen: &Seen, dt: f32) -
         if let Some(which) = which {
             // `row1 . direction < 0`: the car is on the side its second row points
             // away from.
-            let glance = if left < 0.0 { part::GLANCE } else { part::GLANCE_OTHER };
+            let glance = if left < 0.0 {
+                part::GLANCE
+            } else {
+                part::GLANCE_OTHER
+            };
             driver.wait = GLANCE_WAIT.0 + driver.roll(1000) as f32 / 1000.0 * GLANCE_WAIT.1;
             once(figure, glance[which], part::DRIVING);
             return false;
@@ -218,7 +234,10 @@ pub fn drivers(
             kart.cues.reaction = Some(false);
         }
         if figure.part != before {
-            debug!("driver {}: part {before} to {} at speed {:.3}", kart.slot, figure.part, seen.speed);
+            debug!(
+                "driver {}: part {before} to {} at speed {:.3}",
+                kart.slot, figure.part, seen.speed
+            );
         }
     }
 }
@@ -265,67 +284,172 @@ mod tests {
 
     #[test]
     fn a_driver_leans_with_the_wheel_starts_at_a_knock_and_looks_about() {
-        let Some((mut driver, mut figure)) = driver() else { return };
+        let Some((mut driver, mut figure)) = driver() else {
+            return;
+        };
         let dt = 1.0 / 60.0;
         // Into a turn, easing; and out of it again.
-        let turning = Seen { turn_radius: -30.0, ..seen() };
+        let turning = Seen {
+            turn_radius: -30.0,
+            ..seen()
+        };
         assert!(!react(&mut driver, &mut figure, &turning, dt));
         assert!(figure.part == part::STEER[0] && figure.easing.is_some());
         react(&mut driver, &mut figure, &seen(), dt);
         assert_eq!(figure.part, part::DRIVING);
         // Struck: a start, and then back to driving.
-        react(&mut driver, &mut figure, &Seen { struck: true, ..seen() }, dt);
-        assert_eq!((figure.part, figure.queued), (part::HIT, Some((part::DRIVING, true))));
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                struck: true,
+                ..seen()
+            },
+            dt,
+        );
+        assert_eq!(
+            (figure.part, figure.queued),
+            (part::HIT, Some((part::DRIVING, true)))
+        );
         // While it starts, the wheel doesn't have it lean.
         react(&mut driver, &mut figure, &turning, dt);
         assert_eq!(figure.part, part::HIT);
         figure.play(part::DRIVING, true);
         // A car alongside on the left gets a look, and the next one waits its turn.
-        let beside = Seen { other: Some((0.0, 1.0)), ..seen() };
+        let beside = Seen {
+            other: Some((0.0, 1.0)),
+            ..seen()
+        };
         react(&mut driver, &mut figure, &beside, dt);
         assert_eq!(figure.part, part::GLANCE_OTHER[0]);
         figure.play(part::DRIVING, true);
-        react(&mut driver, &mut figure, &Seen { other: Some((-0.4, -1.0)), ..seen() }, dt);
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                other: Some((-0.4, -1.0)),
+                ..seen()
+            },
+            dt,
+        );
         assert_eq!(figure.part, part::DRIVING);
         driver.wait = 0.0;
-        react(&mut driver, &mut figure, &Seen { other: Some((-0.4, -1.0)), ..seen() }, dt);
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                other: Some((-0.4, -1.0)),
+                ..seen()
+            },
+            dt,
+        );
         assert_eq!(figure.part, part::GLANCE[1]);
         // One dead ahead gets none.
         figure.play(part::DRIVING, true);
         driver.wait = 0.0;
-        react(&mut driver, &mut figure, &Seen { other: Some((0.9, 0.1)), ..seen() }, dt);
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                other: Some((0.9, 0.1)),
+                ..seen()
+            },
+            dt,
+        );
         assert_eq!(figure.part, part::DRIVING);
     }
 
     #[test]
     fn a_driver_is_thrown_forward_by_a_dead_stop_and_says_so() {
-        let Some((mut driver, mut figure)) = driver() else { return };
+        let Some((mut driver, mut figure)) = driver() else {
+            return;
+        };
         let dt = 1.0 / 60.0;
         react(&mut driver, &mut figure, &seen(), dt);
-        assert!(react(&mut driver, &mut figure, &Seen { speed: 0.0, ..seen() }, dt));
+        assert!(react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                speed: 0.0,
+                ..seen()
+            },
+            dt
+        ));
         assert_eq!(figure.part, part::JOLT);
         // Once, not for as long as the car stands.
-        assert!(!react(&mut driver, &mut figure, &Seen { speed: 0.0, ..seen() }, dt));
+        assert!(!react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                speed: 0.0,
+                ..seen()
+            },
+            dt
+        ));
     }
 
     #[test]
     fn a_driver_looks_back_to_reverse_and_ends_the_race_as_it_went() {
-        let Some((mut driver, mut figure)) = driver() else { return };
+        let Some((mut driver, mut figure)) = driver() else {
+            return;
+        };
         let dt = 1.0 / 60.0;
-        let backing = Seen { backing: true, speed: -0.02, ..seen() };
+        let backing = Seen {
+            backing: true,
+            speed: -0.02,
+            ..seen()
+        };
         driver.speed = -0.02;
         react(&mut driver, &mut figure, &backing, dt);
-        assert_eq!((figure.part, figure.queued), (part::LOOK_BACK, Some((part::LOOKING_BACK, true))));
+        assert_eq!(
+            (figure.part, figure.queued),
+            (part::LOOK_BACK, Some((part::LOOKING_BACK, true)))
+        );
         figure.play(part::LOOKING_BACK, true);
-        react(&mut driver, &mut figure, &Seen { speed: 0.02, ..seen() }, dt);
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                speed: 0.02,
+                ..seen()
+            },
+            dt,
+        );
         assert_eq!(figure.part, part::LOOK_AHEAD);
         // Fourth home: a slump. First: one of the two celebrations, and it stays in it.
-        react(&mut driver, &mut figure, &Seen { finished: true, place: 4, ..seen() }, dt);
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                finished: true,
+                place: 4,
+                ..seen()
+            },
+            dt,
+        );
         assert_eq!(figure.part, part::LOSE);
-        react(&mut driver, &mut figure, &Seen { finished: true, place: 1, ..seen() }, dt);
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                finished: true,
+                place: 1,
+                ..seen()
+            },
+            dt,
+        );
         assert!([part::WIN, part::CHEER].contains(&figure.part));
         let settled = figure.part;
-        react(&mut driver, &mut figure, &Seen { finished: true, place: 1, ..seen() }, dt);
+        react(
+            &mut driver,
+            &mut figure,
+            &Seen {
+                finished: true,
+                place: 1,
+                ..seen()
+            },
+            dt,
+        );
         assert_eq!(figure.part, settled);
     }
 }

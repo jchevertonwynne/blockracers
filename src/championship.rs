@@ -35,7 +35,11 @@ pub enum Step {
     Race(String),
     /// The circuit has been raced to the end: where the player came, and whether
     /// that opened the next circuit.
-    Finished { series: usize, place: usize, opened: bool },
+    Finished {
+        series: usize,
+        place: usize,
+        opened: bool,
+    },
     /// The player was too far behind to go on.
     Out,
 }
@@ -79,7 +83,10 @@ impl Championship {
             .into_iter()
             .filter(|(_, rounds)| !rounds.is_empty())
             .map(|(code, rounds)| Series {
-                champion: roster::field(&jam, &code).first().map(|d| d.code.clone()).unwrap_or_default(),
+                champion: roster::field(&jam, &code)
+                    .first()
+                    .map(|d| d.code.clone())
+                    .unwrap_or_default(),
                 parts: roster::part_set(&jam, &code),
                 code,
                 mirrored: rounds.iter().map(|r| r.mirrored).collect(),

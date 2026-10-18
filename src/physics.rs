@@ -506,7 +506,11 @@ pub fn step(k: &mut Kart, c: &Controls, world: &Collision, dt: f32) {
     let ms = dt * MS;
     let mut torque = Vec3::ZERO;
     if grounded && !k.hover && k.rigid.roll <= 0.0 && k.rigid.pitch <= 0.0 {
-        let down = if k.contacts >= 3 { 0b1111 } else { k.wheel_mask };
+        let down = if k.contacts >= 3 {
+            0b1111
+        } else {
+            k.wheel_mask
+        };
         let held = k.mass * GRAVITY / UNIT / (MS * MS) / (k.contacts as f32 + CONTACT_SHARE);
         let (rot, centre, wheels) = (k.rot, k.centre, k.wheels);
         let from_centre = |wheel: usize| rot * (wheels[wheel] - centre) / UNIT;
@@ -658,15 +662,19 @@ fn collide_walls(k: &mut Kart, world: &Collision, previous_centre: Vec3) {
 fn probe_hover(k: &mut Kart, world: &Collision, dt: f32) {
     let had_contact = k.contacts > 0;
     // How far below itself an axle looks for the ground it floats over.
-    let reach = if had_contact { SLIDE_SWEEP * dt * MS } else { 0.0 } + k.hover_lift;
+    let reach = if had_contact {
+        SLIDE_SWEEP * dt * MS
+    } else {
+        0.0
+    } + k.hover_lift;
     let feet = k.wheels.map(|wheel| k.pos + k.rot * wheel);
     let axles = [(feet[0] + feet[1]) / 2.0, (feet[2] + feet[3]) / 2.0];
     let hits = axles.map(|axle| world.ground(axle + Vec3::Y * STEP_UP, STEP_UP + reach));
     // How far above the bottom of its sweep each axle's ground is.
     let rise = |axle: usize| {
-        hits[axle]
-            .as_ref()
-            .map_or(f32::NEG_INFINITY, |hit| hit.point.y - (axles[axle].y - reach))
+        hits[axle].as_ref().map_or(f32::NEG_INFINITY, |hit| {
+            hit.point.y - (axles[axle].y - reach)
+        })
     };
     let selected = if rise(1) > rise(0) { 1 } else { 0 };
     let Some(set_by) = &hits[selected] else {
@@ -884,7 +892,6 @@ fn probe_ground(k: &mut Kart, world: &Collision, dt: f32) {
         k.vel -= normal * into;
     }
 }
-
 
 #[cfg(test)]
 mod tests {

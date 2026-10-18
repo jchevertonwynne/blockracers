@@ -88,7 +88,12 @@ pub(super) fn camera(tokens: &[Token]) -> Option<(Vec3, Vec3, Vec3, f32)> {
             number(key, from + 2)?,
         ))
     };
-    Some((vec3(0x31, 0)?, vec3(0x32, 0)?, vec3(0x32, 3)?, number(0x47, 0)?))
+    Some((
+        vec3(0x31, 0)?,
+        vec3(0x32, 0)?,
+        vec3(0x32, 3)?,
+        number(0x47, 0)?,
+    ))
 }
 
 /// The figure of whoever is champion of the last circuit opened, ready to stand.
@@ -180,7 +185,8 @@ pub fn keep(
                 RenderTarget::from(picture.clone()),
                 RenderLayers::layer(LAYER),
                 bevy::core_pipeline::tonemapping::Tonemapping::None,
-                Transform::from_translation(scenery::to_world(eye)).looking_to(way(forward), way(up)),
+                Transform::from_translation(scenery::to_world(eye))
+                    .looking_to(way(forward), way(up)),
             ))
             .id();
         *mascot = Mascot {
@@ -219,7 +225,10 @@ pub fn dress(
     figures: Query<(), With<Standing>>,
 ) {
     for mesh in &made {
-        if parents.iter_ancestors(mesh).any(|above| figures.contains(above)) {
+        if parents
+            .iter_ancestors(mesh)
+            .any(|above| figures.contains(above))
+        {
             commands.entity(mesh).insert(RenderLayers::layer(LAYER));
         }
     }
@@ -246,7 +255,10 @@ fn the_champion_stands_before_the_scene_s_camera() {
     assert_eq!(fov.round(), 36.0);
     // The camera looks back along X at where the figure stands, a little below it.
     let to = PLACE - eye;
-    assert!(to.normalize().dot(forward.normalize()) > 0.9, "{to} {forward}");
+    assert!(
+        to.normalize().dot(forward.normalize()) > 0.9,
+        "{to} {forward}"
+    );
     assert!(up.z > 0.99 && to.length() > 5.0);
     // Whoever it is, it has a bone for every part of it and the three moves.
     for opened in [1, 4, 7] {

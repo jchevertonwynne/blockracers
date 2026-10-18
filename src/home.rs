@@ -66,10 +66,15 @@ fn gather_in(home: &Path) {
         if !from.exists() || to.exists() {
             continue;
         }
-        let moved = std::fs::create_dir_all(home.join(FOLDER)).and_then(|_| std::fs::rename(&from, &to));
+        let moved =
+            std::fs::create_dir_all(home.join(FOLDER)).and_then(|_| std::fs::rename(&from, &to));
         match moved {
             Ok(()) => say(&format!("moved {} to {}", from.display(), to.display())),
-            Err(error) => say(&format!("could not move {} to {}: {error}", from.display(), to.display())),
+            Err(error) => say(&format!(
+                "could not move {} to {}: {error}",
+                from.display(),
+                to.display()
+            )),
         }
     }
 }
@@ -89,8 +94,14 @@ mod tests {
         gather_in(&home);
         let read = |name: &str| std::fs::read_to_string(home.join(name)).ok();
         assert_eq!(read(".brickracers/settings").as_deref(), Some("laps=2\n"));
-        assert_eq!(read(".brickracers/ghosts/RACEC0R0").as_deref(), Some("a run"));
-        assert_eq!(std::fs::read(home.join(".brickracers/garage")).unwrap(), [1, 2, 3]);
+        assert_eq!(
+            read(".brickracers/ghosts/RACEC0R0").as_deref(),
+            Some("a run")
+        );
+        assert_eq!(
+            std::fs::read(home.join(".brickracers/garage")).unwrap(),
+            [1, 2, 3]
+        );
         assert!(!home.join(".brick_racers_settings").exists());
         assert!(!home.join(".brick_racers_ghosts").exists());
         // Nothing had been won, and nothing is made up; and what is in the folder

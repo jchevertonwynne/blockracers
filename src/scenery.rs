@@ -329,7 +329,9 @@ impl Animated {
     /// easing into it from however it stands now over so many milliseconds.
     pub fn transition(&mut self, part: usize, ms: f32) {
         let frame = self.frame();
-        let from = (0..self.rig.bones.len()).map(|bone| self.local(bone, frame)).collect();
+        let from = (0..self.rig.bones.len())
+            .map(|bone| self.local(bone, frame))
+            .collect();
         self.play(part, true);
         self.easing = Some((from, 0.0, ms));
     }
@@ -351,7 +353,11 @@ impl Animated {
 
     /// How many frames its part has.
     pub fn frame_count(&self) -> f32 {
-        self.rig.animation.parts.get(self.part).map_or(1.0, |p| p.frames)
+        self.rig
+            .animation
+            .parts
+            .get(self.part)
+            .map_or(1.0, |p| p.frames)
     }
 
     pub fn length(&self) -> f32 {
@@ -547,7 +553,13 @@ pub fn load_files(
             }
             let Some(model) = jam
                 .get(&format!("{dir}/{model_name}.GDB"))
-                .and_then(|data| if library.is_dynamic() { Model::parse_lit(data) } else { Model::parse(data) })
+                .and_then(|data| {
+                    if library.is_dynamic() {
+                        Model::parse_lit(data)
+                    } else {
+                        Model::parse(data)
+                    }
+                })
             else {
                 continue;
             };
@@ -606,7 +618,13 @@ struct Template {
     /// own and not all by the one it hangs from.
     parts: Vec<(
         Option<usize>,
-        Vec<(Handle<Mesh>, Handle<StandardMaterial>, usize, bool, Option<Lit>)>,
+        Vec<(
+            Handle<Mesh>,
+            Handle<StandardMaterial>,
+            usize,
+            bool,
+            Option<Lit>,
+        )>,
     )>,
     /// For the meshes moved by their vertices' own bones: each bone's as it is, the
     /// vertices being in their bones' own space already.
@@ -805,9 +823,7 @@ impl Models {
                 Motion::Then(part) => {
                     (animated.looping, animated.queued) = (false, Some((part, true)))
                 }
-                Motion::Once(part) => {
-                    animated.play(part % rig.animation.parts.len().max(1), false)
-                }
+                Motion::Once(part) => animated.play(part % rig.animation.parts.len().max(1), false),
                 Motion::Held(part, bone) => {
                     animated.freeze(part);
                     let (_, position) = animated.pose(bone.min(rig.bones.len() - 1), 0.0);
@@ -905,7 +921,13 @@ impl Models {
                 surfaces
                     .iter()
                     .map(|(mesh, material, index, skinned, lit)| {
-                        (mesh.clone(), repaint(material), *index, *skinned, lit.clone())
+                        (
+                            mesh.clone(),
+                            repaint(material),
+                            *index,
+                            *skinned,
+                            lit.clone(),
+                        )
                     })
                     .collect(),
             )
@@ -1059,7 +1081,9 @@ pub fn spawn_scenery(
         for (copy, alpha) in crate::hazards::GHOST_IMAGES {
             models.faded(&template, copy, alpha, &mut materials);
         }
-        models.0.insert(crate::hazards::GHOST_IMAGE.to_string(), template);
+        models
+            .0
+            .insert(crate::hazards::GHOST_IMAGE.to_string(), template);
     }
     commands.insert_resource(scenery);
     let mut swatches = Swatches::default();
@@ -1194,7 +1218,10 @@ pub fn cycle(
     for (mut cycle, material) in &mut cycles {
         cycle.time += dt;
         let reels = cycle.reels.clone();
-        let Some(reel) = reels.get(cycle.reel).filter(|reel| !reel.pictures.is_empty()) else {
+        let Some(reel) = reels
+            .get(cycle.reel)
+            .filter(|reel| !reel.pictures.is_empty())
+        else {
             continue;
         };
         // One played once holds its last picture.

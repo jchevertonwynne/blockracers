@@ -14,7 +14,10 @@ use std::fmt::Write;
 
 /// Numbers as a file has them, with commas between, and nought without a sign.
 fn listed(numbers: &[f32]) -> String {
-    let numbers: Vec<String> = numbers.iter().map(|number| (number + 0.0).to_string()).collect();
+    let numbers: Vec<String> = numbers
+        .iter()
+        .map(|number| (number + 0.0).to_string())
+        .collect();
     format!("[{}]", numbers.join(", "))
 }
 
@@ -75,7 +78,10 @@ impl Map {
             None => road(&mut text, &self.road, &self.look),
         }
         let hazards = self.hazards.iter().map(|stood| {
-            let mut line = format!("{{ kind = {}", quoted(&format!("{:?}", stood.kind).to_lowercase()));
+            let mut line = format!(
+                "{{ kind = {}",
+                quoted(&format!("{:?}", stood.kind).to_lowercase())
+            );
             if let Some(at) = stood.at {
                 let _ = write!(line, ", at = {at}");
             }
@@ -88,7 +94,11 @@ impl Map {
             if stood.heading != 0.0 {
                 let _ = write!(line, ", heading = {}", stood.heading);
             }
-            for (name, value) in [("reach", stood.reach), ("apart", stood.apart), ("out", stood.out)] {
+            for (name, value) in [
+                ("reach", stood.reach),
+                ("apart", stood.apart),
+                ("out", stood.out),
+            ] {
                 if let Some(value) = value {
                     let _ = write!(line, ", {name} = {value}");
                 }
@@ -117,7 +127,11 @@ impl Map {
 
 fn landmark(landmark: &Landmark) -> String {
     let kind = format!("{:?}", landmark.kind).to_lowercase();
-    let mut line = format!("{{ kind = {}, place = {}", quoted(&kind), listed(&landmark.place));
+    let mut line = format!(
+        "{{ kind = {}, place = {}",
+        quoted(&kind),
+        listed(&landmark.place)
+    );
     for (name, value, usual) in [
         ("heading", landmark.heading, 0.0),
         ("length", landmark.length, Landmark::length()),
@@ -134,14 +148,25 @@ fn landmark(landmark: &Landmark) -> String {
 fn road(text: &mut String, road: &Road, look: &Look) {
     // Each with how wide the road is there, where that is not as wide as the
     // game's roads are.
-    let wide = |i: usize| road.widths.get(i).copied().filter(|&width| width != crate::track::WIDTH);
-    let corners = road.corners.iter().enumerate().map(|(i, corner)| match wide(i) {
-        Some(width) => listed(&[corner[0], corner[1], corner[2], corner[3], width]),
-        None => listed(corner),
-    });
+    let wide = |i: usize| {
+        road.widths
+            .get(i)
+            .copied()
+            .filter(|&width| width != crate::track::WIDTH)
+    };
+    let corners = road
+        .corners
+        .iter()
+        .enumerate()
+        .map(|(i, corner)| match wide(i) {
+            Some(width) => listed(&[corner[0], corner[1], corner[2], corner[3], width]),
+            None => listed(corner),
+        });
     let about = match road.widths.is_empty() {
         true => "The road's corners, each [x, height, z, radius]. The first is the start.",
-        false => "The road's corners, each [x, height, z, radius] and how wide the road is there if not 16. The first is the start.",
+        false => {
+            "The road's corners, each [x, height, z, radius] and how wide the road is there if not 16. The first is the start."
+        }
     };
     section(text, about, "corners", corners.collect());
     section(
@@ -150,14 +175,23 @@ fn road(text: &mut String, road: &Road, look: &Look) {
         "tunnels",
         road.tunnels
             .iter()
-            .map(|tunnel| format!("{{ from = {}, to = {} }}", listed(&tunnel.from), listed(&tunnel.to)))
+            .map(|tunnel| {
+                format!(
+                    "{{ from = {}, to = {} }}",
+                    listed(&tunnel.from),
+                    listed(&tunnel.to)
+                )
+            })
             .collect(),
     );
     section(
         text,
         "Jumps, each where its lip is.",
         "jumps",
-        road.jumps.iter().map(|jump| format!("{{ lip = {} }}", listed(&jump.lip))).collect(),
+        road.jumps
+            .iter()
+            .map(|jump| format!("{{ lip = {} }}", listed(&jump.lip)))
+            .collect(),
     );
     section(
         text,
@@ -200,7 +234,12 @@ fn road(text: &mut String, road: &Road, look: &Look) {
         "banks",
         road.banks
             .iter()
-            .map(|bank| format!("{{ from = {}, to = {}, tilt = {} }}", bank.from, bank.to, bank.tilt))
+            .map(|bank| {
+                format!(
+                    "{{ from = {}, to = {}, tilt = {} }}",
+                    bank.from, bank.to, bank.tilt
+                )
+            })
             .collect(),
     );
     if *look != Look::default() {
@@ -218,7 +257,9 @@ fn road(text: &mut String, road: &Road, look: &Look) {
 
 /// An arena's floor and what is on it.
 fn floor(text: &mut String, plan: &Plan) {
-    let pairs = |places: &mut dyn Iterator<Item = &[f32; 2]>| -> Vec<String> { places.map(|place| listed(place)).collect() };
+    let pairs = |places: &mut dyn Iterator<Item = &[f32; 2]>| -> Vec<String> {
+        places.map(|place| listed(place)).collect()
+    };
     section(
         text,
         "The corners of the floor in order, each [x, z], round the middle, which is [0, 0].",
@@ -232,7 +273,11 @@ fn floor(text: &mut String, plan: &Plan) {
         colour(plan.floor[1])
     );
     let stood = |at: &[f32; 2], half: &[f32; 2], height: f32| {
-        format!("at = {}, half = {}, height = {height}", listed(at), listed(half))
+        format!(
+            "at = {}, half = {}, height = {height}",
+            listed(at),
+            listed(half)
+        )
     };
     section(
         text,
@@ -271,7 +316,11 @@ fn floor(text: &mut String, plan: &Plan) {
         plan.decks
             .iter()
             .map(|deck| match deck.colour {
-                Some(tint) => format!("{{ {}, colour = {} }}", stood(&deck.at, &deck.half, deck.height), colour(tint)),
+                Some(tint) => format!(
+                    "{{ {}, colour = {} }}",
+                    stood(&deck.at, &deck.half, deck.height),
+                    colour(tint)
+                ),
                 None => format!("{{ {} }}", stood(&deck.at, &deck.half, deck.height)),
             })
             .collect(),
@@ -289,7 +338,11 @@ fn floor(text: &mut String, plan: &Plan) {
         plan.grid
             .iter()
             .map(|start| match start.faces {
-                Some(faces) => format!("{{ at = {}, faces = {} }}", listed(&start.at), quoted(compass(faces))),
+                Some(faces) => format!(
+                    "{{ at = {}, faces = {} }}",
+                    listed(&start.at),
+                    quoted(compass(faces))
+                ),
                 None => listed(&start.at),
             })
             .collect(),
@@ -327,7 +380,10 @@ fn floor(text: &mut String, plan: &Plan) {
             .collect(),
     );
     if let Some(rows) = plan.rows {
-        let _ = write!(text, "\n# How many rows of bricks lie across the line besides.\nrows = {rows}\n");
+        let _ = write!(
+            text,
+            "\n# How many rows of bricks lie across the line besides.\nrows = {rows}\n"
+        );
     }
     section(
         text,
@@ -335,7 +391,13 @@ fn floor(text: &mut String, plan: &Plan) {
         "pads",
         plan.pads
             .iter()
-            .map(|pad| format!("{{ place = {}, heading = {} }}", listed(&pad.at), pad.heading))
+            .map(|pad| {
+                format!(
+                    "{{ place = {}, heading = {} }}",
+                    listed(&pad.at),
+                    pad.heading
+                )
+            })
             .collect(),
     );
 }
@@ -348,8 +410,17 @@ mod tests {
     fn a_map_written_out_reads_back_as_itself() {
         for map in crate::map::stock() {
             let text = map.written();
-            let read = Map::tried(&map.key, &text).unwrap_or_else(|wrong| panic!("{}: {wrong}\n{text}", map.key));
-            assert_eq!(Map { text: map.text.clone(), ..read }, *map, "{}", map.key);
+            let read = Map::tried(&map.key, &text)
+                .unwrap_or_else(|wrong| panic!("{}: {wrong}\n{text}", map.key));
+            assert_eq!(
+                Map {
+                    text: map.text.clone(),
+                    ..read
+                },
+                *map,
+                "{}",
+                map.key
+            );
             // And what is written of that is the same again.
             assert_eq!(Map::read(&map.key, &text).unwrap().written(), text);
         }
@@ -361,12 +432,19 @@ mod tests {
         map.road.widths = vec![crate::track::WIDTH; map.road.corners.len()];
         (map.road.widths[1], map.road.widths[2]) = (24.0, 11.5);
         let text = map.written();
-        assert!(text.contains("[88, 0, 8, 32, 24],") && text.contains("[88, 0, 92, 20, 11.5],") && text.contains("[-52, 0, 8, 0],"));
+        assert!(
+            text.contains("[88, 0, 8, 32, 24],")
+                && text.contains("[88, 0, 92, 20, 11.5],")
+                && text.contains("[-52, 0, 8, 0],")
+        );
         let read = Map::read("BRICK", &text).unwrap();
         assert_eq!(read.road.widths, map.road.widths);
         // As wide as the game's all the way round, it says nothing of it.
         map.road.widths = vec![crate::track::WIDTH; map.road.corners.len()];
-        assert_eq!(Map::read("BRICK", &map.written()).unwrap().road.widths, Vec::<f32>::new());
+        assert_eq!(
+            Map::read("BRICK", &map.written()).unwrap().road.widths,
+            Vec::<f32>::new()
+        );
     }
 
     #[test]

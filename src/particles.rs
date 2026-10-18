@@ -250,7 +250,9 @@ impl Emitters {
 
     /// Whether the emitter of the named kind goes on until it is stopped.
     pub fn persistent(&self, name: &str) -> bool {
-        self.kinds.get(name).is_some_and(|kind| kind.def.duration.is_none())
+        self.kinds
+            .get(name)
+            .is_some_and(|kind| kind.def.duration.is_none())
     }
 
     /// Starts an emitter of the named kind at a place; those with a duration end themselves.

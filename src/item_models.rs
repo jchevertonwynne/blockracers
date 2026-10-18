@@ -81,7 +81,12 @@ pub fn aftermath(
     swatches: Option<Res<crate::scenery::Swatches>>,
     track: Option<Res<crate::track::Track>>,
     blasts: Query<(&Action, &Transform), Added<Action>>,
-    mut scars: Query<(Entity, &mut Scar, &Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    mut scars: Query<(
+        Entity,
+        &mut Scar,
+        &Mesh3d,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
     debris: Query<(Entity, &Children), With<Debris>>,
     playing: Query<&Animated>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -143,7 +148,10 @@ pub fn aftermath(
                     .with_y(0.0)
                     .normalize_or(*back);
                 let place = Transform::from_translation(at.translation).looking_to(way, Vec3::Y);
-                let (model, part) = (DEBRIS[(*thrown >> 4) as usize % 4], (*thrown >> 12) as usize);
+                let (model, part) = (
+                    DEBRIS[(*thrown >> 4) as usize % 4],
+                    (*thrown >> 12) as usize,
+                );
                 if let Some(brick) = models.spawn(&mut commands, model, place, Motion::Once(part)) {
                     commands.entity(brick).insert(Debris);
                 }
@@ -173,7 +181,9 @@ pub fn aftermath(
             }
         } else if let Some(mut material) = materials.get_mut(&material.0) {
             let left = 1.0 - (scar.age - crate::items::EXPLOSION_TIME) / SCAR_FADE;
-            material.base_color.set_alpha(SCAR_ALPHA * left.clamp(0.0, 1.0));
+            material
+                .base_color
+                .set_alpha(SCAR_ALPHA * left.clamp(0.0, 1.0));
         }
     }
     for (entity, children) in &debris {
@@ -213,7 +223,11 @@ pub fn hook_puffs(
             commands.entity(hook).insert(Puffed);
             let place = Transform::from_translation(at.translation);
             let puff = emitters.spawn(&mut commands, HOOK_PUFF, place);
-            debug!("a hook lets go at {}, with a puff: {}", at.translation, puff.is_some());
+            debug!(
+                "a hook lets go at {}, with a puff: {}",
+                at.translation,
+                puff.is_some()
+            );
             if let Some(puff) = puff {
                 commands.entity(puff).insert(Puff(hook));
             }
@@ -243,7 +257,12 @@ pub fn dress_actions(
     new: Query<(Entity, &Action, &Transform), Added<Action>>,
     actions: Query<(&Transform, &Action), Without<Dressing>>,
     mut dressings: Query<
-        (Entity, &mut Dressing, &mut Transform, Option<&mut Visibility>),
+        (
+            Entity,
+            &mut Dressing,
+            &mut Transform,
+            Option<&mut Visibility>,
+        ),
         Without<Action>,
     >,
 ) {

@@ -104,7 +104,9 @@ fn name_in(jam: &Jam, code: &str, language: usize) -> Option<String> {
     let folder = crate::assets::font::language_folder(language);
     let names = jam.get(&format!("/GAMEDATA/COMMON/{folder}/DRIVERS.SRF"))?;
     let names = crate::assets::font::load_strings(names);
-    names.get(usize::try_from(number(fields, 0x33)?).ok()?).cloned()
+    names
+        .get(usize::try_from(number(fields, 0x33)?).ok()?)
+        .cloned()
 }
 
 /// What a driver is called, in the language chosen.
@@ -121,7 +123,9 @@ pub fn name(jam: &Jam, code: &str) -> String {
 pub fn called(jam: &Jam, name: &str) -> Option<&'static str> {
     let languages = 0..crate::assets::font::LANGUAGES.len();
     NAMES.iter().map(|n| n.0).find(|code| {
-        languages.clone().any(|language| name_in(jam, code, language).as_deref() == Some(name))
+        languages
+            .clone()
+            .any(|language| name_in(jam, code, language).as_deref() == Some(name))
     })
 }
 

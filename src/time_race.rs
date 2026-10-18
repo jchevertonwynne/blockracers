@@ -141,11 +141,7 @@ fn run_key(circuits: &Circuits, settings: &Settings, variant: Variant) -> String
         0 => String::new(),
         speed => format!("-x{}", crate::menu::SPEEDS[speed].1),
     };
-    format!(
-        "{}{}{pace}",
-        circuit.key(),
-        variant.suffix()
-    )
+    format!("{}{}{pace}", circuit.key(), variant.suffix())
 }
 
 /// A ghost car: which run it replays.

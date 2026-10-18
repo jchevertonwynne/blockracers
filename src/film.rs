@@ -27,12 +27,13 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 
+use crate::assets::lrs::Racer;
 use crate::assets::{
     Jam,
     adb::Animation,
     font::load_strings,
-    image::decode_bmp,
     gdb::parse_skeleton,
+    image::decode_bmp,
     lrs::Cosmetics,
     tokens::{Token, tokenize},
 };
@@ -41,7 +42,6 @@ use crate::lighting::{Beam, Lights, Lit};
 use crate::particles::{self, EmitterDef, Emitters, Look};
 use crate::scenery::{self, Animated, Prop, PropDef, Recast, ReelDef, Rig};
 use crate::world::Library;
-use crate::assets::lrs::Racer;
 use crate::{Screen, build, roster};
 
 /// The part set that is Rocket Racer's, counted from the first that is won.
@@ -219,7 +219,11 @@ enum Effect {
     Sound(usize),
     /// A colour over the screen for so many seconds: coming over it, or, if it
     /// `falls`, going from it.
-    Fade { seconds: f32, colour: Color, falls: bool },
+    Fade {
+        seconds: f32,
+        colour: Color,
+        falls: bool,
+    },
     /// Words across the screen, this far down it, in a colour if they have one.
     Words(String, f32, Option<Color>),
     /// A picture in the middle of the screen, by its file.
@@ -408,7 +412,8 @@ impl Film {
             }
             // `[count] { world animation track material table }`, the first of them.
             let count = number(fields, 0x36, 1).unwrap_or(0.0) as usize;
-            let value = |n: usize, k: usize| number(fields, 0x36, 4 + n * 5 + k).map(|v| v as usize);
+            let value =
+                |n: usize, k: usize| number(fields, 0x36, 4 + n * 5 + k).map(|v| v as usize);
             let tracks = (0..count).filter_map(|n| Some((value(n, 3)?, value(n, 2)?)));
             film.cues.push(Cue {
                 model,
@@ -444,7 +449,9 @@ impl Film {
         // only the beaten one's are left.
         let named = request.champion.as_ref().map(|code| format!("text{code}"));
         film.effects.retain(|(kind, name), _| {
-            *kind != WORDS || !CHAMPIONS_WORDS.contains(&name.as_str()) || named.as_ref() == Some(name)
+            *kind != WORDS
+                || !CHAMPIONS_WORDS.contains(&name.as_str())
+                || named.as_ref() == Some(name)
         });
         film.car = request.car.clone();
         // A film about a racer's car has nothing to show for a racer without one.
@@ -581,8 +588,15 @@ impl Film {
         let made = (|| {
             let catalogue = build::Catalogue::open(jam)?;
             // The film's own tracks work the face, from its first look.
-            let figure =
-                build::figure(jam, &catalogue, Cosmetics { expression: 0, ..cosmetics }, true)?;
+            let figure = build::figure(
+                jam,
+                &catalogue,
+                Cosmetics {
+                    expression: 0,
+                    ..cosmetics
+                },
+                true,
+            )?;
             let (files, folders) = build::Catalogue::files();
             let parts = Library::new(jam, files.iter().map(String::as_str), &folders);
             let face = build::face(&catalogue, cosmetics)?.to_string();
@@ -642,7 +656,10 @@ impl Film {
         let strings = match language {
             0 => strings,
             _ => jam
-                .get(&format!("{dir}/{}.SRF", crate::assets::font::language_folder(language)))
+                .get(&format!(
+                    "{dir}/{}.SRF",
+                    crate::assets::font::language_folder(language)
+                ))
                 .map(load_strings)
                 .map_or(strings, |table| vec![table]),
         };
@@ -655,7 +672,9 @@ impl Film {
             let colour = vec3(fields, 0x66, 0).unwrap_or_default() / 255.0;
             let colour = Color::srgb(colour.x, colour.y, colour.z);
             // `mode on` is the colour going, and `mode off` its coming.
-            let falls = fields.windows(2).any(|pair| pair == [Token::Key(0x62), Token::Key(0x63)]);
+            let falls = fields
+                .windows(2)
+                .any(|pair| pair == [Token::Key(0x62), Token::Key(0x63)]);
             let fade = Effect::Fade {
                 seconds,
                 colour,
@@ -668,7 +687,8 @@ impl Film {
             let line = number(fields, 0x40, 1).unwrap_or(0.0) as usize;
             let words = strings.get(table).and_then(|table| table.get(line));
             let down = number(fields, 0x44, 0).unwrap_or(0.5);
-            let colour = vec3(fields, 0x66, 0).map(|c| Color::srgb(c.x / 255.0, c.y / 255.0, c.z / 255.0));
+            let colour =
+                vec3(fields, 0x66, 0).map(|c| Color::srgb(c.x / 255.0, c.y / 255.0, c.z / 255.0));
             if let Some(words) = words {
                 self.effects
                     .insert((WORDS, name), Effect::Words(words.clone(), down, colour));
@@ -681,12 +701,13 @@ impl Film {
             }
         }
         // The jointed, model and bsp names an event may act on.
-        let target = |fields: &[Token]| {
-            [0x5d, 0x5e, 0x5f].iter().find_map(|key| text(fields, *key))
-        };
+        let target =
+            |fields: &[Token]| [0x5d, 0x5e, 0x5f].iter().find_map(|key| text(fields, *key));
         for (name, fields) in entries(&tokens, COLOUR) {
             let each = |key: u16| [0, 1, 2].map(|n| number(fields, key, n).unwrap_or(0.0));
-            let Some(target) = target(fields) else { continue };
+            let Some(target) = target(fields) else {
+                continue;
+            };
             let effect = Effect::Colour {
                 target,
                 shifts: each(0x2c).map(|shift| shift as u32),
@@ -714,14 +735,16 @@ impl Film {
         }
         // `"mark" { kind attached "effect" }`
         let bound = |key: u16| {
-            entries(&tokens, key).into_iter().filter_map(|(mark, fields)| {
-                let (Some(Token::Key(kind)), Some(Token::Str(effect))) =
-                    (fields.first(), fields.get(2))
-                else {
-                    return None;
-                };
-                Some((mark, *kind, effect.to_lowercase()))
-            })
+            entries(&tokens, key)
+                .into_iter()
+                .filter_map(|(mark, fields)| {
+                    let (Some(Token::Key(kind)), Some(Token::Str(effect))) =
+                        (fields.first(), fields.get(2))
+                    else {
+                        return None;
+                    };
+                    Some((mark, *kind, effect.to_lowercase()))
+                })
         };
         self.begun = bound(0x56).collect();
         self.ended = bound(0x57).collect();
@@ -827,7 +850,9 @@ impl Request {
         car: Option<Racer>,
     ) -> Option<Request> {
         let folder = format!("CIRCUIT{}", circuit + 1);
-        let champion = roster::field(jam, &format!("c{circuit}")).into_iter().next();
+        let champion = roster::field(jam, &format!("c{circuit}"))
+            .into_iter()
+            .next();
         let wearing = champion.and_then(|champion| roster::cosmetics_of(jam, &champion.code));
         match circuit {
             0..=5 => Some(Request {
@@ -970,7 +995,8 @@ impl Tint {
                     let mut out = *colour;
                     for n in 0..3 {
                         let eight = (colour[n].max(0.0).powf(1.0 / 2.2) * 255.0).round() as i32;
-                        let moved = ((eight >> self.shifts[n]) + self.offsets[n] as i32).clamp(0, 255);
+                        let moved =
+                            ((eight >> self.shifts[n]) + self.offsets[n] as i32).clamp(0, 255);
                         out[n] = (moved as f32 / 255.0).powf(2.2);
                     }
                     out
@@ -1051,7 +1077,11 @@ fn leave(
     showing.next.clear();
     if let Some(playing) = showing.playing.take() {
         let (transform, lens, camera) = &mut *camera;
-        playing.close(&mut commands, all.iter(), (&mut **transform, &mut **lens, &mut **camera));
+        playing.close(
+            &mut commands,
+            all.iter(),
+            (&mut **transform, &mut **lens, &mut **camera),
+        );
     }
 }
 
@@ -1089,13 +1119,25 @@ fn open(
     let mut cast = HashMap::new();
     for def in std::mem::take(&mut film.props) {
         let name = def.name().to_string();
-        let prop = scenery::spawn(def, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
+        let prop = scenery::spawn(
+            def,
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &mut binds,
+        );
         commands.entity(prop).insert((Piece, Visibility::Hidden));
         cast.insert(name, prop);
     }
     let defs = std::mem::take(&mut film.emitters);
     if !defs.is_empty() {
-        commands.insert_resource(Emitters::new(defs, &mut meshes, &mut materials, &mut images));
+        commands.insert_resource(Emitters::new(
+            defs,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+        ));
     }
     // `SceneEntityGroup`: the car, on its wheels and with nobody in it, where the
     // film has a box for one.
@@ -1116,7 +1158,15 @@ fn open(
         let hung = commands
             .spawn((Piece, prop, Transform::default(), Visibility::Hidden))
             .id();
-        crate::time_race::dress(&mut commands, hung, model, &mut meshes, &mut materials, &mut images, None);
+        crate::time_race::dress(
+            &mut commands,
+            hung,
+            model,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            None,
+        );
         cast.insert(CAR.to_string(), hung);
         car = Some(hung);
     }
@@ -1197,7 +1247,15 @@ fn play(
     mut sfx: ResMut<crate::audio::Sfx>,
     mut sound: ResMut<crate::audio::Cue>,
     mut camera: Single<(&mut Transform, &mut Projection, &mut Camera), Screens>,
-    mut pieces: Query<(&mut Transform, &mut Visibility, &mut Prop, Option<&mut Animated>), With<Piece>>,
+    mut pieces: Query<
+        (
+            &mut Transform,
+            &mut Visibility,
+            &mut Prop,
+            Option<&mut Animated>,
+        ),
+        With<Piece>,
+    >,
     mut lights: ResMut<Lights>,
     mut veils: Query<&mut BackgroundColor, With<Piece>>,
     (mut images, mut meshes): (ResMut<Assets<Image>>, ResMut<Assets<Mesh>>),
@@ -1213,12 +1271,15 @@ fn play(
     let film = &mut playing.film;
     let frame = (playing.seconds * film.rate) as u32;
     // `SceneWidget::OnKeyDown`: a key ends a film that may be ended, a second in.
-    let skipped = playing.skippable
-        && playing.seconds >= 1.0
-        && keys.get_just_pressed().next().is_some();
+    let skipped =
+        playing.skippable && playing.seconds >= 1.0 && keys.get_just_pressed().next().is_some();
     if frame >= film.length || skipped {
         let (transform, lens, camera) = &mut *camera;
-        playing.close(&mut commands, all.iter(), (&mut **transform, &mut **lens, &mut **camera));
+        playing.close(
+            &mut commands,
+            all.iter(),
+            (&mut **transform, &mut **lens, &mut **camera),
+        );
         *lights = Lights::default();
         *sound = crate::audio::Cue::Theme;
         showing.playing = None;
@@ -1347,26 +1408,43 @@ fn play(
         if mark.span.begins(frame) {
             for (_, kind, effect) in film.begun.iter().filter(|bound| bound.0 == *name) {
                 match film.effects.get(&(*kind, effect.clone())) {
-                    Some(Effect::Colour { target, shifts, offsets, rates }) => {
+                    Some(Effect::Colour {
+                        target,
+                        shifts,
+                        offsets,
+                        rates,
+                    }) => {
                         if let (false, Some(&model)) =
                             (playing.tints.contains_key(effect), playing.cast.get(target))
                         {
                             let saved = coloured(model, &children, &solids)
                                 .into_iter()
                                 .filter_map(|handle| {
-                                    let base = meshes.get(&handle)?.attribute(Mesh::ATTRIBUTE_COLOR)?;
-                                    let bevy::mesh::VertexAttributeValues::Float32x4(base) = base else {
+                                    let base =
+                                        meshes.get(&handle)?.attribute(Mesh::ATTRIBUTE_COLOR)?;
+                                    let bevy::mesh::VertexAttributeValues::Float32x4(base) = base
+                                    else {
                                         return None;
                                     };
                                     Some((handle.clone(), base.clone()))
                                 })
                                 .collect();
-                            let tint = Tint { shifts: *shifts, offsets: *offsets, rates: *rates, saved };
+                            let tint = Tint {
+                                shifts: *shifts,
+                                offsets: *offsets,
+                                rates: *rates,
+                                saved,
+                            };
                             tint.apply(&mut meshes);
                             playing.tints.insert(effect.clone(), tint);
                         }
                     }
-                    Some(Effect::Spray { emitter, target, position, facing: way }) => {
+                    Some(Effect::Spray {
+                        emitter,
+                        target,
+                        position,
+                        facing: way,
+                    }) => {
                         let Some(emitters) = &emitters else { continue };
                         if playing.sprays.contains_key(effect) {
                             continue;
@@ -1379,8 +1457,10 @@ fn play(
                         });
                         let at = position.unwrap_or(mark.position);
                         let (direction, up) = way.unwrap_or((mark.direction, mark.up));
-                        let turn = scenery::basis() * facing(direction, up) * scenery::basis().inverse();
-                        let mut place = Transform::from_translation(scenery::to_world(at)).with_rotation(turn);
+                        let turn =
+                            scenery::basis() * facing(direction, up) * scenery::basis().inverse();
+                        let mut place =
+                            Transform::from_translation(scenery::to_world(at)).with_rotation(turn);
                         if let (None, Some(model)) = (position, model) {
                             place.translation = model.translation;
                         }
@@ -1521,8 +1601,12 @@ fn asked(mut showing: ResMut<Showing>) {
             let number = circuit["CIRCUIT".len()..].parse::<usize>().unwrap_or(1);
             // The last is about a racer and their car: the first of the game's own.
             let jam = crate::world::jam();
-            let car = jam.as_ref().and_then(|jam| crate::garage::stock(jam).into_iter().next());
-            let cosmetics = car.as_ref().map_or(Cosmetics::default(), |car| car.cosmetics);
+            let car = jam
+                .as_ref()
+                .and_then(|jam| crate::garage::stock(jam).into_iter().next());
+            let cosmetics = car
+                .as_ref()
+                .map_or(Cosmetics::default(), |car| car.cosmetics);
             jam.and_then(|jam| Request::circuit(&jam, number.saturating_sub(1), cosmetics, car))
         }
         "CREDITS" => Some(Request::credits()),
@@ -1581,7 +1665,10 @@ mod tests {
             assert!(rider || prop, "{}", cue.model);
         }
         let racer = film.cues.iter().find(|cue| cue.model == RACER).unwrap();
-        assert_eq!((racer.span.start, racer.span.end, racer.part), (0, 345, Some(0)));
+        assert_eq!(
+            (racer.span.start, racer.span.end, racer.part),
+            (0, 345, Some(0))
+        );
         assert_eq!(racer.tracks.len(), 1);
         // Fireworks and flashbulbs are heard, and the screen goes black at the end.
         assert_eq!(film.marks.len(), 9);
@@ -1593,7 +1680,10 @@ mod tests {
             film.effects.get(&(FADE, "fade".into())),
             Some(Effect::Fade { seconds, falls: false, .. }) if *seconds == 2.0
         ));
-        assert!(film.begun.contains(&("fw".into(), SOUND, "firewrks".into())));
+        assert!(
+            film.begun
+                .contains(&("fw".into(), SOUND, "firewrks".into()))
+        );
         assert_eq!((film.glows.len(), film.beams.len()), (26, 4));
     }
 
@@ -1614,8 +1704,16 @@ mod tests {
         assert!(film.emitters.iter().any(|emitter| emitter.0 == "bubbles"));
         // No film's `.CEB` has any streamed sound (kind 0x36).
         let mut files: Vec<String> = Vec::new();
-        for dir in ["CIRCUIT1", "CIRCUIT2", "CIRCUIT3", "CIRCUIT4", "CIRCUIT5", "CIRCUIT6", "CIRCUIT7", "CREDITS", "C_AWARD1", "C_AWARD2", "C_AWARD3", "C_AWARD4", "LEGAL", "SINGRACE", "WINCAR", "WINRRCAR", "WINVVCAR"] {
-            files.extend(jam.list(&format!("{DIR}/{dir}")).filter(|f| f.ends_with(".CEB")).map(String::from));
+        for dir in [
+            "CIRCUIT1", "CIRCUIT2", "CIRCUIT3", "CIRCUIT4", "CIRCUIT5", "CIRCUIT6", "CIRCUIT7",
+            "CREDITS", "C_AWARD1", "C_AWARD2", "C_AWARD3", "C_AWARD4", "LEGAL", "SINGRACE",
+            "WINCAR", "WINRRCAR", "WINVVCAR",
+        ] {
+            files.extend(
+                jam.list(&format!("{DIR}/{dir}"))
+                    .filter(|f| f.ends_with(".CEB"))
+                    .map(String::from),
+            );
         }
         assert_eq!(files.len(), 17);
         for file in files {
@@ -1632,7 +1730,11 @@ mod tests {
         for place in 2..=4 {
             let request = Request::award(place, Cosmetics::default());
             let film = Film::load(&jam, &request).unwrap();
-            assert!(film.length > 0 && !film.shots.is_empty(), "{}", request.folder);
+            assert!(
+                film.length > 0 && !film.shots.is_empty(),
+                "{}",
+                request.folder
+            );
             assert!(film.props.iter().any(|prop| prop.name() == RACER));
             // Each camera is one of the world's, and what it rides is there to ride.
             for shot in &film.shots {
@@ -1679,7 +1781,10 @@ mod tests {
         }
         // Rocket Racer's is about the racer who won it, and has no car to put in.
         let request = Request::car_set(&jam, "c6", racer).unwrap();
-        assert_eq!((request.folder.as_str(), request.cosmetics), ("WINRRCAR", racer));
+        assert_eq!(
+            (request.folder.as_str(), request.cosmetics),
+            ("WINRRCAR", racer)
+        );
         assert!(request.car.is_none() && request.champion.is_none());
         let film = Film::load(&jam, &request).unwrap();
         assert_eq!((film.length, film.shots.len()), (1100, 3));
@@ -1701,15 +1806,28 @@ mod tests {
         // The credits have no camera and nothing to look at: pages of words, each
         // coming out of the dark and going back into it.
         let credits = Film::load(&jam, &Request::credits()).unwrap();
-        assert_eq!((credits.length, credits.shots.len(), credits.cues.len()), (3510, 0, 0));
+        assert_eq!(
+            (credits.length, credits.shots.len(), credits.cues.len()),
+            (3510, 0, 0)
+        );
         assert!((credits.seconds() - 117.0).abs() < 0.01);
         let fade = |name: &str| match credits.effects.get(&(FADE, name.into())) {
             Some(Effect::Fade { seconds, falls, .. }) => Some((*seconds, *falls)),
             _ => None,
         };
-        assert_eq!((fade("transin"), fade("transout")), (Some((1.0, true)), Some((1.0, false))));
+        assert_eq!(
+            (fade("transin"), fade("transout")),
+            (Some((1.0, true)), Some((1.0, false)))
+        );
         let coloured = |effect: &Effect| matches!(effect, Effect::Words(_, _, Some(_)));
-        assert_eq!(credits.effects.values().filter(|effect| coloured(effect)).count(), 81);
+        assert_eq!(
+            credits
+                .effects
+                .values()
+                .filter(|effect| coloured(effect))
+                .count(),
+            81
+        );
     }
 
     #[test]
@@ -1725,7 +1843,11 @@ mod tests {
             // The first six are the champions' own; the last has the racer in it.
             assert_eq!((request.own, request.skippable), (circuit < 6, true));
             let film = Film::load(&jam, &request).unwrap();
-            assert!(film.length > 300 && !film.shots.is_empty(), "{}", request.folder);
+            assert!(
+                film.length > 300 && !film.shots.is_empty(),
+                "{}",
+                request.folder
+            );
             assert_eq!(film.champion.as_ref().map(Vec::len), Some(3));
             for cue in &film.cues {
                 let rider = film.riders.iter().any(|rider| rider.0 == cue.model);

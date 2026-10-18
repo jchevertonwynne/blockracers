@@ -78,7 +78,10 @@ pub fn exit_move(art: &Art, which: usize) -> Option<f32> {
     let name = names(art).get(EXIT_MOVES[which % 2])?.to_lowercase();
     let data = art.jam().get(Set::Platform.moves())?;
     let part = parts(data).iter().position(|m| *m == name)?;
-    let part = Animation::parse(data)?.parts.get(part).map(|p| p.frames * p.ms_per_frame)?;
+    let part = Animation::parse(data)?
+        .parts
+        .get(part)
+        .map(|p| p.frames * p.ms_per_frame)?;
     Some(part + EXIT_EASE)
 }
 
@@ -121,7 +124,10 @@ impl Set {
     /// X it is turned (`AlignDriverSlots`; the platform's faces as it was made).
     fn standing(self) -> (Vec3, f32) {
         match self {
-            Set::Showcase => (Vec3::new(-0.938, -0.898, 1.487), (-0.267_238f32).atan2(0.963_631)),
+            Set::Showcase => (
+                Vec3::new(-0.938, -0.898, 1.487),
+                (-0.267_238f32).atan2(0.963_631),
+            ),
             Set::Platform => (Vec3::new(-5.359, -3.15, 0.026), 0.0),
             Set::Bay | Set::Bench => (Vec3::ZERO, 0.0),
         }
@@ -157,7 +163,9 @@ impl Set {
 /// The names of the figure's moves (`MENUNAME.SRF`), which the screens know them by.
 fn names(art: &Art) -> Vec<String> {
     let table = art.jam().get("/MENUDATA/MENUNAME.SRF");
-    table.map(crate::assets::font::load_strings).unwrap_or_default()
+    table
+        .map(crate::assets::font::load_strings)
+        .unwrap_or_default()
 }
 
 /// How many times finer than the menu's screen its picture is drawn.
@@ -221,7 +229,12 @@ fn figure(art: &Art, racer: &Racer, set: Set) -> Option<PropDef> {
     let (files, folders) = build::Catalogue::files();
     let library = Library::new(jam, files.iter().map(String::as_str), &folders);
     let rig = Rig {
-        bones: Arc::new(parse_skeleton(build::skeleton(jam, &catalogue, racer.cosmetics, true)?)?),
+        bones: Arc::new(parse_skeleton(build::skeleton(
+            jam,
+            &catalogue,
+            racer.cosmetics,
+            true,
+        )?)?),
         animation: Arc::new(Animation::parse(jam.get(set.moves())?)?),
     };
     let mut made = PropDef::made("racer", &model, Some(rig), &library);
@@ -279,7 +292,11 @@ pub fn keep(
         moves.iter().position(|m| *m == name)
     };
     let dressed = |shown: &(Option<Racer>, Set)| {
-        shown.0.as_ref().filter(|_| shown.1 == Set::Platform).map(|racer| racer.cosmetics)
+        shown
+            .0
+            .as_ref()
+            .filter(|_| shown.1 == Set::Platform)
+            .map(|racer| racer.cosmetics)
     };
     let before = stage.shown.as_ref().and_then(dressed);
     let first = before.zip(dressed(&wanted)).and_then(|(was, now)| {
@@ -313,14 +330,27 @@ pub fn keep(
     let library = Library::new(jam, own.iter().copied(), &[set.dir()]);
     let files: Vec<&str> = scenes.iter().map(String::as_str).collect();
     for def in scenery::load_files(jam, set.dir(), &files, &library, |_, _| true) {
-        let prop = scenery::spawn(def, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
+        let prop = scenery::spawn(
+            def,
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &mut binds,
+        );
         commands.entity(prop).insert(Staged);
         entities.push(prop);
     }
     // The figure, which begins on a move of its own.
     if let Some(figure) = figure {
-        let figure =
-            scenery::spawn(figure, &mut commands, &mut meshes, &mut materials, &mut images, &mut binds);
+        let figure = scenery::spawn(
+            figure,
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &mut binds,
+        );
         commands.entity(figure).insert((Staged, Figure));
         entities.push(figure);
     }
@@ -333,19 +363,34 @@ pub fn keep(
         let car = commands
             .spawn((
                 Staged,
-                Transform::from_translation(scenery::to_world(CAR_AT) + Vec3::Y * crate::physics::RIDE_HEIGHT)
-                    .looking_to(way, Vec3::Y),
+                Transform::from_translation(
+                    scenery::to_world(CAR_AT) + Vec3::Y * crate::physics::RIDE_HEIGHT,
+                )
+                .looking_to(way, Vec3::Y),
                 Visibility::default(),
             ))
             .id();
-        crate::time_race::dress(&mut commands, car, model, &mut meshes, &mut materials, &mut images, None);
+        crate::time_race::dress(
+            &mut commands,
+            car,
+            model,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            None,
+        );
         entities.push(car);
     }
     // `MenuSceneView::SetupCamera`: the set's own camera, drawn onto a picture the
     // size of the showcase.
     let area = set.area(&art);
     let size = (area.size() * DETAIL).max(Vec2::ONE).as_uvec2();
-    let picture = images.add(Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None));
+    let picture = images.add(Image::new_target_texture(
+        size.x,
+        size.y,
+        TextureFormat::Rgba8UnormSrgb,
+        None,
+    ));
     let way = |v: Vec3| scenery::to_world(v).normalize_or_zero();
     let lens = PerspectiveProjection {
         fov: fov.to_radians(),
@@ -374,7 +419,11 @@ pub fn keep(
         picture: Some(picture),
         shown: Some(wanted),
         entities,
-        idle: set.idle().iter().filter_map(|&string| part(string)).collect(),
+        idle: set
+            .idle()
+            .iter()
+            .filter_map(|&string| part(string))
+            .collect(),
         first,
         exits: EXIT_MOVES.map(part),
         left: false,
@@ -433,7 +482,10 @@ pub fn dress(
     staged: Query<(), With<Staged>>,
 ) {
     for mesh in &made {
-        if parents.iter_ancestors(mesh).any(|above| staged.contains(above)) {
+        if parents
+            .iter_ancestors(mesh)
+            .any(|above| staged.contains(above))
+        {
             commands.entity(mesh).insert(RenderLayers::layer(LAYER));
         }
     }
@@ -459,9 +511,16 @@ fn each_set_has_its_figure_s_moves_and_a_camera() {
         let scene = tokenize(art.jam().get(&set.scenes()[0]).unwrap());
         let (eye, forward, _, fov) = camera(&scene).unwrap();
         // It looks at what stands there, which is far down its line of sight.
-        let stood = if set == Set::Showcase { CAR_AT } else { set.standing().0 };
+        let stood = if set == Set::Showcase {
+            CAR_AT
+        } else {
+            set.standing().0
+        };
         let to = scenery::to_world(stood) - scenery::to_world(eye);
-        assert!(to.normalize().dot(scenery::to_world(forward).normalize()) > 0.95, "{set:?}");
+        assert!(
+            to.normalize().dot(scenery::to_world(forward).normalize()) > 0.95,
+            "{set:?}"
+        );
         assert_eq!(fov.round(), if set == Set::Showcase { 32.0 } else { 36.0 });
         assert!(figure(&art, &racer, set).is_some());
     }
@@ -481,5 +540,8 @@ fn each_set_has_its_figure_s_moves_and_a_camera() {
 
 #[cfg(test)]
 fn art_racer(art: &Art) -> Racer {
-    crate::garage::stock(art.jam()).into_iter().next().unwrap_or_default()
+    crate::garage::stock(art.jam())
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }

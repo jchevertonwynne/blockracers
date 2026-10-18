@@ -26,8 +26,6 @@ use crate::championship::Championship;
 use crate::film::{Request, Showing};
 use crate::garage::Garage;
 use crate::input::{Bindings, Bound, Devices, EVENTS, PAD};
-use bevy::input::gamepad::{GamepadButton, GamepadInput};
-use crate::progress::Progress;
 use crate::menu::{
     Circuits, DIFFICULTIES, Extra, LAP_CHOICES, MAX_OPPONENTS, MAX_VOLUME, NAME_LENGTH, Screen,
     Settings,
@@ -38,6 +36,8 @@ use crate::net::{
     protocol::{Ride, Rules},
     room::Room,
 };
+use crate::progress::Progress;
+use bevy::input::gamepad::{GamepadButton, GamepadInput};
 use bevy::{
     asset::RenderAssetUsages,
     image::ImageSampler,
@@ -57,12 +57,12 @@ mod parts;
 mod portraits;
 mod stage;
 mod workshop;
+use carousel::Bricks;
 use circuit::Preview;
 use mascot::Mascot;
 use parts::Parts;
 use portraits::Portraits;
 use stage::Stage;
-use carousel::Bricks;
 pub(crate) use workshop::Bench;
 
 /// The original lays its menus out on a screen this size.
@@ -95,9 +95,13 @@ const BORDER: f32 = 16.0;
 /// The eight pictures of a frame's border and where each goes: the corners, and the
 /// sides between them, which their pictures are repeated along (`MenuFrame::SetRect`).
 fn border(frame: Rect) -> [(&'static str, Rect); 8] {
-    let (corner, edge) = (Vec2::splat(BORDER), frame.size() - Vec2::splat(BORDER * 2.0));
+    let (corner, edge) = (
+        Vec2::splat(BORDER),
+        frame.size() - Vec2::splat(BORDER * 2.0),
+    );
     let inner = frame.inflate(-BORDER);
-    let at = |x: f32, y: f32, size: Vec2| Rect::from_corners(Vec2::new(x, y), Vec2::new(x, y) + size);
+    let at =
+        |x: f32, y: f32, size: Vec2| Rect::from_corners(Vec2::new(x, y), Vec2::new(x, y) + size);
     let (across, down) = (Vec2::new(edge.x, BORDER), Vec2::new(BORDER, edge.y));
     [
         ("tul", at(frame.min.x, frame.min.y, corner)),
@@ -295,7 +299,9 @@ impl Wired<'_> {
     /// The race the player here has asked for, as settings to show it by.
     /// How the host has said the next race is won, as far as the room has heard.
     fn mode(&self) -> crate::menu::Mode {
-        self.room.hosts().map_or(crate::menu::Mode::Race, Rules::mode)
+        self.room
+            .hosts()
+            .map_or(crate::menu::Mode::Race, Rules::mode)
     }
 
     fn wish(&self, settings: &Settings, circuits: &Circuits) -> Settings {
@@ -606,8 +612,15 @@ fn layout(data: &[u8]) -> HashMap<String, [f32; 4]> {
         let nested = matches!(tokens.get(i + 3), Some(Token::Key(key)) if *key != 0x36)
             && tokens.get(i + 4) == Some(&Token::LCurly);
         let at = if nested { i + 5 } else { i + 3 };
-        if tokens.get(at) == Some(&Token::Key(0x36)) && tokens.get(at + 2) == Some(&Token::Key(0x2f)) {
-            let rect = [number(at + 3), number(at + 4), number(at + 5), number(at + 6)];
+        if tokens.get(at) == Some(&Token::Key(0x36))
+            && tokens.get(at + 2) == Some(&Token::Key(0x2f))
+        {
+            let rect = [
+                number(at + 3),
+                number(at + 4),
+                number(at + 5),
+                number(at + 6),
+            ];
             out.entry(name.to_lowercase()).or_insert(rect);
         }
     }
@@ -641,7 +654,9 @@ fn load_art() -> Option<Art> {
     }
     // `0x27 "name" { 0x29 [0x2b r g b] }`: a picture and the colour that is see-through.
     let mut keys = HashMap::new();
-    for list in ["GIMAGES", "SINGRACE", "OPTIONS", "CONTROL", "BUILDER", "DRVRLICE"] {
+    for list in [
+        "GIMAGES", "SINGRACE", "OPTIONS", "CONTROL", "BUILDER", "DRVRLICE",
+    ] {
         let tokens = tokenize(jam.get(&format!("{DIR}/{list}.IDB")).unwrap_or_default());
         for (i, token) in tokens.iter().enumerate() {
             let (Token::Key(0x27), Some(Token::Str(name)), Some(Token::LCurly)) =
@@ -741,7 +756,10 @@ impl Art {
             let key = self.keys.get(name).copied().flatten();
             let whole = decode_bmp(self.jam.get(&format!("{DIR}/{name}.BMP"))?, key)?;
             let (left, top) = (left as u32, top as u32);
-            let (right, bottom) = ((right as u32).min(whole.width), (bottom as u32).min(whole.height));
+            let (right, bottom) = (
+                (right as u32).min(whole.width),
+                (bottom as u32).min(whole.height),
+            );
             let mut rgba = Vec::new();
             for row in top..bottom {
                 let from = ((row * whole.width + left) * 4) as usize;
@@ -811,7 +829,9 @@ impl Art {
     fn circuit(&self, race: &Option<String>) -> Option<String> {
         let at = crate::world::circuit_index(race.as_deref()?)?;
         let at = if at < 12 { 4 + at } else { 28 };
-        self.circuit_names.get(at).map(|name| name.trim().to_string())
+        self.circuit_names
+            .get(at)
+            .map(|name| name.trim().to_string())
     }
 
     /// A widget's rectangle on a screen.
@@ -836,7 +856,11 @@ fn offered(circuits: &Circuits, mode: crate::menu::Mode, hosts: &[String]) -> Ve
     let listed = hosts
         .iter()
         .filter_map(|key| circuits.0.iter().position(|c| c.key() == key));
-    let all: Vec<usize> = if hosts.is_empty() { own.collect() } else { listed.collect() };
+    let all: Vec<usize> = if hosts.is_empty() {
+        own.collect()
+    } else {
+        listed.collect()
+    };
     let fit = |arena: bool| -> Vec<usize> {
         let fits = |&n: &usize| circuits.0[n].arena() == arena;
         all.iter().copied().filter(fits).collect()
@@ -1394,7 +1418,11 @@ fn items(
             // The next race's circuit is voted for on a page of its own; what to
             // race as is the player's own affair, and not voted on. Its row is
             // under a row that says what it is.
-            items.push(plain(row(0), "VOTE FOR A CIRCUIT", Action::Go(Page::Wishes)));
+            items.push(plain(
+                row(0),
+                "VOTE FOR A CIRCUIT",
+                Action::Go(Page::Wishes),
+            ));
             let ride = row(1);
             items.push(selector(
                 Rect::new(ride.x, ride.y, ROOM_MENU.max.x, ride.y + ICON),
@@ -1618,7 +1646,11 @@ fn voter_places(n: usize, count: usize) -> (Rect, Rect, Rect) {
     let high = FIGURE_HEIGHT[(rows > 1) as usize];
     let (row, column) = (n / ROSTER_ROW, n % ROSTER_ROW);
     // The last row may have fewer in it, and is centred all the same.
-    let across = if row + 1 == rows { count - row * ROSTER_ROW } else { ROSTER_ROW };
+    let across = if row + 1 == rows {
+        count - row * ROSTER_ROW
+    } else {
+        ROSTER_ROW
+    };
     let wide = ROSTER_WIDTH / ROSTER_ROW as f32;
     let left = ROOM_ROSTER.min.x
         + (ROSTER_WIDTH - wide * across.max(1) as f32) / 2.0
@@ -1926,7 +1958,12 @@ fn notes(
             // Over the selector, what it is for.
             let ride = ROOM_TOP + ROOM_ROW * 2.0;
             notes.push((
-                Rect::new(ROOM_MENU.min.x + 26.0, ride, ROOM_MENU.max.x, ride + ROOM_ROW),
+                Rect::new(
+                    ROOM_MENU.min.x + 26.0,
+                    ride,
+                    ROOM_MENU.max.x,
+                    ride + ROOM_ROW,
+                ),
                 "RACING AS".to_string(),
                 "font_ths",
                 LABEL,
@@ -1935,7 +1972,12 @@ fn notes(
             // Under the roster, the next race: how the host would have it run, and
             // the circuit the player has voted for.
             let line = |n: usize| {
-                Rect::new(ROOM_ROSTER.min.x, ROOM_SAID[n], ROOM_ROSTER.max.x, ROOM_SAID[n] + 27.0)
+                Rect::new(
+                    ROOM_ROSTER.min.x,
+                    ROOM_SAID[n],
+                    ROOM_ROSTER.max.x,
+                    ROOM_SAID[n] + 27.0,
+                )
             };
             let wish = wired.wish(settings, circuits);
             let voted = match &room.ballot {
@@ -1948,7 +1990,13 @@ fn notes(
             if let Some(rules) = room.hosts() {
                 notes.push((line(0), said(rules), "font_ths", LABEL, true));
             }
-            notes.push((line(1), format!("YOUR VOTE: {voted}"), "font_ths", NORMAL, true));
+            notes.push((
+                line(1),
+                format!("YOUR VOTE: {voted}"),
+                "font_ths",
+                NORMAL,
+                true,
+            ));
             // Who is here, under their minifigures: lit when ready, and under each
             // how long their way to the host takes.
             // Once anyone has scored, each has their points after their name.
@@ -1979,7 +2027,10 @@ fn notes(
                     (false, _) => link,
                 };
                 // And everyone the team each has picked, where there are teams.
-                let link = match voter.side.filter(|_| room.hosts().is_some_and(Rules::sided)) {
+                let link = match voter
+                    .side
+                    .filter(|_| room.hosts().is_some_and(Rules::sided))
+                {
                     Some(side) if link.is_empty() => TEAMS[side as usize % 2].to_string(),
                     Some(side) => format!("{link}, {}", TEAMS[side as usize % 2]),
                     None => link,
@@ -1991,7 +2042,9 @@ fn notes(
             let ready = room.voters.iter().filter(|voter| voter.ready).count();
             let standing = match (room.closing, room.racing, room.series) {
                 // The way to the host has broken, and nothing else said here is news.
-                _ if wired.session.retrying.is_some() => "CONNECTION LOST - TRYING AGAIN".to_string(),
+                _ if wired.session.retrying.is_some() => {
+                    "CONNECTION LOST - TRYING AGAIN".to_string()
+                }
                 (Some(left), ..) => format!("RACE STARTS IN {}", left.max(0.0).ceil() as i32),
                 (None, true, _) => "A RACE IS ON".to_string(),
                 // Until most are ready no clock runs: how many are is said instead.
@@ -2173,7 +2226,11 @@ fn labels(page: Page, art: &Art) -> Vec<(Rect, String, &'static str)> {
         Page::Language => vec![banner(text::LANGUAGE)],
         Page::Forget => vec![
             banner(text::OPTIONS_BANNER),
-            (Rect::new(320.0, 118.0, 320.0, 150.0), "RESET PROGRESS?".into(), "font_ths"),
+            (
+                Rect::new(320.0, 118.0, 320.0, 150.0),
+                "RESET PROGRESS?".into(),
+                "font_ths",
+            ),
             (
                 Rect::new(320.0, 190.0, 320.0, 222.0),
                 "THE CIRCUITS, PARTS AND TROPHIES\nYOU HAVE WON WILL BE LOST".into(),
@@ -2374,7 +2431,9 @@ fn hit(item: &Item, art: &Art, at: Vec2) -> Option<i32> {
         }
         Widget::Field { area, .. } => area.contains(at).then_some(0),
         // `MenuHotspotButton::HitTestHotspots`: the place the pointer is on.
-        Widget::Pad { at: corner, spots, .. } => spots
+        Widget::Pad {
+            at: corner, spots, ..
+        } => spots
             .iter()
             .find(|(_, [left, top, right, bottom])| {
                 Rect::new(*left, *top, *right, *bottom).contains(at - *corner)
@@ -2404,9 +2463,9 @@ fn bounds(item: &Item) -> Rect {
     match &item.widget {
         Widget::Button { at, .. } => Rect::from_corners(*at, *at + Vec2::splat(ICON)),
         Widget::Pad { at, size, .. } => Rect::from_corners(*at, *at + *size),
-        Widget::Field { area, .. } | Widget::Selector { area, .. } | Widget::Slider { area, .. } => {
-            *area
-        }
+        Widget::Field { area, .. }
+        | Widget::Selector { area, .. }
+        | Widget::Slider { area, .. } => *area,
     }
 }
 
@@ -2711,12 +2770,14 @@ fn input(
     // A place of a pad is lit while it is pressed.
     let pressing = at.filter(|_| building && mouse.pressed(MouseButton::Left));
     let lit = pressing.and_then(|at| {
-        items.iter().find_map(|item| match (&item.widget, &item.action) {
-            (Widget::Pad { .. }, Action::Bench(act)) => {
-                hit(item, &art, at).map(|spot| (*act == workshop::Act::View, spot))
-            }
-            _ => None,
-        })
+        items
+            .iter()
+            .find_map(|item| match (&item.widget, &item.action) {
+                (Widget::Pad { .. }, Action::Bench(act)) => {
+                    hit(item, &art, at).map(|spot| (*act == workshop::Act::View, spot))
+                }
+                _ => None,
+            })
     });
     if lit != bench.lit {
         (bench.lit, menu.drawn) = (lit, false);
@@ -3363,7 +3424,9 @@ fn draw(
             pieces.push((picture, area, Color::WHITE, false));
         }
     }
-    if let (Some(picture), Some(set), true) = (&stage.picture, stage.set(), workshop::mine(menu.page)) {
+    if let (Some(picture), Some(set), true) =
+        (&stage.picture, stage.set(), workshop::mine(menu.page))
+    {
         // `RacerModelScreenBase::CreateWidgets`, `EditDriverScreen::CreateDriverScene`:
         // the racer on its set, in a frame; the picture has the frame's fill behind it.
         pieces.push((picture.clone(), set.area(art), Color::WHITE, false));
@@ -3377,7 +3440,11 @@ fn draw(
         // `DriverLicenseScreen::CreateWidgets`: the trophy the racer has for each
         // circuit, where the licence has a place for it.
         // The licence itself, and the driver's photograph in the scene's place over it.
-        picture!("license", art.place("drvrlice", "license").min, Color::WHITE);
+        picture!(
+            "license",
+            art.place("drvrlice", "license").min,
+            Color::WHITE
+        );
         if let Some(picture) = &photo.picture {
             pieces.push((
                 picture.clone(),
@@ -3457,7 +3524,11 @@ fn draw(
             format!(
                 "{}{}\n\nLAPS {}",
                 art.circuit_name(&circuits, settings.circuit),
-                if by.is_empty() { by } else { format!("\n{}", by.trim()) },
+                if by.is_empty() {
+                    by
+                } else {
+                    format!("\n{}", by.trim())
+                },
                 crate::time_race::LAPS
             )
         } else {
@@ -3496,7 +3567,11 @@ fn draw(
                 DIFFICULTIES[settings.difficulty].0.to_string(),
             ]);
             // The frame holds the original's four lines spaced out; any more are closed up.
-            let gap = if lines.len() + extras.len() > 4 { "\n" } else { "\n\n" };
+            let gap = if lines.len() + extras.len() > 4 {
+                "\n"
+            } else {
+                "\n\n"
+            };
             lines.extend(extras);
             lines.join(gap)
         };
@@ -3576,7 +3651,13 @@ fn draw(
                     words!("font_ths", words, *area, colour, true);
                 }
             }
-            Widget::Pad { at, picture, lit, spots, .. } => {
+            Widget::Pad {
+                at,
+                picture,
+                lit,
+                spots,
+                ..
+            } => {
                 picture!(*picture, *at, colour);
                 // `MenuHotspotButton::DrawSelf`: the place pressed, from the
                 // picture of the pad lit.
@@ -3586,7 +3667,12 @@ fn draw(
                 if let Some((_, area)) = spot {
                     if let Some((handle, size)) = art.cut(lit, *area, &mut images) {
                         let corner = *at + Vec2::new(area[0], area[1]);
-                        pieces.push((handle, Rect::from_corners(corner, corner + size), Color::WHITE, false));
+                        pieces.push((
+                            handle,
+                            Rect::from_corners(corner, corner + size),
+                            Color::WHITE,
+                            false,
+                        ));
                     }
                 }
             }
@@ -3645,14 +3731,25 @@ fn draw(
     let mut tip_words = None;
     if let (Page::Bricks, Some((help, target))) = (menu.page, bench.tip.showing()) {
         let whole = Rect::from_corners(Vec2::ZERO, SCREEN);
-        let words = art.help.get(help).map_or(String::new(), |words| workshop::help(words, help));
+        let words = art
+            .help
+            .get(help)
+            .map_or(String::new(), |words| workshop::help(words, help));
         let font = art.fonts.get(workshop::TIP_FONT);
         let wrapped = font.map(|font| {
             let line = font.height() as f32;
-            (font.wrapped(&words, workshop::Tip::wrap(font.measure(&words), line, whole)), line)
+            (
+                font.wrapped(
+                    &words,
+                    workshop::Tip::wrap(font.measure(&words), line, whole),
+                ),
+                line,
+            )
         });
         if let Some((wrapped, line)) = wrapped {
-            if let Some((handle, size)) = art.write(workshop::TIP_FONT, &wrapped, false, &mut images) {
+            if let Some((handle, size)) =
+                art.write(workshop::TIP_FONT, &wrapped, false, &mut images)
+            {
                 let at = workshop::Tip::place(target, size, line, whole);
                 let inner = Rect::from_corners(at, at + size).inflate((line / 2.0).floor());
                 tip.push((inner.inflate(workshop::TIP_BORDER), workshop::TIP_EDGE));
@@ -3793,17 +3890,31 @@ fn the_winner_of_a_race_online_is_who_celebrates() {
 fn the_circuits_voted_for_are_gone_between_across_their_columns() {
     for count in 1..=12 {
         for n in 0..count {
-            let (at, right, left) = (map_place(n, count), map_beside(n, count, true), map_beside(n, count, false));
+            let (at, right, left) = (
+                map_place(n, count),
+                map_beside(n, count, true),
+                map_beside(n, count, false),
+            );
             // Whatever is beside a circuit is in the other column, and on its row
             // unless that column stops short of it.
             for (to, sign) in [(right, 1.0), (left, -1.0)] {
                 let Some(to) = to else { continue };
                 let there = map_place(to, count);
-                assert!(to < count && (there.x - at.x) * sign > 0.0, "{n} of {count}");
-                assert!(there.y == at.y || (to == count - 1 && there.y < at.y), "{n} of {count}");
+                assert!(
+                    to < count && (there.x - at.x) * sign > 0.0,
+                    "{n} of {count}"
+                );
+                assert!(
+                    there.y == at.y || (to == count - 1 && there.y < at.y),
+                    "{n} of {count}"
+                );
             }
             // One way or the other there is something, where there are two columns.
-            assert_eq!(right.is_some() != left.is_some(), count > 1, "{n} of {count}");
+            assert_eq!(
+                right.is_some() != left.is_some(),
+                count > 1,
+                "{n} of {count}"
+            );
         }
     }
     assert_eq!(map_beside(1, 8, true), Some(5));
@@ -3821,16 +3932,26 @@ fn a_player_votes_among_the_host_s_circuits() {
     assert!(own.iter().all(|&n| !circuits.0[n].arena()) && own.len() + 4 == circuits.0.len());
     // In someone else's session only the host's, in the host's order: not this
     // game's own that the host hasn't, and a map only the host has by its name.
-    let hosts = ["HELTER".to_string(), "THEIRS".to_string(), "YARD".to_string(), "BRICK".to_string()];
+    let hosts = [
+        "HELTER".to_string(),
+        "THEIRS".to_string(),
+        "YARD".to_string(),
+        "BRICK".to_string(),
+    ];
     circuits.promise("THEIRS", "Their Circuit", "", false);
-    let listed: Vec<&str> = offered(&circuits, race, &hosts).into_iter().map(|n| circuits.0[n].key()).collect();
+    let listed: Vec<&str> = offered(&circuits, race, &hosts)
+        .into_iter()
+        .map(|n| circuits.0[n].key())
+        .collect();
     assert_eq!(listed, ["HELTER", "THEIRS", "BRICK"]);
     // A battle or a game of tag is fought in an arena, and nowhere else.
     for mode in [crate::menu::Mode::Battle, crate::menu::Mode::Tag] {
         let fought = offered(&circuits, mode, &[]);
         assert!(fought.len() == 4 && fought.iter().all(|&n| circuits.0[n].arena()));
-        let fought: Vec<&str> =
-            offered(&circuits, mode, &hosts).into_iter().map(|n| circuits.0[n].key()).collect();
+        let fought: Vec<&str> = offered(&circuits, mode, &hosts)
+            .into_iter()
+            .map(|n| circuits.0[n].key())
+            .collect();
         assert_eq!(fought, ["YARD"]);
         // A host with no arena has its circuits to fight on.
         assert_eq!(offered(&circuits, mode, &hosts[..2]).len(), 2);

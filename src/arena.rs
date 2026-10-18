@@ -134,7 +134,13 @@ impl<'de> Deserialize<'de> for Brick {
             Said(Said),
         }
         let said = match Laid::deserialize(from) {
-            Ok(Laid::Place(at)) => return Ok(Brick { at, hue: Hue::Any, low: false }),
+            Ok(Laid::Place(at)) => {
+                return Ok(Brick {
+                    at,
+                    hue: Hue::Any,
+                    low: false,
+                });
+            }
             Ok(Laid::Said(said)) => said,
             Err(_) => {
                 return Err(D::Error::custom(
@@ -156,7 +162,11 @@ impl<'de> Deserialize<'de> for Brick {
                 )));
             }
         };
-        Ok(Brick { at: said.at, hue, low: said.low })
+        Ok(Brick {
+            at: said.at,
+            hue,
+            low: said.low,
+        })
     }
 }
 
@@ -186,7 +196,10 @@ impl<'de> Deserialize<'de> for Start {
         }
         match Placed::deserialize(from) {
             Ok(Placed::Place(at)) => Ok(Start { at, faces: None }),
-            Ok(Placed::Faced(start)) => Ok(Start { at: start.at, faces: Some(start.faces) }),
+            Ok(Placed::Faced(start)) => Ok(Start {
+                at: start.at,
+                faces: Some(start.faces),
+            }),
             Err(_) => Err(D::Error::custom(
                 "a place on the grid is [x, z], or { at = [x, z], faces = \"north\" } (or south, east, west)",
             )),
@@ -308,8 +321,12 @@ impl Ways {
             })
             .collect();
         // Outwards from the squares the line crosses on the floor, a square at a time.
-        let on_line = line.iter().filter(|p| p.y < WAY_FLOOR).filter_map(|&p| ways.square(p));
-        let mut reached: std::collections::VecDeque<usize> = on_line.filter(|&square| free[square]).collect();
+        let on_line = line
+            .iter()
+            .filter(|p| p.y < WAY_FLOOR)
+            .filter_map(|&p| ways.square(p));
+        let mut reached: std::collections::VecDeque<usize> =
+            on_line.filter(|&square| free[square]).collect();
         for &square in &reached {
             ways.line[square] = true;
         }
@@ -335,7 +352,10 @@ impl Ways {
     /// The square a place is in, if it is one of them.
     fn square(&self, p: Vec3) -> Option<usize> {
         let at = (p - self.low) / self.cell;
-        let inside = at.x >= 0.0 && at.z >= 0.0 && (at.x as usize) < self.across && (at.z as usize) < self.across;
+        let inside = at.x >= 0.0
+            && at.z >= 0.0
+            && (at.x as usize) < self.across
+            && (at.z as usize) < self.across;
         inside.then(|| at.x as usize + at.z as usize * self.across)
     }
 
@@ -376,7 +396,11 @@ impl Ways {
         for _ in 1..WAY_AHEAD {
             on.extend(self.next[on[on.len() - 1]]);
         }
-        let seen = on.iter().rev().map(|&square| self.middle(square)).find(|&middle| clear(middle));
+        let seen = on
+            .iter()
+            .rev()
+            .map(|&square| self.middle(square))
+            .find(|&middle| clear(middle));
         Some(seen.unwrap_or(self.middle(from)))
     }
 }
@@ -405,18 +429,53 @@ impl Plan {
         let over = |[x, z]: [f32; 2]| [x, -z];
         Plan {
             outline: self.outline.iter().copied().map(over).collect(),
-            blocks: self.blocks.iter().map(|block| Block { at: over(block.at), ..block.clone() }).collect(),
+            blocks: self
+                .blocks
+                .iter()
+                .map(|block| Block {
+                    at: over(block.at),
+                    ..block.clone()
+                })
+                .collect(),
             ramps: self
                 .ramps
                 .iter()
-                .map(|ramp| Ramp { at: over(ramp.at), climbs: over(ramp.climbs), ..ramp.clone() })
+                .map(|ramp| Ramp {
+                    at: over(ramp.at),
+                    climbs: over(ramp.climbs),
+                    ..ramp.clone()
+                })
                 .collect(),
-            decks: self.decks.iter().map(|deck| Deck { at: over(deck.at), ..deck.clone() }).collect(),
+            decks: self
+                .decks
+                .iter()
+                .map(|deck| Deck {
+                    at: over(deck.at),
+                    ..deck.clone()
+                })
+                .collect(),
             line: self.line.iter().map(|&[x, y, z]| [x, y, -z]).collect(),
-            grid: self.grid.map(|start| Start { at: over(start.at), faces: start.faces.map(over) }),
-            bricks: self.bricks.iter().map(|brick| Brick { at: over(brick.at), ..brick.clone() }).collect(),
+            grid: self.grid.map(|start| Start {
+                at: over(start.at),
+                faces: start.faces.map(over),
+            }),
+            bricks: self
+                .bricks
+                .iter()
+                .map(|brick| Brick {
+                    at: over(brick.at),
+                    ..brick.clone()
+                })
+                .collect(),
             rows: self.rows,
-            pads: self.pads.iter().map(|pad| Pad { at: over(pad.at), heading: -pad.heading }).collect(),
+            pads: self
+                .pads
+                .iter()
+                .map(|pad| Pad {
+                    at: over(pad.at),
+                    heading: -pad.heading,
+                })
+                .collect(),
             floor: self.floor,
         }
     }
@@ -424,7 +483,12 @@ impl Plan {
     /// The corners of the floor, each with the next.
     fn sides(&self) -> impl Iterator<Item = (Vec3, Vec3)> + '_ {
         let count = self.outline.len();
-        (0..count).map(move |i| (ground(self.outline[i]), ground(self.outline[(i + 1) % count])))
+        (0..count).map(move |i| {
+            (
+                ground(self.outline[i]),
+                ground(self.outline[(i + 1) % count]),
+            )
+        })
     }
 
     /// The outline of the floor and of each block, each closed, for the map.
@@ -446,7 +510,11 @@ impl Plan {
         };
         let ramps = self.ramps.iter().map(|ramp| on(ramp.at, ramp.half));
         let decks = self.decks.iter().map(|deck| on(deck.at, deck.half));
-        std::iter::once(floor).chain(blocks).chain(ramps).chain(decks).collect()
+        std::iter::once(floor)
+            .chain(blocks)
+            .chain(ramps)
+            .chain(decks)
+            .collect()
     }
 
     /// How far from the middle the floor reaches.
@@ -473,14 +541,19 @@ impl Plan {
             let along = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
             p.distance(a + (b - a) * along) >= clear
         });
-        let off_blocks = self.blocks.iter().filter(|block| block.height > height + 1.0).all(|block| {
-            let beyond = |at: f32, middle: f32, half: f32| ((at - middle).abs() - half).max(0.0);
-            let (dx, dz) = (
-                beyond(p.x, block.at[0], block.half[0]),
-                beyond(p.z, block.at[1], block.half[1]),
-            );
-            dx.hypot(dz) >= clear && (dx > 0.0 || dz > 0.0 || clear < 0.0)
-        });
+        let off_blocks = self
+            .blocks
+            .iter()
+            .filter(|block| block.height > height + 1.0)
+            .all(|block| {
+                let beyond =
+                    |at: f32, middle: f32, half: f32| ((at - middle).abs() - half).max(0.0);
+                let (dx, dz) = (
+                    beyond(p.x, block.at[0], block.half[0]),
+                    beyond(p.z, block.at[1], block.half[1]),
+                );
+                dx.hypot(dz) >= clear && (dx > 0.0 || dz > 0.0 || clear < 0.0)
+            });
         inside && off_wall && off_blocks
     }
 
@@ -491,7 +564,10 @@ impl Plan {
             .iter()
             .map(|start| {
                 let place = ground(start.at);
-                (place, start.faces.map_or(-place.normalize_or(Vec3::X), ground))
+                (
+                    place,
+                    start.faces.map_or(-place.normalize_or(Vec3::X), ground),
+                )
             })
             .collect()
     }
@@ -537,7 +613,12 @@ impl Plan {
             // Its two sides, and its end where nothing is built up to it.
             quad([low_a, high_a, high_a + top, high_a + top]);
             quad([low_b, high_b, high_b + top, high_b + top]);
-            quad([high_a - Vec3::Y, high_b - Vec3::Y, high_b + top, high_a + top]);
+            quad([
+                high_a - Vec3::Y,
+                high_b - Vec3::Y,
+                high_b + top,
+                high_a + top,
+            ]);
         }
         for deck in &self.decks {
             let (middle, [w, d]) = (ground(deck.at), deck.half);
@@ -587,7 +668,11 @@ impl Plan {
                 let middle = a + along * (i as f32 + 0.5) + out;
                 for (course, height) in [(0, 2.0), (1, WALL_HEIGHT - 2.0)] {
                     let half = Vec3::new(WALL_THICK / 2.0, height / 2.0, along.length() / 2.0);
-                    let up = if course == 0 { height / 2.0 } else { 2.0 + height / 2.0 };
+                    let up = if course == 0 {
+                        height / 2.0
+                    } else {
+                        2.0 + height / 2.0
+                    };
                     let colour = if (i + course) % 2 == 0 { RED } else { WHITE };
                     b.brick(middle + Vec3::Y * up, half, rot, colour, (1, 4));
                 }
@@ -603,7 +688,13 @@ impl Plan {
         for block in &self.blocks {
             let half = Vec3::new(block.half[0], block.height / 2.0, block.half[1]);
             let middle = ground(block.at) + Vec3::Y * half.y;
-            b.brick(middle, half, Quat::IDENTITY, block.colour, studs(block.half));
+            b.brick(
+                middle,
+                half,
+                Quat::IDENTITY,
+                block.colour,
+                studs(block.half),
+            );
         }
         // A ramp is striped, as a jump is, so that it is seen for what it is.
         for ramp in &self.ramps {
@@ -615,7 +706,8 @@ impl Plan {
                     stripe as f32 / STRIPES as f32,
                     (stripe + 1) as f32 / STRIPES as f32,
                 );
-                let at = |low: Vec3, high: Vec3, part: f32| low.lerp(high + top, part) + Vec3::Y * 0.02;
+                let at =
+                    |low: Vec3, high: Vec3, part: f32| low.lerp(high + top, part) + Vec3::Y * 0.02;
                 let corners = [
                     at(low_a, high_a, from),
                     at(low_b, high_b, from),
@@ -637,7 +729,13 @@ impl Plan {
         for deck in &self.decks {
             let half = Vec3::new(deck.half[0], DECK_THICK / 2.0, deck.half[1]);
             let middle = ground(deck.at) + Vec3::Y * (deck.height - half.y);
-            b.brick(middle, half, Quat::IDENTITY, deck.colour.unwrap_or(GREY), studs(deck.half));
+            b.brick(
+                middle,
+                half,
+                Quat::IDENTITY,
+                deck.colour.unwrap_or(GREY),
+                studs(deck.half),
+            );
         }
         // The speed pads: a bright patch with arrows up it, as a circuit's are.
         for pad in &self.pads {
@@ -666,11 +764,20 @@ impl Plan {
         // A mark in the middle of the floor, to know it by.
         let spokes = 16;
         for i in 0..spokes {
-            let (from, to) = (i as f32 / spokes as f32 * TAU, (i + 1) as f32 / spokes as f32 * TAU);
+            let (from, to) = (
+                i as f32 / spokes as f32 * TAU,
+                (i + 1) as f32 / spokes as f32 * TAU,
+            );
             let at = |angle: f32, radius: f32| {
                 Vec3::new(angle.cos() * radius, 0.02, angle.sin() * radius)
             };
-            b.quad(at(from, 12.0), at(from, 13.5), at(to, 13.5), at(to, 12.0), WHITE);
+            b.quad(
+                at(from, 12.0),
+                at(from, 13.5),
+                at(to, 13.5),
+                at(to, 12.0),
+                WHITE,
+            );
         }
         b.build()
     }
@@ -713,7 +820,11 @@ mod tests {
                 assert!(plan.open(p, clear), "{layout} line at {p}");
                 let under = track.collision.ground(p + Vec3::Y * 3.0, 8.0);
                 let under = under.unwrap_or_else(|| panic!("{layout} nothing under {p}"));
-                assert!((under.point.y - p.y).abs() < 1.6, "{layout} {p} over {}", under.point);
+                assert!(
+                    (under.point.y - p.y).abs() < 1.6,
+                    "{layout} {p} over {}",
+                    under.point
+                );
             }
             // Its high ground is there to be driven onto and under.
             for deck in &plan.decks {
@@ -721,7 +832,10 @@ mod tests {
                 let top = track.collision.ground(over, 4.0).expect("a deck's top");
                 assert!((top.point.y - deck.height).abs() < 0.1);
                 let below = track.collision.ground(ground(deck.at) + Vec3::Y * 2.0, 4.0);
-                assert!(below.is_some_and(|floor| floor.point.y.abs() < 0.1), "{layout}");
+                assert!(
+                    below.is_some_and(|floor| floor.point.y.abs() < 0.1),
+                    "{layout}"
+                );
             }
             for ramp in &plan.ramps {
                 let [low_a, low_b, high_b, high_a] = ramp.corners();
@@ -731,7 +845,10 @@ mod tests {
                     track.collision.ground(at(0.1), 20.0).unwrap().point.y,
                     track.collision.ground(at(0.9), 20.0).unwrap().point.y,
                 );
-                assert!(low < 1.0 && high > ramp.height - 1.0, "{layout} {low} {high}");
+                assert!(
+                    low < 1.0 && high > ramp.height - 1.0,
+                    "{layout} {low} {high}"
+                );
             }
             assert_eq!(track.course.grid.len(), 6);
             for &(place, facing) in &track.course.grid {
@@ -748,7 +865,10 @@ mod tests {
                 let middle = (a + b) / 2.0;
                 let (inside, outside) = (middle * 0.95, middle * 1.05);
                 assert!(
-                    track.collision.wall(inside + lift, outside + lift).is_some(),
+                    track
+                        .collision
+                        .wall(inside + lift, outside + lift)
+                        .is_some(),
                     "{layout} wall at {middle}"
                 );
             }
@@ -765,7 +885,10 @@ mod tests {
             for (i, &(_, spot)) in bricks.iter().enumerate() {
                 assert!(plan.open(spot, 2.0), "{layout} brick at {spot}");
                 let apart = |other: &(Option<Power>, Vec3)| other.1.distance(spot) > 3.0;
-                assert!(bricks[..i].iter().all(apart), "{layout} two bricks at {spot}");
+                assert!(
+                    bricks[..i].iter().all(apart),
+                    "{layout} two bricks at {spot}"
+                );
             }
             // Its pads are on open floor, and set off a car on them and no other.
             for pad in &plan.pads {
@@ -781,7 +904,10 @@ mod tests {
                 assert!(!plan.open(p, 44.0), "{layout} is wide open at {p}");
             }
             let seen = sight(&track);
-            println!("{layout}: {:.0}% of the line is in sight from a place on it", seen * 100.0);
+            println!(
+                "{layout}: {:.0}% of the line is in sight from a place on it",
+                seen * 100.0
+            );
             assert!((0.08..0.5).contains(&seen), "{layout} {seen}");
             // Every start is about as far as the rest from the nearest coloured
             // brick, and from the nearest white one, of which there are a few.
@@ -791,15 +917,26 @@ mod tests {
                     let far = of_kind.map(|brick| brick.1.with_y(0.0).distance(place));
                     far.fold(f32::MAX, f32::min)
                 };
-                track.course.grid.iter().map(|&(place, _)| from(place)).collect()
+                track
+                    .course
+                    .grid
+                    .iter()
+                    .map(|&(place, _)| from(place))
+                    .collect()
             };
             let spread = |far: &[f32]| {
                 let least = far.iter().copied().fold(f32::MAX, f32::min);
                 (least, far.iter().copied().fold(0.0, f32::max))
             };
             let (coloured, white) = (spread(&nearest(false)), spread(&nearest(true)));
-            assert!(coloured.1 < 30.0 && coloured.1 - coloured.0 < 6.0, "{layout} {coloured:?}");
-            assert!(white.0 > 60.0 && white.1 < white.0 * 1.15, "{layout} {white:?}");
+            assert!(
+                coloured.1 < 30.0 && coloured.1 - coloured.0 < 6.0,
+                "{layout} {coloured:?}"
+            );
+            assert!(
+                white.0 > 60.0 && white.1 < white.0 * 1.15,
+                "{layout} {white:?}"
+            );
             let whites = bricks.iter().filter(|brick| brick.0.is_none()).count();
             assert!((3..=6).contains(&whites), "{layout} {whites}");
             // Turned over, as a mirrored race has it, it is the same place the other

@@ -327,7 +327,10 @@ mod tests {
     #[test]
     fn a_circuit_race_or_a_time_race_clears_them_and_online_only_the_looks_stay() {
         let mut cheats = Cheats(FSTFRWRD | NWHLS | PGLLRD);
-        assert_eq!(cheats.begin(false, false, false).0, FSTFRWRD | NWHLS | PGLLRD);
+        assert_eq!(
+            cheats.begin(false, false, false).0,
+            FSTFRWRD | NWHLS | PGLLRD
+        );
         assert_eq!(cheats.begin(false, false, true).0, NWHLS);
         assert_eq!(cheats.0, FSTFRWRD | NWHLS | PGLLRD);
         assert_eq!(cheats.begin(true, false, false), Raced(0));
@@ -342,7 +345,10 @@ mod tests {
         let none = Raced(0);
         assert_eq!(none.fired(Power::Blue, 1), Some((Power::Blue, 1)));
         assert_eq!(Raced(RPCRNLY).fired(Power::Blue, 3), Some((Power::Red, 1)));
-        assert_eq!(Raced(MXPMX).fired(Power::Yellow, 0), Some((Power::Yellow, 3)));
+        assert_eq!(
+            Raced(MXPMX).fired(Power::Yellow, 0),
+            Some((Power::Yellow, 3))
+        );
         // Turbos are not fired by a car that is flying already, but warps are.
         assert_eq!(Raced(FLYSKYHGH).fired(Power::Green, 2), None);
         assert_eq!(Raced(FLYSKYHGH).fired(Power::Red, 2), Some((Power::Red, 2)));

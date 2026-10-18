@@ -386,7 +386,9 @@ impl Car {
                     count += plates as i32;
                     sums[0] += plates * (x + placed.x) as i64;
                     sums[1] += plates * (y + placed.y) as i64;
-                    sums[2] += (bottom..top).map(|z| (z + placed.height) as i64).sum::<i64>();
+                    sums[2] += (bottom..top)
+                        .map(|z| (z + placed.height) as i64)
+                        .sum::<i64>();
                 }
             }
         }
@@ -1070,7 +1072,10 @@ fn body(catalogue: &Catalogue, cosmetics: Cosmetics, standing: bool) -> Option<S
     } else {
         (GAME_PARTS, 4)
     };
-    Some(format!("{folder}/{}", catalogue.bodies.get(at)?.to_uppercase()))
+    Some(format!(
+        "{folder}/{}",
+        catalogue.bodies.get(at)?.to_uppercase()
+    ))
 }
 
 /// What ends the name of a face's materials, one to each of the looks it can have
@@ -1101,7 +1106,9 @@ pub fn figure(
     }
     let head = parts.model(pick(&catalogue.hats, cosmetics.hat)?)?;
     // `DriverModelBuilder::ApplyFaceExpression`: the face's material of the look chosen.
-    let look = LOOKS.get(cosmetics.expression as usize).unwrap_or(&LOOKS[0]);
+    let look = LOOKS
+        .get(cosmetics.expression as usize)
+        .unwrap_or(&LOOKS[0]);
     let face = format!("{}{look}", pick(&catalogue.faces, cosmetics.face)?);
     let torso = pick(&catalogue.torsos, cosmetics.torso)?.clone();
     let legs = pick(&catalogue.legs, cosmetics.legs)?.clone();
@@ -1158,7 +1165,10 @@ pub fn skeleton<'a>(
 /// The start of the name of a face's materials, one to each look it can have.
 pub fn face(catalogue: &Catalogue, cosmetics: Cosmetics) -> Option<&str> {
     let faces = &catalogue.faces;
-    faces.get(cosmetics.face as usize).or(faces.first()).map(String::as_str)
+    faces
+        .get(cosmetics.face as usize)
+        .or(faces.first())
+        .map(String::as_str)
 }
 
 #[cfg(test)]
@@ -1204,7 +1214,13 @@ mod tests {
         let Some(jam) = jam() else { return };
         let library = Library::open(&jam, true).unwrap();
         let palette = Palette::open(&jam, true).unwrap();
-        let count = |model: &Model| model.batches.iter().map(|b| b.indices.len() / 3).sum::<usize>();
+        let count = |model: &Model| {
+            model
+                .batches
+                .iter()
+                .map(|b| b.indices.len() / 3)
+                .sum::<usize>()
+        };
         let (mut whole, mut cut) = (0, 0);
         for racer in lrs::read(jam.get("/MENUDATA/QBUILD.LRS").unwrap()) {
             let car = Car::read(&library, &racer.car);
@@ -1300,7 +1316,9 @@ mod tests {
             assert_eq!(model.vertices.len(), model.normals.len());
             assert!(model.batches.iter().all(|b| b.bone.is_some()));
             // Its bones are enough for every part of it.
-            let bones = crate::assets::gdb::parse_skeleton(skeleton(&jam, &catalogue, cosmetics, standing).unwrap());
+            let bones = crate::assets::gdb::parse_skeleton(
+                skeleton(&jam, &catalogue, cosmetics, standing).unwrap(),
+            );
             let bones = bones.unwrap().len();
             assert!(model.batches.iter().all(|b| b.bone.unwrap() < bones));
             // Every figure there could be has its parts.
@@ -1311,10 +1329,18 @@ mod tests {
             }
         }
         // A hook for a hand and a peg for a leg are bodies of their own.
-        let hooked = Cosmetics { torso: 24, legs: 10, ..cosmetics };
+        let hooked = Cosmetics {
+            torso: 24,
+            legs: 10,
+            ..cosmetics
+        };
         assert!(body(&catalogue, hooked, true).unwrap().ends_with("/HP"));
         assert!(body(&catalogue, cosmetics, true).unwrap().ends_with("/RR"));
-        assert!(body(&catalogue, hooked, false).unwrap().ends_with("/LEG_BOX"));
+        assert!(
+            body(&catalogue, hooked, false)
+                .unwrap()
+                .ends_with("/LEG_BOX")
+        );
     }
 }
 
@@ -1333,7 +1359,10 @@ fn the_catalogue_says_what_each_part_is_won_by() {
     }
     assert_eq!((catalogue.mark(1, 1), catalogue.mark(2, 8)), (4, 3));
     // Each circuit's winner is given the next of the part sets.
-    for (set, circuit) in ["c0", "c1", "c2", "c3", "c4", "c5", "c6"].iter().enumerate() {
+    for (set, circuit) in ["c0", "c1", "c2", "c3", "c4", "c5", "c6"]
+        .iter()
+        .enumerate()
+    {
         assert_eq!(crate::roster::part_set(&jam, circuit), Some(set));
     }
 }

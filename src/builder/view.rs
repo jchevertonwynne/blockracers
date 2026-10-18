@@ -166,7 +166,13 @@ impl Default for Builder {
             said: default(),
             said_at: std::time::Instant::now(),
             sure: false,
-            eye: Eye { focus: Vec3::ZERO, yaw: 0.0, pitch: 1.1, far: 300.0, goal: None },
+            eye: Eye {
+                focus: Vec3::ZERO,
+                yaw: 0.0,
+                pitch: 1.1,
+                far: 300.0,
+                goal: None,
+            },
             hold: Hold::Nothing,
             pressed: Vec2::ZERO,
             dragged: false,
@@ -210,7 +216,18 @@ pub fn plugin(app: &mut App) {
         .add_systems(Last, come_back.run_if(resource_exists::<Trial>))
         .add_systems(
             Update,
-            (pointer::read, panel::pressed, keys, ground, act, show, sketch, look, mark, say)
+            (
+                pointer::read,
+                panel::pressed,
+                keys,
+                ground,
+                act,
+                show,
+                sketch,
+                look,
+                mark,
+                say,
+            )
                 .chain()
                 .run_if(in_state(Screen::Build)),
         );
@@ -245,18 +262,26 @@ fn enter(
         Some(trial) => {
             circuits.0.retain(|circuit| circuit.key() != TRIAL);
             settings.circuit = trial.circuit.min(circuits.0.len().saturating_sub(1));
-            (settings.time_race, settings.championship) = (trial.time_race, trial.championship.clone());
+            (settings.time_race, settings.championship) =
+                (trial.time_race, trial.championship.clone());
             commands.remove_resource::<Trial>();
             (builder.built, builder.sketched, builder.hold) = (None, None, Hold::Nothing);
         }
-        None => *builder = Builder { drafts: builder.drafts, ..default() },
+        None => {
+            *builder = Builder {
+                drafts: builder.drafts,
+                ..default()
+            }
+        }
     }
     // `BRICK_BUILD=FIGURE8` opens a demo on that map being changed, and
     // `BRICK_BUILD=circuit` or `arena` on a new one; anything else on the list.
     if builder.draft.is_none()
         && let Ok(wanted) = std::env::var("BRICK_BUILD")
     {
-        let named = |circuit: &crate::menu::Circuit| circuit.map.is_some() && circuit.key().eq_ignore_ascii_case(&wanted);
+        let named = |circuit: &crate::menu::Circuit| {
+            circuit.map.is_some() && circuit.key().eq_ignore_ascii_case(&wanted)
+        };
         let on = match (wanted.as_str(), circuits.0.iter().position(named)) {
             ("circuit", _) => Some(Shelf::New(false)),
             ("arena", _) => Some(Shelf::New(true)),
@@ -264,7 +289,10 @@ fn enter(
             _ => None,
         };
         if let Some(on) = on {
-            builder.row = shelf(&circuits).iter().position(|row| *row == on).unwrap_or(0);
+            builder.row = shelf(&circuits)
+                .iter()
+                .position(|row| *row == on)
+                .unwrap_or(0);
             builder.listed = Some(on);
             builder.open(on.draft(&circuits));
             builder.editing = true;
@@ -285,11 +313,20 @@ fn enter(
             DespawnOnExit(Screen::Build),
             Label(n),
             Text::new(""),
-            TextFont { font_size: FontSize::Px(12.0), ..default() },
-            TextShadow { offset: Vec2::splat(1.0), ..default() },
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextShadow {
+                offset: Vec2::splat(1.0),
+                ..default()
+            },
             Visibility::Hidden,
             GlobalZIndex(-1),
-            Node { position_type: PositionType::Absolute, ..default() },
+            Node {
+                position_type: PositionType::Absolute,
+                ..default()
+            },
         ));
     }
 }
@@ -302,7 +339,11 @@ fn leave(mut scale: ResMut<UiScale>, mut gizmos: ResMut<GizmoConfigStore>) {
 
 /// The rows the builder opens on: the two new ones, then every map there is.
 fn shelf(circuits: &Circuits) -> Vec<Shelf> {
-    let maps = circuits.0.iter().enumerate().filter(|(_, circuit)| circuit.map.is_some());
+    let maps = circuits
+        .0
+        .iter()
+        .enumerate()
+        .filter(|(_, circuit)| circuit.map.is_some());
     [Shelf::New(false), Shelf::New(true)]
         .into_iter()
         .chain(maps.map(|(index, _)| Shelf::Old(index)))
@@ -326,7 +367,11 @@ impl Shelf {
         match self {
             Shelf::Old(index) => {
                 let circuit = &circuits.0[index];
-                circuit.map().file.clone().filter(|_| !crate::map::carried(circuit.key()))
+                circuit
+                    .map()
+                    .file
+                    .clone()
+                    .filter(|_| !crate::map::carried(circuit.key()))
             }
             Shelf::New(_) => None,
         }
@@ -351,15 +396,29 @@ impl Builder {
     fn whole(&mut self) {
         let Some(draft) = &self.draft else { return };
         let places: Vec<Vec3> = match &draft.map.plan {
-            Some(plan) => plan.outline.iter().map(|&[x, z]| Vec3::new(x, 0.0, z)).collect(),
-            None => draft.map.road.corners.iter().map(|&[x, y, z, _]| Vec3::new(x, y, z)).collect(),
+            Some(plan) => plan
+                .outline
+                .iter()
+                .map(|&[x, z]| Vec3::new(x, 0.0, z))
+                .collect(),
+            None => draft
+                .map
+                .road
+                .corners
+                .iter()
+                .map(|&[x, y, z, _]| Vec3::new(x, y, z))
+                .collect(),
         };
         let ends = (Vec3::MAX, Vec3::MIN);
-        let (least, most) = places.iter().fold(ends, |(least, most), &at| (least.min(at), most.max(at)));
+        let (least, most) = places
+            .iter()
+            .fold(ends, |(least, most), &at| (least.min(at), most.max(at)));
         let size = (most - least).with_y(0.0);
         // Far enough off for it to be seen whole beside the panel down the left,
         // and for there to be ground to draw a road on that is hardly begun.
-        let across = (size.x * 1.35).max(size.z * 1.75).max(if draft.open { 420.0 } else { 80.0 });
+        let across = (size.x * 1.35)
+            .max(size.z * 1.75)
+            .max(if draft.open { 420.0 } else { 80.0 });
         let far = across.clamp(FAR.0, FAR.1);
         self.eye = Eye {
             focus: ((least + most) / 2.0).with_y(0.0) - Vec3::X * far * BESIDE,
@@ -372,7 +431,10 @@ impl Builder {
 
     /// Has the view go to the thing picked.
     fn seek(&mut self) {
-        let at = self.draft.as_ref().and_then(|draft| draft.handles(draft.layer, draft.picked).first().copied());
+        let at = self
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.handles(draft.layer, draft.picked).first().copied());
         self.eye.goal = at.or(self.eye.goal);
     }
 
@@ -385,7 +447,12 @@ impl Builder {
 
 /// Whether a key has just gone down, or has been held long enough to count
 /// again.
-fn tapped(held: &mut Option<(KeyCode, f32)>, keys: &ButtonInput<KeyCode>, now: f32, key: KeyCode) -> bool {
+fn tapped(
+    held: &mut Option<(KeyCode, f32)>,
+    keys: &ButtonInput<KeyCode>,
+    now: f32,
+    key: KeyCode,
+) -> bool {
     if keys.just_pressed(key) {
         *held = Some((key, now + REPEAT.0));
         return true;
@@ -485,7 +552,9 @@ fn keys(
             asked.0.push(act);
         }
     }
-    let Some(draft) = &mut builder.draft else { return };
+    let Some(draft) = &mut builder.draft else {
+        return;
+    };
     let rows = draft.rows();
     let mut sought = false;
     if keys.just_pressed(KeyCode::Tab) {
@@ -518,9 +587,18 @@ fn keys(
         true => Vec3::X * way.x.signum(),
         false => Vec3::Z * way.z.signum(),
     };
-    let (right, up) = (square(*camera.right()), square(camera.forward().with_y(0.0)));
+    let (right, up) = (
+        square(*camera.right()),
+        square(camera.forward().with_y(0.0)),
+    );
     let fine = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-    let by = if shift { 5.0 } else if fine { 0.25 } else { 1.0 };
+    let by = if shift {
+        5.0
+    } else if fine {
+        0.25
+    } else {
+        1.0
+    };
     let mut pushed = Vec2::ZERO;
     for (key, way) in [
         (KeyCode::ArrowRight, Vec2::X),
@@ -596,7 +674,8 @@ fn ground(
     // The view: the wheel comes nearer to what the pointer is over, the right
     // button turns it and the middle one slides it.
     if pointer.wheel != 0.0 && !pointer.taken {
-        let far = (builder.eye.far * (1.0 - pointer.wheel * 0.1).clamp(0.5, 1.5)).clamp(FAR.0, FAR.1);
+        let far =
+            (builder.eye.far * (1.0 - pointer.wheel * 0.1).clamp(0.5, 1.5)).clamp(FAR.0, FAR.1);
         if let Some(under) = under {
             let part = far / builder.eye.far;
             builder.eye.focus = under - (under - builder.eye.focus) * part;
@@ -614,12 +693,22 @@ fn ground(
         builder.eye.pitch += pointer.moved.y * 0.006;
     }
     if pointer.middle.down && !pointer.taken {
-        let (right, on) = (eye.right().with_y(0.0), eye.forward().with_y(0.0).normalize_or_zero());
+        let (right, on) = (
+            eye.right().with_y(0.0),
+            eye.forward().with_y(0.0).normalize_or_zero(),
+        );
         builder.eye.focus += (on * pointer.moved.y - right * pointer.moved.x) * unit;
         builder.eye.goal = None;
     }
-    let Some(draft) = &mut builder.draft else { return };
-    let seen = |place: Vec3| camera.world_to_viewport(eye, place).ok().map(|seen| seen.distance(at));
+    let Some(draft) = &mut builder.draft else {
+        return;
+    };
+    let seen = |place: Vec3| {
+        camera
+            .world_to_viewport(eye, place)
+            .ok()
+            .map(|seen| seen.distance(at))
+    };
     // Something just added goes where the pointer does until it is put down.
     if builder.carrying {
         if let (Some(ray), false) = (ray, pointer.taken) {
@@ -641,7 +730,9 @@ fn ground(
                 let picked = own && index == draft.picked;
                 for (part, handle) in draft.handles(layer, index).into_iter().enumerate() {
                     // Only the thing picked is taken by its ends or its sides.
-                    let Some(off) = seen(handle).filter(|_| part == 0 || picked) else { continue };
+                    let Some(off) = seen(handle).filter(|_| part == 0 || picked) else {
+                        continue;
+                    };
                     let off = off + if own { 0.0 } else { HOLD * 0.4 };
                     if off < HOLD && nearest.is_none_or(|nearest| off < nearest.0) {
                         nearest = Some((off, layer, index, part));
@@ -651,13 +742,22 @@ fn ground(
         }
         builder.over = nearest.map(|(_, layer, index, part)| (layer, index, part));
         if builder.over.is_none() {
-            let near = |mid: &(usize, Vec3)| Some((seen(mid.1).filter(|off| *off < HOLD * 0.8)?, mid.0));
-            let nearest = draft.mids().iter().filter_map(near).min_by(|a, b| a.0.total_cmp(&b.0));
+            let near =
+                |mid: &(usize, Vec3)| Some((seen(mid.1).filter(|off| *off < HOLD * 0.8)?, mid.0));
+            let nearest = draft
+                .mids()
+                .iter()
+                .filter_map(near)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
             builder.between = nearest.map(|mid| mid.1);
         }
     }
     let on_ground = |under: Vec3| Vec2::new(under.x, under.z);
-    let (slack, least, snap) = (SLACK.0.max(SLACK.1 * unit), LEAST.0.max(LEAST.1 * unit), SNAP.0.max(SNAP.1 * unit));
+    let (slack, least, snap) = (
+        SLACK.0.max(SLACK.1 * unit),
+        LEAST.0.max(LEAST.1 * unit),
+        SNAP.0.max(SNAP.1 * unit),
+    );
     let end = draft.ends().map(|(end, _)| end);
     let last = draft.map.road.corners.len().saturating_sub(1);
     if pointer.left.pressed && !pointer.taken {
@@ -730,11 +830,13 @@ fn ground(
                 draft.seal();
             }
             // A click on the ground lays a road being drawn on to there.
-            Hold::Ground(_) if !builder.dragged && draft.open && draft.layer == Layer::Corners => match (joins, place) {
-                (true, _) => closed = draft.close(),
-                (false, Some(place)) => draft.draw([place.x, place.y]),
-                (false, None) => {}
-            },
+            Hold::Ground(_) if !builder.dragged && draft.open && draft.layer == Layer::Corners => {
+                match (joins, place) {
+                    (true, _) => closed = draft.close(),
+                    (false, Some(place)) => draft.draw([place.x, place.y]),
+                    (false, None) => {}
+                }
+            }
             // The line is done: the road is as it was last laid along it, and
             // joined to its start if that is where the pointer let go.
             Hold::Road(..) if builder.dragged && joins => closed = draft.close(),
@@ -742,14 +844,19 @@ fn ground(
         }
         if closed {
             let said = match (&draft.wrong, draft.lap()) {
-                (None, Some(lap)) => format!("That is a lap, {lap:.0} round. Drag its corners to change it, and try it with T."),
+                (None, Some(lap)) => format!(
+                    "That is a lap, {lap:.0} round. Drag its corners to change it, and try it with T."
+                ),
                 _ => String::new(),
             };
             (builder.said, builder.said_at) = ((said, false), std::time::Instant::now());
         }
     }
     // Where a click would lay the road on to, while one is being drawn.
-    let drawing = matches!(builder.hold, Hold::Nothing) && !pointer.taken && draft.open && draft.layer == Layer::Corners;
+    let drawing = matches!(builder.hold, Hold::Nothing)
+        && !pointer.taken
+        && draft.open
+        && draft.layer == Layer::Corners;
     if let (true, Some(under), None, None) = (drawing, under, builder.over, builder.between) {
         builder.live = Some([under.x, under.z]);
         builder.joining = draft.joins(on_ground(under), snap);
@@ -760,15 +867,25 @@ fn ground(
 /// is, or why there is none.
 fn keep(draft: &mut Draft, circuits: &mut Circuits) -> Result<String, String> {
     let text = match (draft.open, &draft.wrong, draft.sound()) {
-        (true, ..) => return Err("A circuit is a lap: bring the road back to its start first.".into()),
+        (true, ..) => {
+            return Err("A circuit is a lap: bring the road back to its start first.".into());
+        }
         (_, Some(wrong), _) => return Err(format!("It can't be kept as it is: {wrong}")),
         (_, _, Some(map)) => map.text.clone(),
         _ => return Err("There is nothing of it to keep yet.".into()),
     };
-    let key = draft.file_key(|key| circuits.0.iter().any(|circuit| circuit.key().eq_ignore_ascii_case(key)));
+    let key = draft.file_key(|key| {
+        circuits
+            .0
+            .iter()
+            .any(|circuit| circuit.key().eq_ignore_ascii_case(key))
+    });
     let file = crate::map::save(&key, &text)?;
     let map = Map::tried(&key, &text)?;
-    circuits.keep(Map { file: Some(file.clone()), ..map });
+    circuits.keep(Map {
+        file: Some(file.clone()),
+        ..map
+    });
     draft.kept(key);
     Ok(file.display().to_string())
 }
@@ -786,7 +903,13 @@ fn act(
     let builder = &mut *builder;
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let fine = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-    let by = if shift { 5.0 } else if fine { 0.25 } else { 1.0 };
+    let by = if shift {
+        5.0
+    } else if fine {
+        0.25
+    } else {
+        1.0
+    };
     for act in std::mem::take(&mut asked.0) {
         // Anything but the answer to what was asked is no answer.
         let sure = std::mem::take(&mut builder.sure);
@@ -821,11 +944,17 @@ fn act(
                             builder.listed = None;
                             builder.row = builder.row.saturating_sub(1);
                         }
-                        Err(error) => builder.say(format!("Could not delete {}: {error}", file.display()), true),
+                        Err(error) => builder.say(
+                            format!("Could not delete {}: {error}", file.display()),
+                            true,
+                        ),
                     },
                     (Some(_), ..) => {
                         builder.sure = true;
-                        builder.say("Delete this map? Delete again takes its file away for good.", true);
+                        builder.say(
+                            "Delete this map? Delete again takes its file away for good.",
+                            true,
+                        );
                     }
                     (None, ..) => builder.say("Only a map of your own can be deleted.", true),
                 },
@@ -834,7 +963,9 @@ fn act(
             }
             continue;
         }
-        let Some(draft) = &mut builder.draft else { continue };
+        let Some(draft) = &mut builder.draft else {
+            continue;
+        };
         match act {
             Act::Kind(layer) if draft.layers().contains(&layer) => {
                 if layer != draft.layer {
@@ -865,12 +996,27 @@ fn act(
             }
             Act::Type(row) => {
                 draft.row = row;
-                builder.typing = draft.rows().get(row).filter(|row| row.typed).map(|row| row.value.clone());
+                builder.typing = draft
+                    .rows()
+                    .get(row)
+                    .filter(|row| row.typed)
+                    .map(|row| row.value.clone());
             }
             Act::Undo | Act::Redo => {
-                let done = if act == Act::Undo { draft.undo() } else { draft.redo() };
+                let done = if act == Act::Undo {
+                    draft.undo()
+                } else {
+                    draft.redo()
+                };
                 builder.carrying = false;
-                builder.say(if done { "" } else { "There is nothing to take back." }, false);
+                builder.say(
+                    if done {
+                        ""
+                    } else {
+                        "There is nothing to take back."
+                    },
+                    false,
+                );
             }
             Act::Whole => builder.whole(),
             Act::Loop => match draft.open {
@@ -894,7 +1040,10 @@ fn act(
             },
             Act::Try => {
                 let tried = match (draft.open, draft.sound()) {
-                    (true, _) => Err("a circuit is a lap, so bring the road back to its start first.".to_string()),
+                    (true, _) => Err(
+                        "a circuit is a lap, so bring the road back to its start first."
+                            .to_string(),
+                    ),
                     (_, None) => Err(draft.wrong.clone().unwrap_or_default()),
                     (_, Some(map)) => circuits.try_out(&map.text),
                 };
@@ -961,7 +1110,10 @@ fn show(
     builder.built = Some(state);
     let Some(map) = draft.sound() else { return };
     let track = Track::made(map, false);
-    let plastic = materials.add(StandardMaterial { perceptual_roughness: 0.5, ..default() });
+    let plastic = materials.add(StandardMaterial {
+        perceptual_roughness: 0.5,
+        ..default()
+    });
     let mut marks = BrickMesh::default();
     // The bricks the game would lay, each its colour.
     for (power, at) in crate::items::laid(&track) {
@@ -972,20 +1124,46 @@ fn show(
             Some(Power::Blue) => BLUE,
             Some(Power::Green) => GREEN,
         };
-        marks.brick(at + Vec3::Y * 0.6, Vec3::new(0.7, 0.45, 0.7), Quat::IDENTITY, colour, (2, 2));
+        marks.brick(
+            at + Vec3::Y * 0.6,
+            Vec3::new(0.7, 0.45, 0.7),
+            Quat::IDENTITY,
+            colour,
+            (2, 2),
+        );
     }
     // An arena's grid: a block where each car starts, and a smaller one the way
     // it faces.
     for &(at, facing) in &track.course.grid {
-        marks.cuboid(at + Vec3::Y * 0.7, Vec3::new(1.4, 0.7, 1.4), Quat::IDENTITY, ORANGE);
-        marks.cuboid(at + facing * 2.2 + Vec3::Y * 0.5, Vec3::splat(0.5), Quat::IDENTITY, WHITE);
+        marks.cuboid(
+            at + Vec3::Y * 0.7,
+            Vec3::new(1.4, 0.7, 1.4),
+            Quat::IDENTITY,
+            ORANGE,
+        );
+        marks.cuboid(
+            at + facing * 2.2 + Vec3::Y * 0.5,
+            Vec3::splat(0.5),
+            Quat::IDENTITY,
+            WHITE,
+        );
     }
     // And a post where each hazard stands.
     for index in 0..draft.count(Layer::Hazards) {
         for (part, at) in draft.handles(Layer::Hazards, index).into_iter().enumerate() {
             let (high, colour) = if part == 0 { (5.0, RED) } else { (2.0, ORANGE) };
-            marks.cuboid(at + Vec3::Y * high, Vec3::new(0.5, high, 0.5), Quat::IDENTITY, colour);
-            marks.cuboid(at + Vec3::Y * (high * 2.0 + 0.8), Vec3::splat(1.1), Quat::IDENTITY, colour);
+            marks.cuboid(
+                at + Vec3::Y * high,
+                Vec3::new(0.5, high, 0.5),
+                Quat::IDENTITY,
+                colour,
+            );
+            marks.cuboid(
+                at + Vec3::Y * (high * 2.0 + 0.8),
+                Vec3::splat(1.1),
+                Quat::IDENTITY,
+                colour,
+            );
         }
     }
     let scenery = track.build_scenery(map, &mut Rng(0x1EC0_1999));
@@ -1017,18 +1195,33 @@ fn road(middle: &[(Vec3, f32)], mesh: &mut BrickMesh) {
     let lift = Vec3::Y * 0.06;
     let across: Vec<Vec3> = (0..n)
         .map(|i| {
-            let along = (middle[(i + 1).min(n - 1)].0 - middle[i.saturating_sub(1)].0).with_y(0.0).normalize_or_zero();
+            let along = (middle[(i + 1).min(n - 1)].0 - middle[i.saturating_sub(1)].0)
+                .with_y(0.0)
+                .normalize_or_zero();
             Vec3::new(-along.z, 0.0, along.x)
         })
         .collect();
     // So far across at each place: from its middle, or from its barriers.
-    let edge = |i: usize, right: &dyn Fn(f32) -> f32| middle[i].0 + across[i] * right(middle[i].1) + lift;
+    let edge =
+        |i: usize, right: &dyn Fn(f32) -> f32| middle[i].0 + across[i] * right(middle[i].1) + lift;
     for i in 0..n - 1 {
-        let mut strip = |from: &dyn Fn(f32) -> f32, to: &dyn Fn(f32) -> f32, colour: Color, lift: Vec3| {
-            mesh.quad(edge(i, from) + lift, edge(i, to) + lift, edge(i + 1, to) + lift, edge(i + 1, from) + lift, colour);
-        };
+        let mut strip =
+            |from: &dyn Fn(f32) -> f32, to: &dyn Fn(f32) -> f32, colour: Color, lift: Vec3| {
+                mesh.quad(
+                    edge(i, from) + lift,
+                    edge(i, to) + lift,
+                    edge(i + 1, to) + lift,
+                    edge(i + 1, from) + lift,
+                    colour,
+                );
+            };
         let kerbed = 0.4 - VERGE;
-        strip(&|h| -h - kerbed, &|h| h + kerbed, TARMAC[(i / 2) % 2], Vec3::ZERO);
+        strip(
+            &|h| -h - kerbed,
+            &|h| h + kerbed,
+            TARMAC[(i / 2) % 2],
+            Vec3::ZERO,
+        );
         let kerb = KERBS[(i / 2) % 2];
         strip(&|h| -h, &|h| -h - kerbed, kerb, Vec3::ZERO);
         strip(&|h| h + kerbed, &|h| h, kerb, Vec3::ZERO);
@@ -1049,9 +1242,15 @@ fn sketch(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let builder = &mut *builder;
-    let Some(draft) = builder.draft.as_ref().filter(|draft| !draft.arena() && draft.sound().is_none()) else {
+    let Some(draft) = builder
+        .draft
+        .as_ref()
+        .filter(|draft| !draft.arena() && draft.sound().is_none())
+    else {
         if builder.sketched.take().is_some() {
-            sketched.iter().for_each(|entity| commands.entity(entity).despawn());
+            sketched
+                .iter()
+                .for_each(|entity| commands.entity(entity).despawn());
         }
         return;
     };
@@ -1063,26 +1262,46 @@ fn sketch(
         return;
     }
     builder.sketched = Some(state);
-    sketched.iter().for_each(|entity| commands.entity(entity).despawn());
+    sketched
+        .iter()
+        .for_each(|entity| commands.entity(entity).despawn());
     let mut mesh = BrickMesh::default();
     road(&draft.laid(joined), &mut mesh);
     // The line, across the tarmac however wide it is there, and the six places
     // behind it.
     let corners = &draft.map.road.corners;
-    if let (Some(start), Some(front), Some(tail)) = (corners.first(), corners.get(1), corners.last()) {
+    if let (Some(start), Some(front), Some(tail)) =
+        (corners.first(), corners.get(1), corners.last())
+    {
         let at = |corner: &[f32; 4]| Vec3::new(corner[0], corner[1], corner[2]);
-        let (start, along) = (at(start), (at(front) - at(tail)).with_y(0.0).normalize_or_zero());
-        let (right, turned) = (Vec3::new(-along.z, 0.0, along.x), Quat::from_rotation_arc(Vec3::X, along));
+        let (start, along) = (
+            at(start),
+            (at(front) - at(tail)).with_y(0.0).normalize_or_zero(),
+        );
+        let (right, turned) = (
+            Vec3::new(-along.z, 0.0, along.x),
+            Quat::from_rotation_arc(Vec3::X, along),
+        );
         let tarmac = draft.map.road.widths.first().copied().unwrap_or(WIDTH) / 2.0 - VERGE;
         for square in 0..12 {
             let colour = if square % 2 == 0 { WHITE } else { BLACK };
             let across = right * (square as f32 - 5.5) * (tarmac * 2.0 / 12.0);
-            mesh.cuboid(start + across + Vec3::Y * 0.12, Vec3::new(0.7, 0.03, tarmac / 12.0), turned, colour);
+            mesh.cuboid(
+                start + across + Vec3::Y * 0.12,
+                Vec3::new(0.7, 0.03, tarmac / 12.0),
+                turned,
+                colour,
+            );
         }
         for place in 0..6 {
             let back = 8.0 + (place / 2) as f32 * 6.0;
             let side = if place % 2 == 0 { -2.25 } else { 2.25 };
-            mesh.cuboid(start - along * back + right * side + Vec3::Y * 0.1, Vec3::new(1.6, 0.02, 1.0), turned, GREY);
+            mesh.cuboid(
+                start - along * back + right * side + Vec3::Y * 0.1,
+                Vec3::new(1.6, 0.02, 1.0),
+                turned,
+                GREY,
+            );
         }
     }
     let mesh = mesh.build();
@@ -1126,8 +1345,12 @@ fn look(
     eye.far = eye.far.clamp(FAR.0, FAR.1);
     eye.yaw = eye.yaw.rem_euclid(TAU);
     let back = Quat::from_euler(EulerRot::YXZ, eye.yaw, -eye.pitch, 0.0) * Vec3::Z;
-    *transform = Transform::from_translation(eye.focus + back * eye.far).looking_at(eye.focus, Vec3::Y);
-    *projection = Projection::Perspective(PerspectiveProjection { far: 8000.0, ..default() });
+    *transform =
+        Transform::from_translation(eye.focus + back * eye.far).looking_at(eye.focus, Vec3::Y);
+    *projection = Projection::Perspective(PerspectiveProjection {
+        far: 8000.0,
+        ..default()
+    });
 }
 
 /// A ring flat on the ground, and a square.
@@ -1137,8 +1360,17 @@ fn ring(gizmos: &mut Gizmos, at: Vec3, radius: f32, colour: Color) {
 }
 
 fn square(gizmos: &mut Gizmos, at: Vec3, half: f32, colour: Color) {
-    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)];
-    gizmos.linestrip(corners.map(|(x, z)| at + Vec3::new(x * half, 0.3, z * half)), colour);
+    let corners = [
+        (-1.0, -1.0),
+        (1.0, -1.0),
+        (1.0, 1.0),
+        (-1.0, 1.0),
+        (-1.0, -1.0),
+    ];
+    gizmos.linestrip(
+        corners.map(|(x, z)| at + Vec3::new(x * half, 0.3, z * half)),
+        colour,
+    );
 }
 
 /// Marks on the map what it is made of: the kind picked brightly, with numbers,
@@ -1147,7 +1379,13 @@ fn mark(
     builder: Res<Builder>,
     mut gizmos: Gizmos,
     camera: Single<(&Camera, &GlobalTransform), (With<Camera3d>, Without<RenderLayers>)>,
-    mut labels: Query<(&Label, &mut Text, &mut Node, &mut Visibility, &mut TextColor)>,
+    mut labels: Query<(
+        &Label,
+        &mut Text,
+        &mut Node,
+        &mut Visibility,
+        &mut TextColor,
+    )>,
     scale: Res<UiScale>,
 ) {
     let (camera, eye) = *camera;
@@ -1166,7 +1404,11 @@ fn mark(
             for (i, corner) in corners.iter().enumerate() {
                 if !(draft.open && i + 2 == corners.len()) {
                     let next = &corners[(i + 1) % corners.len()];
-                    gizmos.line(place(corner) + lift, place(next) + lift, Color::srgba(1.0, 1.0, 1.0, 0.16));
+                    gizmos.line(
+                        place(corner) + lift,
+                        place(next) + lift,
+                        Color::srgba(1.0, 1.0, 1.0, 0.16),
+                    );
                 }
             }
         }
@@ -1174,8 +1416,16 @@ fn mark(
         // barrier, with a ring at its edge to drag.
         if draft.layer == Layer::Corners && draft.picked < corners.len() {
             let (middle, right, half) = draft.across(draft.picked);
-            gizmos.line(middle - right * half + lift, middle + right * half + lift, picked.with_alpha(0.8));
-            named.push((middle + right * (half + size * 2.0), format!("{} wide", half * 2.0), picked));
+            gizmos.line(
+                middle - right * half + lift,
+                middle + right * half + lift,
+                picked.with_alpha(0.8),
+            );
+            named.push((
+                middle + right * (half + size * 2.0),
+                format!("{} wide", half * 2.0),
+                picked,
+            ));
         }
         if let Some((end, tail)) = draft.ends() {
             // Where the road is drawn on from, and where it is to come back to.
@@ -1184,7 +1434,11 @@ fn mark(
             gizmos.arrow(end + lift, end + along * size * 5.0 + lift, picked);
             ring(&mut gizmos, end, size * 2.2, picked);
             let reached = corners.len() > 3;
-            let says = if reached { "go on from here" } else { "draw from here" };
+            let says = if reached {
+                "go on from here"
+            } else {
+                "draw from here"
+            };
             named.push((end + along * size * 5.0, says.into(), picked));
             if reached {
                 let colour = if builder.joining { join } else { dim(join) };
@@ -1194,24 +1448,52 @@ fn mark(
             }
             // Where a click would take it.
             if let (Some([x, z]), Hold::Nothing) = (builder.live, &builder.hold) {
-                let to = if builder.joining { tail } else { Vec3::new(x, end.y, z) };
-                let colour = if builder.joining { join } else { Color::srgba(1.0, 1.0, 1.0, 0.5) };
+                let to = if builder.joining {
+                    tail
+                } else {
+                    Vec3::new(x, end.y, z)
+                };
+                let colour = if builder.joining {
+                    join
+                } else {
+                    Color::srgba(1.0, 1.0, 1.0, 0.5)
+                };
                 gizmos.line(end + lift, to + lift, colour);
                 ring(&mut gizmos, to, size * 0.7, colour);
             }
         } else if let Some(line) = draft.line().filter(|_| draft.sound().is_some()) {
             // Every hundred round the lap, when what is picked is so far round it.
-            let measured = matches!(draft.layer, Layer::Pads | Layer::Banks | Layer::Infields | Layer::Byways | Layer::Hazards);
+            let measured = matches!(
+                draft.layer,
+                Layer::Pads | Layer::Banks | Layer::Infields | Layer::Byways | Layer::Hazards
+            );
             for hundred in (0..(line.length / 100.0) as usize + 1).filter(|_| measured) {
                 let (at, _, right) = line.sample(hundred as f32 * 100.0);
-                gizmos.line(at - right * 9.0 + lift, at + right * 9.0 + lift, Color::srgba(1.0, 1.0, 1.0, 0.5));
-                named.push((at + right * 10.0, format!("{}", hundred * 100), Color::srgba(1.0, 1.0, 1.0, 0.7)));
+                gizmos.line(
+                    at - right * 9.0 + lift,
+                    at + right * 9.0 + lift,
+                    Color::srgba(1.0, 1.0, 1.0, 0.5),
+                );
+                named.push((
+                    at + right * 10.0,
+                    format!("{}", hundred * 100),
+                    Color::srgba(1.0, 1.0, 1.0, 0.7),
+                ));
             }
             // Stretches of it: from where each begins to where it ends.
             let road = &draft.map.road;
-            let banks = road.banks.iter().map(|bank| (Layer::Banks, bank.from, bank.to));
-            let infields = road.infields.iter().map(|infield| (Layer::Infields, infield.from, infield.to));
-            let byways = road.byways.iter().map(|byway| (Layer::Byways, byway.from, byway.to));
+            let banks = road
+                .banks
+                .iter()
+                .map(|bank| (Layer::Banks, bank.from, bank.to));
+            let infields = road
+                .infields
+                .iter()
+                .map(|infield| (Layer::Infields, infield.from, infield.to));
+            let byways = road
+                .byways
+                .iter()
+                .map(|byway| (Layer::Byways, byway.from, byway.to));
             let mut counted = [0; 3];
             for (layer, from, to) in banks.chain(infields).chain(byways) {
                 let slot = match layer {
@@ -1222,11 +1504,18 @@ fn mark(
                 let index = counted[slot];
                 counted[slot] += 1;
                 let mine = layer == draft.layer;
-                let colour = if mine && index == draft.picked { picked } else if mine { tint(layer) } else { dim(tint(layer)) };
+                let colour = if mine && index == draft.picked {
+                    picked
+                } else if mine {
+                    tint(layer)
+                } else {
+                    dim(tint(layer))
+                };
                 let steps = ((to - from) / line.spacing).max(1.0) as usize;
                 let side = if layer == Layer::Byways { 0.0 } else { 7.0 };
                 let along = (0..=steps).map(|step| {
-                    let (at, _, right) = line.sample(from + (to - from) * step as f32 / steps as f32);
+                    let (at, _, right) =
+                        line.sample(from + (to - from) * step as f32 / steps as f32);
                     at + right * side + lift * 2.0
                 });
                 gizmos.linestrip(along, colour);
@@ -1237,23 +1526,56 @@ fn mark(
             }
         }
         if let Some(plan) = &draft.map.plan {
-            let floor = plan.outline.iter().chain(plan.outline.first()).map(|&[x, z]| Vec3::new(x, 0.0, z) + lift);
+            let floor = plan
+                .outline
+                .iter()
+                .chain(plan.outline.first())
+                .map(|&[x, z]| Vec3::new(x, 0.0, z) + lift);
             gizmos.linestrip(floor, Color::srgba(1.0, 1.0, 1.0, 0.5));
-            let line = plan.line.iter().chain(plan.line.first()).map(|&at| Vec3::from(at) + lift);
+            let line = plan
+                .line
+                .iter()
+                .chain(plan.line.first())
+                .map(|&at| Vec3::from(at) + lift);
             gizmos.linestrip(line, dim(tint(Layer::Line)));
             // What stands on the floor, the kind picked: each one's edges.
             let stood = |at: [f32; 2], half: [f32; 2], height: f32| {
-                [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)]
-                    .map(|(x, z)| Vec3::new(at[0] + half[0] * x, height + 0.3, at[1] + half[1] * z))
+                [
+                    (-1.0, -1.0),
+                    (1.0, -1.0),
+                    (1.0, 1.0),
+                    (-1.0, 1.0),
+                    (-1.0, -1.0),
+                ]
+                .map(|(x, z)| Vec3::new(at[0] + half[0] * x, height + 0.3, at[1] + half[1] * z))
             };
             let edges: Vec<[Vec3; 5]> = match draft.layer {
-                Layer::Blocks => plan.blocks.iter().map(|block| stood(block.at, block.half, block.height)).collect(),
-                Layer::Ramps => plan.ramps.iter().map(|ramp| stood(ramp.at, ramp.half, 0.0)).collect(),
-                Layer::Decks => plan.decks.iter().map(|deck| stood(deck.at, deck.half, deck.height)).collect(),
+                Layer::Blocks => plan
+                    .blocks
+                    .iter()
+                    .map(|block| stood(block.at, block.half, block.height))
+                    .collect(),
+                Layer::Ramps => plan
+                    .ramps
+                    .iter()
+                    .map(|ramp| stood(ramp.at, ramp.half, 0.0))
+                    .collect(),
+                Layer::Decks => plan
+                    .decks
+                    .iter()
+                    .map(|deck| stood(deck.at, deck.half, deck.height))
+                    .collect(),
                 _ => Vec::new(),
             };
             for (index, edge) in edges.into_iter().enumerate() {
-                gizmos.linestrip(edge, if index == draft.picked { picked } else { tint(draft.layer) });
+                gizmos.linestrip(
+                    edge,
+                    if index == draft.picked {
+                        picked
+                    } else {
+                        tint(draft.layer)
+                    },
+                );
             }
         }
         // The rings: every kind's, faintly, and the kind picked with numbers.
@@ -1274,7 +1596,16 @@ fn mark(
                         (.., true) => tint(layer),
                         _ => dim(tint(layer)),
                     };
-                    let radius = size * if over { 1.7 } else if chosen && part == 0 { 1.5 } else if mine { 1.0 } else { 0.6 };
+                    let radius = size
+                        * if over {
+                            1.7
+                        } else if chosen && part == 0 {
+                            1.5
+                        } else if mine {
+                            1.0
+                        } else {
+                            0.6
+                        };
                     ring(&mut gizmos, at, radius, colour);
                     if chosen || over {
                         ring(&mut gizmos, at, radius * 0.6, colour);
@@ -1282,8 +1613,12 @@ fn mark(
                     }
                     if mine && part == 0 {
                         let name = match layer {
-                            Layer::Hazards => format!("{:?}", draft.map.hazards[index].kind).to_lowercase(),
-                            Layer::Scenery => format!("{:?}", draft.map.scenery[index].kind).to_lowercase(),
+                            Layer::Hazards => {
+                                format!("{:?}", draft.map.hazards[index].kind).to_lowercase()
+                            }
+                            Layer::Scenery => {
+                                format!("{:?}", draft.map.scenery[index].kind).to_lowercase()
+                            }
                             Layer::Corners if index == 0 => "start".into(),
                             Layer::Corners if tight => format!("{} tight", index + 1),
                             _ => format!("{}", index + 1),
@@ -1334,7 +1669,15 @@ fn say(
     circuits: Res<Circuits>,
     mut board: ResMut<Board>,
     mut panes: Query<(Entity, &panel::Pane, &mut Visibility)>,
-    mut cells: Query<(&panel::Spot, &mut Text, &mut TextColor, &mut BackgroundColor), Without<panel::Pane>>,
+    mut cells: Query<
+        (
+            &panel::Spot,
+            &mut Text,
+            &mut TextColor,
+            &mut BackgroundColor,
+        ),
+        Without<panel::Pane>,
+    >,
 ) {
     let mut sheet = Sheet::default();
     let title = |words: String| vec![Cell::new(words, Look::Title)];
@@ -1351,14 +1694,28 @@ fn say(
                     Shelf::Old(index) => {
                         let circuit = &circuits.0[index];
                         let kind = if circuit.arena() { "arena" } else { "circuit" };
-                        let whose = if crate::map::carried(circuit.key()) { ", the game's" } else { "" };
-                        let by = if circuit.author.is_empty() { String::new() } else { format!(" by {}", circuit.author) };
+                        let whose = if crate::map::carried(circuit.key()) {
+                            ", the game's"
+                        } else {
+                            ""
+                        };
+                        let by = if circuit.author.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" by {}", circuit.author)
+                        };
                         format!("{}   ({kind}{whose}){by}", circuit.name)
                     }
                 };
-                sheet.side.push(vec![Cell::new(name, lit(row == builder.row)).wide(470.0).does(Act::Shelf(row))]);
+                sheet.side.push(vec![
+                    Cell::new(name, lit(row == builder.row))
+                        .wide(470.0)
+                        .does(Act::Shelf(row)),
+                ]);
             }
-            let own = rows.get(builder.row).is_some_and(|on| on.own(&circuits).is_some());
+            let own = rows
+                .get(builder.row)
+                .is_some_and(|on| on.own(&circuits).is_some());
             sheet.bar = vec![
                 Cell::button("Open", Act::Open, false),
                 Cell::button("Delete", Act::Delete, !own),
@@ -1370,17 +1727,31 @@ fn say(
             ];
         }
         Some(draft) => {
-            let kind = match (draft.arena(), draft.open, draft.lap().filter(|_| draft.sound().is_some())) {
+            let kind = match (
+                draft.arena(),
+                draft.open,
+                draft.lap().filter(|_| draft.sound().is_some()),
+            ) {
                 (true, ..) => "arena".to_string(),
                 (_, true, _) => "a road being drawn".into(),
                 (_, _, Some(lap)) => format!("circuit, {lap:.0} round"),
                 _ => "circuit".into(),
             };
             let kept = if draft.unsaved { "not kept" } else { "kept" };
-            sheet.side.push(title(format!("{}   ({kind}, {kept})", draft.map.name)));
+            sheet
+                .side
+                .push(title(format!("{}   ({kind}, {kept})", draft.map.name)));
             for &layer in draft.layers() {
-                let mut row = vec![Cell::new(layer.label(), lit(layer == draft.layer)).wide(150.0).does(Act::Kind(layer))];
-                let count = if layer == Layer::Map { String::new() } else { draft.count(layer).to_string() };
+                let mut row = vec![
+                    Cell::new(layer.label(), lit(layer == draft.layer))
+                        .wide(150.0)
+                        .does(Act::Kind(layer)),
+                ];
+                let count = if layer == Layer::Map {
+                    String::new()
+                } else {
+                    draft.count(layer).to_string()
+                };
                 row.push(Cell::new(count, Look::Dim).wide(34.0));
                 if layer.added() {
                     row.push(Cell::button("+", Act::Add(layer), false));
@@ -1390,31 +1761,52 @@ fn say(
             let rows = draft.rows();
             let which = match (draft.count(draft.layer), draft.layer) {
                 (_, Layer::Map) => String::new(),
-                (0, layer) if layer.added() => format!("no {} yet: + puts one on the map", layer.label()),
+                (0, layer) if layer.added() => {
+                    format!("no {} yet: + puts one on the map", layer.label())
+                }
                 (0, layer) => format!("no {} yet", layer.label()),
                 (count, layer) => format!("{} {} of {count}", layer.one(), draft.picked + 1),
             };
             sheet.side.push(vec![Cell::new(which, Look::Dim)]);
             for (n, row) in rows.iter().enumerate() {
                 let on = n == draft.row;
-                let label = Cell::new(row.label.as_str(), lit(on)).wide(200.0).does(Act::Row(n));
+                let label = Cell::new(row.label.as_str(), lit(on))
+                    .wide(200.0)
+                    .does(Act::Row(n));
                 sheet.side.push(match (row.typed, &builder.typing) {
-                    (true, Some(typing)) if on => vec![label, Cell::new(format!("{typing}_"), Look::Lit).wide(206.0)],
-                    (true, _) => vec![label, Cell::new(row.value.as_str(), Look::Plain).wide(206.0).does(Act::Type(n))],
+                    (true, Some(typing)) if on => vec![
+                        label,
+                        Cell::new(format!("{typing}_"), Look::Lit).wide(206.0),
+                    ],
+                    (true, _) => vec![
+                        label,
+                        Cell::new(row.value.as_str(), Look::Plain)
+                            .wide(206.0)
+                            .does(Act::Type(n)),
+                    ],
                     (false, _) => vec![
                         label,
                         Cell::button("<", Act::Turn(n, -1.0), false),
-                        Cell::new(row.value.as_str(), Look::Plain).wide(150.0).does(Act::Row(n)),
+                        Cell::new(row.value.as_str(), Look::Plain)
+                            .wide(150.0)
+                            .does(Act::Row(n)),
                         Cell::button(">", Act::Turn(n, 1.0), false),
                     ],
                 });
             }
             let join = match (draft.arena(), draft.open) {
                 (true, _) => None,
-                (_, true) => Some(Cell::button("Join the start", Act::Loop, draft.map.road.corners.len() < 4)),
+                (_, true) => Some(Cell::button(
+                    "Join the start",
+                    Act::Loop,
+                    draft.map.road.corners.len() < 4,
+                )),
                 (_, false) => Some(Cell::button("Draw more", Act::Loop, false)),
             };
-            sheet.bar = vec![Cell::button("Undo", Act::Undo, false), Cell::button("Redo", Act::Redo, false)];
+            sheet.bar = vec![
+                Cell::button("Undo", Act::Undo, false),
+                Cell::button("Redo", Act::Redo, false),
+            ];
             sheet.bar.push(Cell::button("Whole map", Act::Whole, false));
             sheet.bar.extend(join);
             sheet.bar.extend([
@@ -1442,10 +1834,14 @@ fn say(
     // What is wrong with the map is said until it is put right, but while
     // something is being asked; what is asked until it is answered; and
     // anything else for a little while.
-    let wrong = draft.and_then(|draft| draft.wrong.clone()).filter(|_| !builder.sure);
+    let wrong = draft
+        .and_then(|draft| draft.wrong.clone())
+        .filter(|_| !builder.sure);
     let (said, bad) = match wrong {
         Some(wrong) => (format!("Not a map as it is: {wrong}"), true),
-        None if builder.sure || builder.said_at.elapsed().as_secs_f32() < SAID_FOR => builder.said.clone(),
+        None if builder.sure || builder.said_at.elapsed().as_secs_f32() < SAID_FOR => {
+            builder.said.clone()
+        }
         None => default(),
     };
     if !said.is_empty() {

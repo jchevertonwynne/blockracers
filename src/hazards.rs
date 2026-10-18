@@ -17,7 +17,9 @@ use crate::items::{Action, Beam, ItemAssets};
 use crate::kart::{Kart, PLAYER_SLOT};
 use crate::particles::{Emitter as Particles, Emitters};
 use crate::physics::{self, UNIT};
-use crate::scenery::{Animated, Fade, Models, Prop, Retrack, Scenery, Scrolling, Swatches, to_world};
+use crate::scenery::{
+    Animated, Fade, Models, Prop, Retrack, Scenery, Scrolling, Swatches, to_world,
+};
 use crate::track::Track;
 use crate::{Phase, Race};
 use bevy::prelude::*;
@@ -1011,8 +1013,7 @@ pub fn hazards(
                         continue;
                     }
                     let at = k.pos + Vec3::Y * physics::BODY_POINT_HEIGHT;
-                    let Some((shove, away)) = push_out_of_box(at, centre, axes, half, reach)
-                    else {
+                    let Some((shove, away)) = push_out_of_box(at, centre, axes, half, reach) else {
                         continue;
                     };
                     // Shoved out of the way, taking on the box's own motion.
@@ -1348,10 +1349,13 @@ pub fn laid(corners: &[(Vec3, Vec2)], up: Vec3) -> Mesh {
     use bevy::mesh::PrimitiveTopology;
     let places: Vec<[f32; 3]> = corners.iter().map(|c| (c.0 + up * 0.03).into()).collect();
     let on: Vec<[f32; 2]> = corners.iter().map(|c| c.1.into()).collect();
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![up.to_array(); places.len()])
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, places)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, on)
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![up.to_array(); places.len()])
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, places)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, on)
 }
 
 /// What hazards show beyond their own models: the crane's shadow on the road, and the
@@ -1549,7 +1553,9 @@ mod tests {
         assert!(shove.z > 0.0 && shove.x == 0.0);
         // Turned a quarter, its length lies along Z.
         let turned = [Vec3::Z, Vec3::Y, Vec3::X];
-        assert!(push_out_of_box(Vec3::new(0.0, 0.0, 12.0), Vec3::ZERO, turned, half, 3.0).is_some());
+        assert!(
+            push_out_of_box(Vec3::new(0.0, 0.0, 12.0), Vec3::ZERO, turned, half, 3.0).is_some()
+        );
     }
 
     /// Needs the original game data; silently passes without it.

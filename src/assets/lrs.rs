@@ -205,7 +205,10 @@ mod tests {
         let mut racer = racer;
         assert!(racer.award(3, 3) && racer.award(3, 1) && !racer.award(3, 2));
         assert!(!racer.award(0, 4));
-        assert_eq!((racer.trophy(3), racer.trophy(0), racer.trophies), (1, 0, 1 << 6));
+        assert_eq!(
+            (racer.trophy(3), racer.trophy(0), racer.trophies),
+            (1, 0, 1 << 6)
+        );
         assert_eq!(read(&write(std::slice::from_ref(&racer))), [racer]);
         assert!(read(b"not a save").is_empty());
     }

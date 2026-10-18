@@ -64,7 +64,12 @@ impl Surface {
         else {
             return None;
         };
-        Some(crate::lighting::Lit::new(normals, base.clone(), ambient, diffuse))
+        Some(crate::lighting::Lit::new(
+            normals,
+            base.clone(),
+            ambient,
+            diffuse,
+        ))
     }
 }
 
@@ -144,7 +149,11 @@ impl KartModel {
                     Some(indices) => {
                         let indices: Vec<usize> = indices.iter().collect();
                         for triangle in indices.chunks_exact(3) {
-                            fill([corner(triangle[0]), corner(triangle[1]), corner(triangle[2])]);
+                            fill([
+                                corner(triangle[0]),
+                                corner(triangle[1]),
+                                corner(triangle[2]),
+                            ]);
                         }
                     }
                     None => {
@@ -157,7 +166,9 @@ impl KartModel {
         };
         drawn(&self.body, &|p| p * self.body_scale);
         for axle in &self.axles {
-            drawn(&axle.surfaces, &|p| (axle.position + axle.rotation * p) * self.wheel_scale);
+            drawn(&axle.surfaces, &|p| {
+                (axle.position + axle.rotation * p) * self.wheel_scale
+            });
         }
         image::Pixels {
             width: n as u32,
@@ -277,9 +288,14 @@ impl<'a> Library<'a> {
         let plain = || {
             let look = build::LOOKS.iter().find(|look| name.ends_with(*look))?;
             let plain = format!("{}{}", name.strip_suffix(look)?, build::LOOKS[0]);
-            self.textures.get(self.materials.get(&plain)?.texture.as_ref()?)
+            self.textures
+                .get(self.materials.get(&plain)?.texture.as_ref()?)
         };
-        self.textures.get(name).or_else(plain).cloned().unwrap_or_default()
+        self.textures
+            .get(name)
+            .or_else(plain)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The picture a material is drawn with.
@@ -472,7 +488,11 @@ impl<'a> Library<'a> {
                     .map(|&i| Vec3::from(model.normals[i as usize]).normalize_or_zero())
                     .collect();
                 let own = |c: [u8; 4]| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.0;
-                (normals, own(info.map_or([255; 4], |m| m.ambient)), own(diffuse))
+                (
+                    normals,
+                    own(info.map_or([255; 4], |m| m.ambient)),
+                    own(diffuse),
+                )
             });
             surfaces.push(Surface {
                 mesh,
@@ -666,7 +686,11 @@ pub fn load_built(jam: &Jam, racer: &Racer, detailed: bool) -> Option<KartModel>
 
     // The expression is worn where the menus show the driver; a race has the plain face.
     let cosmetics = Cosmetics {
-        expression: if detailed { racer.cosmetics.expression } else { 0 },
+        expression: if detailed {
+            racer.cosmetics.expression
+        } else {
+            0
+        },
         ..racer.cosmetics
     };
     let (driver, driver_scale, figure) = built_figure(jam, cosmetics)?;
@@ -694,7 +718,11 @@ fn built_figure(
     let library = Library::new(jam, files.iter().map(String::as_str), &folders);
     let skeleton = parse_skeleton(build::skeleton(jam, &catalogue, cosmetics, false)?)?;
     let surfaces = posed(&figure, &library, &skeleton);
-    Some((surfaces, figure.scale, rigged(jam, &figure, &library, skeleton)))
+    Some((
+        surfaces,
+        figure.scale,
+        rigged(jam, &figure, &library, skeleton),
+    ))
 }
 
 /// The skeleton and the animation every driver of the game's own has.
@@ -729,7 +757,10 @@ fn rigged(
 /// selectors (`MenuRacerCarousel::RefreshItemModel` shows each part by itself).
 pub fn figure_part(jam: &Jam, cosmetics: Cosmetics, part: usize) -> Option<Vec<Surface>> {
     // A part by itself has the plain face.
-    let cosmetics = Cosmetics { expression: 0, ..cosmetics };
+    let cosmetics = Cosmetics {
+        expression: 0,
+        ..cosmetics
+    };
     let catalogue = build::Catalogue::open(jam)?;
     let mut figure = build::figure(jam, &catalogue, cosmetics, false)?;
     let name = |names: &[String], at: u8| names.get(at as usize).or(names.first()).cloned();
@@ -738,7 +769,11 @@ pub fn figure_part(jam: &Jam, cosmetics: Cosmetics, part: usize) -> Option<Vec<S
     let legs = name(&catalogue.legs, cosmetics.legs)?;
     let material = |wanted: &str| figure.materials.iter().position(|m| m == wanted);
     let head = material(&face).and_then(|face| {
-        figure.batches.iter().find(|b| b.material == face).and_then(|b| b.bone)
+        figure
+            .batches
+            .iter()
+            .find(|b| b.material == face)
+            .and_then(|b| b.bone)
     });
     let (face, torso, legs) = (material(&face), material(&torso), material(&legs));
     figure.batches.retain(|b| match part {
@@ -1621,7 +1656,11 @@ fn every_chassis_has_the_widths_of_its_skid_marks() {
         let chassis = chassis(&jam, &driver.chassis).expect("a chassis");
         let across = (chassis.wheels[0].y - chassis.wheels[1].y).abs();
         for wide in chassis.skid {
-            assert!(wide > 0.0 && wide < across, "{code}: {:?} of {across}", chassis.skid);
+            assert!(
+                wide > 0.0 && wide < across,
+                "{code}: {:?} of {across}",
+                chassis.skid
+            );
         }
     }
 }

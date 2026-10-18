@@ -5,8 +5,8 @@ mod beams;
 mod build;
 mod builder;
 mod camera;
-mod cheats;
 mod championship;
+mod cheats;
 mod collision;
 mod driver;
 mod events;
@@ -19,11 +19,11 @@ mod home;
 mod hud;
 mod input;
 mod item_models;
-mod lighting;
 mod items;
 mod kart;
 mod kart_effects;
 mod landmarks;
+mod lighting;
 mod loading;
 mod map;
 mod menu;
@@ -321,17 +321,22 @@ fn main() {
     // knocked out of a battle come back to it.
     (settings.teams, settings.returns) = (set("BRICK_TEAMS"), set("BRICK_RETURNS"));
     // `BRICK_SPEED=2` has the cars that many times as fast, or as near as there is.
-    if let Some(pace) = std::env::var("BRICK_SPEED").ok().and_then(|pace| pace.parse::<f32>().ok()) {
+    if let Some(pace) = std::env::var("BRICK_SPEED")
+        .ok()
+        .and_then(|pace| pace.parse::<f32>().ok())
+    {
         settings.speed = menu::SPEEDS
             .iter()
             .position(|speed| speed.1 >= pace)
             .unwrap_or(menu::SPEEDS.len() - 1);
     }
     if let Ok(colour) = std::env::var("BRICK_BRICKS") {
-        settings.bricks = ["normal", "red", "yellow", "blue", "green", "none", "random", "changing", "place"]
-            .iter()
-            .position(|&c| c == colour)
-            .unwrap_or(0);
+        settings.bricks = [
+            "normal", "red", "yellow", "blue", "green", "none", "random", "changing", "place",
+        ]
+        .iter()
+        .position(|&c| c == colour)
+        .unwrap_or(0);
     }
     // `BRICK_OPPONENTS=1`: how many of the computer's cars a demo races.
     if let Some(opponents) = std::env::var("BRICK_OPPONENTS")
@@ -534,7 +539,15 @@ fn main() {
                 events::track_events,
                 events::part_animations,
                 events::effects,
-                (beams::beams, beams::trails, hazards::hazards, hazards::hazard_looks, hazards::code_lights, sky::change).chain(),
+                (
+                    beams::beams,
+                    beams::trails,
+                    hazards::hazards,
+                    hazards::hazard_looks,
+                    hazards::code_lights,
+                    sky::change,
+                )
+                    .chain(),
                 (
                     item_models::dress_actions,
                     item_models::hook_puffs,
@@ -804,10 +817,32 @@ fn setup_brick_world(
 /// A key as `BRICK_KEYS` names it: a letter, a digit, `F5`, or its name.
 fn demo_key(name: &str) -> Option<KeyCode> {
     const LETTERS: [KeyCode; 26] = [
-        KeyCode::KeyA, KeyCode::KeyB, KeyCode::KeyC, KeyCode::KeyD, KeyCode::KeyE, KeyCode::KeyF, KeyCode::KeyG,
-        KeyCode::KeyH, KeyCode::KeyI, KeyCode::KeyJ, KeyCode::KeyK, KeyCode::KeyL, KeyCode::KeyM, KeyCode::KeyN,
-        KeyCode::KeyO, KeyCode::KeyP, KeyCode::KeyQ, KeyCode::KeyR, KeyCode::KeyS, KeyCode::KeyT, KeyCode::KeyU,
-        KeyCode::KeyV, KeyCode::KeyW, KeyCode::KeyX, KeyCode::KeyY, KeyCode::KeyZ,
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyC,
+        KeyCode::KeyD,
+        KeyCode::KeyE,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyI,
+        KeyCode::KeyJ,
+        KeyCode::KeyK,
+        KeyCode::KeyL,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyQ,
+        KeyCode::KeyR,
+        KeyCode::KeyS,
+        KeyCode::KeyT,
+        KeyCode::KeyU,
+        KeyCode::KeyV,
+        KeyCode::KeyW,
+        KeyCode::KeyX,
+        KeyCode::KeyY,
+        KeyCode::KeyZ,
     ];
     Some(match name {
         "Enter" => KeyCode::Enter,

@@ -178,7 +178,10 @@ pub fn colour<'de, D: Deserializer<'de>>(from: D) -> Result<Color, D::Error> {
             .map(|colour| colour.1)
             .ok_or_else(|| {
                 let known: Vec<&str> = COLOURS.iter().map(|colour| colour.0).collect();
-                D::Error::custom(format!("no colour is called {name}: there are {}", known.join(", ")))
+                D::Error::custom(format!(
+                    "no colour is called {name}: there are {}",
+                    known.join(", ")
+                ))
             }),
         Ok(Paint::Mixed([red, green, blue])) => Ok(Color::srgb(red, green, blue)),
         Err(_) => Err(D::Error::custom(
@@ -199,14 +202,19 @@ impl Map {
     /// otherwise, what is wrong with it.
     pub fn read(key: &str, text: &str) -> Result<Map, String> {
         if text.len() > LONGEST {
-            return Err(format!("it is {} bytes, and a map is {LONGEST} at the most", text.len()));
+            return Err(format!(
+                "it is {} bytes, and a map is {LONGEST} at the most",
+                text.len()
+            ));
         }
         let sheet: Sheet = toml::from_str(text).map_err(|error| error.to_string())?;
         let circuit = !sheet.corners.is_empty();
         if circuit == !sheet.outline.is_empty() {
-            return Err("a map has `corners`, which makes it a circuit, or an `outline`, \
+            return Err(
+                "a map has `corners`, which makes it a circuit, or an `outline`, \
                         which makes it an arena: one of them"
-                .into());
+                    .into(),
+            );
         }
         let floored = sheet.grid.is_some()
             || sheet.floor.is_some()
@@ -221,10 +229,18 @@ impl Map {
         let mut pads = (Vec::new(), Vec::new());
         for pad in &sheet.pads {
             match (circuit, pad.at, pad.place) {
-                (true, Some(at), None) => pads.0.push(Padded { at, right: pad.right }),
-                (false, None, Some(at)) => pads.1.push(crate::arena::Pad { at, heading: pad.heading }),
+                (true, Some(at), None) => pads.0.push(Padded {
+                    at,
+                    right: pad.right,
+                }),
+                (false, None, Some(at)) => pads.1.push(crate::arena::Pad {
+                    at,
+                    heading: pad.heading,
+                }),
                 (true, ..) => return Err("a circuit's pad is `at` so far round its lap".into()),
-                (false, ..) => return Err("an arena's pad is at a `place` on its floor, [x, z]".into()),
+                (false, ..) => {
+                    return Err("an arena's pad is at a `place` on its floor, [x, z]".into());
+                }
             }
         }
         let plan = match circuit {
@@ -235,24 +251,44 @@ impl Map {
                 ramps: sheet.ramps,
                 decks: sheet.decks,
                 line: sheet.line,
-                grid: sheet.grid.ok_or("an arena wants a `grid`: the six places its cars start")?,
+                grid: sheet
+                    .grid
+                    .ok_or("an arena wants a `grid`: the six places its cars start")?,
                 bricks: sheet.bricks,
                 rows: sheet.rows,
                 pads: pads.1,
-                floor: sheet.floor.map_or([GREY, DARK_GREY], |floor| floor.map(|tint| tint.0)),
+                floor: sheet
+                    .floor
+                    .map_or([GREY, DARK_GREY], |floor| floor.map(|tint| tint.0)),
             }),
         };
         // A road as wide as the game's all the way round says nothing of it.
-        if let Some(number) = sheet.corners.iter().position(|corner| !(4..=5).contains(&corner.len())) {
+        if let Some(number) = sheet
+            .corners
+            .iter()
+            .position(|corner| !(4..=5).contains(&corner.len()))
+        {
             return Err(format!(
                 "corner {} is [x, height, z, radius], and how wide the road is there if it says",
                 number + 1
             ));
         }
-        let widths: Vec<f32> = sheet.corners.iter().map(|corner| corner.get(4).copied().unwrap_or(WIDTH)).collect();
-        let widths = if widths.iter().all(|&width| width == WIDTH) { Vec::new() } else { widths };
+        let widths: Vec<f32> = sheet
+            .corners
+            .iter()
+            .map(|corner| corner.get(4).copied().unwrap_or(WIDTH))
+            .collect();
+        let widths = if widths.iter().all(|&width| width == WIDTH) {
+            Vec::new()
+        } else {
+            widths
+        };
         let road = Road {
-            corners: sheet.corners.iter().map(|corner| [corner[0], corner[1], corner[2], corner[3]]).collect(),
+            corners: sheet
+                .corners
+                .iter()
+                .map(|corner| [corner[0], corner[1], corner[2], corner[3]])
+                .collect(),
             widths,
             tunnels: sheet.tunnels,
             jumps: sheet.jumps,
@@ -262,7 +298,9 @@ impl Map {
             banks: sheet.banks,
         };
         if !circuit && road != Road::default() {
-            return Err("an arena has no road for tunnels, jumps, byways, infields or banks".into());
+            return Err(
+                "an arena has no road for tunnels, jumps, byways, infields or banks".into(),
+            );
         }
         let map = Map {
             key: key.to_string(),
@@ -307,10 +345,16 @@ impl Map {
     /// What is wrong with it, if anything is that would stop it being built.
     fn amiss(&self) -> Option<String> {
         if self.name.is_empty() || self.name.len() > lobby_api::MAX_NAME {
-            return Some(format!("its name is from 1 to {} letters long", lobby_api::MAX_NAME));
+            return Some(format!(
+                "its name is from 1 to {} letters long",
+                lobby_api::MAX_NAME
+            ));
         }
         if self.author.len() > lobby_api::MAX_NAME {
-            return Some(format!("its author is {} letters long at the most", lobby_api::MAX_NAME));
+            return Some(format!(
+                "its author is {} letters long at the most",
+                lobby_api::MAX_NAME
+            ));
         }
         let lap = match &self.plan {
             Some(plan) => {
@@ -325,16 +369,24 @@ impl Map {
             },
         };
         for (at, stood) in self.hazards.iter().enumerate() {
-            if self.hazards[..at].iter().any(|other| other.kind == stood.kind) {
+            if self.hazards[..at]
+                .iter()
+                .any(|other| other.kind == stood.kind)
+            {
                 let name = format!("{:?}", stood.kind).to_lowercase();
-                return Some(format!("it has more than one {name}, and there is only one"));
+                return Some(format!(
+                    "it has more than one {name}, and there is only one"
+                ));
             }
             if let Some(wrong) = stood.amiss(lap) {
                 return Some(wrong);
             }
         }
         let places = self.hazards.iter().filter_map(|stood| stood.place);
-        if places.chain(self.scenery.iter().map(|landmark| landmark.place)).any(|place| !near(&place)) {
+        if places
+            .chain(self.scenery.iter().map(|landmark| landmark.place))
+            .any(|place| !near(&place))
+        {
             return Some("something of it stands too far off".into());
         }
         (self.hazards.len() > MOST || self.scenery.len() > MOST).then(|| "it has too much".into())
@@ -345,9 +397,16 @@ impl Map {
         let road = &self.road;
         let corners = &road.corners;
         if corners.len() < CORNERS.0 || corners.len() > CORNERS.1 {
-            return Err(format!("a road has from {} to {} corners", CORNERS.0, CORNERS.1));
+            return Err(format!(
+                "a road has from {} to {} corners",
+                CORNERS.0, CORNERS.1
+            ));
         }
-        if let Some(number) = road.widths.iter().position(|width| !(WIDTHS.0..=WIDTHS.1).contains(width)) {
+        if let Some(number) = road
+            .widths
+            .iter()
+            .position(|width| !(WIDTHS.0..=WIDTHS.1).contains(width))
+        {
             return Err(format!(
                 "the road is {} wide at corner {}, and a road is from {} to {} wide",
                 road.widths[number],
@@ -369,15 +428,22 @@ impl Map {
         for (i, corner) in corners.iter().enumerate() {
             let [x, height, z, radius] = *corner;
             let number = i + 1;
-            if !near(&[x, z]) || !(0.0..=HIGHEST).contains(&height) || !(0.0..=REACH).contains(&radius) {
+            if !near(&[x, z])
+                || !(0.0..=HIGHEST).contains(&height)
+                || !(0.0..=REACH).contains(&radius)
+            {
                 return Err(format!("corner {number} is out of range: {corner:?}"));
             }
             let apart = at(i).distance(at(i + 1));
             if apart < 1.0 {
-                return Err(format!("corner {number} and the next are in the same place"));
+                return Err(format!(
+                    "corner {number} and the next are in the same place"
+                ));
             }
             if at(i + m - 1).distance(at(i + 1)) < 1.0 && radius > 0.0 {
-                return Err(format!("corner {number} is rounded, and turns straight back"));
+                return Err(format!(
+                    "corner {number} is rounded, and turns straight back"
+                ));
             }
             if reach(i) + reach(i + 1) > apart + 0.01 {
                 return Err(format!(
@@ -399,7 +465,10 @@ impl Map {
         let line = Track::line(self, false);
         let (lap, n) = (line.length, line.n());
         if !(LAP.0..=LAP.1).contains(&lap) {
-            return Err(format!("its lap is {lap} long, and a lap is from {} to {}", LAP.0, LAP.1));
+            return Err(format!(
+                "its lap is {lap} long, and a lap is from {} to {}",
+                LAP.0, LAP.1
+            ));
         }
         // What is so far round the lap is on it, and begins before it ends.
         let on = |s: f32| (0.0..lap).contains(&s);
@@ -407,14 +476,23 @@ impl Map {
         let stretch = |what: &str, from: f32, to: f32| {
             (on(from) && on(to) && sample(from) + 2 <= sample(to))
                 .then_some(())
-                .ok_or(format!("the {what} from {from} to {to} is not a stretch of a lap {lap} long"))
+                .ok_or(format!(
+                    "the {what} from {from} to {to} is not a stretch of a lap {lap} long"
+                ))
         };
         for byway in &road.byways {
             stretch("byway", byway.from, byway.to)?;
             let straight = line.pts[sample(byway.from)].distance(line.pts[sample(byway.to)]);
             let sized = byway.road > 0.5 && byway.wall >= byway.road && byway.wall < 40.0;
-            if straight < 20.0 || !sized || !(0.0..20.0).contains(&byway.bumps) || !(0.0..=1.0).contains(&byway.taken) {
-                return Err(format!("the byway from {} is too short, or its sizes are out of range", byway.from));
+            if straight < 20.0
+                || !sized
+                || !(0.0..20.0).contains(&byway.bumps)
+                || !(0.0..=1.0).contains(&byway.taken)
+            {
+                return Err(format!(
+                    "the byway from {} is too short, or its sizes are out of range",
+                    byway.from
+                ));
             }
         }
         for infield in &road.infields {
@@ -426,12 +504,19 @@ impl Map {
                 return Err(format!("the bank from {} is too steep", bank.from));
             }
         }
-        if let Some(pad) = road.pads.iter().find(|pad| !on(pad.at) || pad.right.abs() > line.tarmac_at(pad.at)) {
+        if let Some(pad) = road
+            .pads
+            .iter()
+            .find(|pad| !on(pad.at) || pad.right.abs() > line.tarmac_at(pad.at))
+        {
             return Err(format!("the pad at {} is not on the road", pad.at));
         }
         let nearest = |[x, z]: [f32; 2]| line.nearest(Vec3::new(x, 0.0, z));
         for tunnel in &road.tunnels {
-            if !near(&tunnel.from) || !near(&tunnel.to) || nearest(tunnel.from) >= nearest(tunnel.to) {
+            if !near(&tunnel.from)
+                || !near(&tunnel.to)
+                || nearest(tunnel.from) >= nearest(tunnel.to)
+            {
                 return Err(format!(
                     "the tunnel from {:?} ends before it begins, round the lap",
                     tunnel.from
@@ -441,7 +526,11 @@ impl Map {
         // A jump's ramp and landing are cut into the road either side of its lip.
         let room = (crate::track::JUMP_LENGTH / line.spacing) as usize + 8;
         for jump in &road.jumps {
-            let lip = if near(&jump.lip) { nearest(jump.lip) } else { 0 };
+            let lip = if near(&jump.lip) {
+                nearest(jump.lip)
+            } else {
+                0
+            };
             if lip < room || lip + room >= n {
                 return Err(format!("the jump at {:?} is too near the start", jump.lip));
             }
@@ -490,16 +579,31 @@ fn floor_amiss(plan: &Plan) -> Option<String> {
         .blocks
         .iter()
         .map(|block| (&block.at, &block.half, block.height))
-        .chain(plan.ramps.iter().map(|ramp| (&ramp.at, &ramp.half, ramp.height)))
-        .chain(plan.decks.iter().map(|deck| (&deck.at, &deck.half, deck.height)));
+        .chain(
+            plan.ramps
+                .iter()
+                .map(|ramp| (&ramp.at, &ramp.half, ramp.height)),
+        )
+        .chain(
+            plan.decks
+                .iter()
+                .map(|deck| (&deck.at, &deck.half, deck.height)),
+        );
     for (at, half, height) in stands {
         if !near(at) || !sized(half, height) {
             return Some(format!("what stands at {at:?} is out of range"));
         }
     }
-    let line: Vec<Vec3> = plan.line.iter().map(|&[x, y, z]| Vec3::new(x, y, z)).collect();
+    let line: Vec<Vec3> = plan
+        .line
+        .iter()
+        .map(|&[x, y, z]| Vec3::new(x, y, z))
+        .collect();
     let apart = |i: usize| line[i].distance(line[(i + 1) % line.len()]);
-    let ranged = plan.line.iter().all(|&[x, y, z]| near(&[x, z]) && (0.0..=HIGHEST).contains(&y));
+    let ranged = plan
+        .line
+        .iter()
+        .all(|&[x, y, z]| near(&[x, z]) && (0.0..=HIGHEST).contains(&y));
     if line.len() < 4 || !ranged || (0..line.len()).any(|i| apart(i) < 1.0) {
         return Some("its `line` is four places or more, each apart from the next".into());
     }
@@ -539,7 +643,10 @@ pub fn arenas() -> impl Iterator<Item = &'static Map> {
 /// One of them by its key.
 #[cfg(test)]
 pub fn named(key: &str) -> &'static Map {
-    stock().iter().find(|map| map.key == key).expect("a map of the game's own")
+    stock()
+        .iter()
+        .find(|map| map.key == key)
+        .expect("a map of the game's own")
 }
 
 /// The folder a game's maps are in: `$BRICK_MAPS`, or `maps` in `home`'s folder.
@@ -566,7 +673,10 @@ pub fn kept(demo: bool, keeping: bool) -> Vec<Map> {
         .flatten()
         .flatten()
         .map(|entry| entry.path())
-        .filter(|file| file.extension().is_some_and(|extension| extension == EXTENSION))
+        .filter(|file| {
+            file.extension()
+                .is_some_and(|extension| extension == EXTENSION)
+        })
         .collect();
     files.sort();
     for file in files {
@@ -601,14 +711,19 @@ static FOLDER: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 /// Keeps a map made in the game (`crate::builder`) as a file of the folder: the
 /// file, or why there is none.
 pub fn save(key: &str, text: &str) -> Result<PathBuf, String> {
-    let folder = FOLDER.lock().unwrap().clone().ok_or("a demo keeps no maps unless BRICK_MAPS names a folder")?;
+    let folder = FOLDER
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("a demo keeps no maps unless BRICK_MAPS names a folder")?;
     save_in(&folder, key, text)
 }
 
 pub fn save_in(folder: &Path, key: &str, text: &str) -> Result<PathBuf, String> {
     Map::tried(key, text)?;
     let file = folder.join(format!("{}.{EXTENSION}", key.to_ascii_lowercase()));
-    crate::home::write(&file, text).map_err(|error| format!("could not write {}: {error}", file.display()))?;
+    crate::home::write(&file, text)
+        .map_err(|error| format!("could not write {}: {error}", file.display()))?;
     Ok(file)
 }
 
@@ -624,8 +739,13 @@ pub fn keyed(key: &str) -> bool {
 
 /// What a map's file makes it known by: its name in capitals.
 fn key_of(file: &Path) -> Result<String, String> {
-    let stem = file.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
-    let plain = stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let stem = file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    let plain = stem
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     if stem.is_empty() || stem.len() > LONGEST_KEY || !plain {
         return Err(format!(
             "a map's file is named in up to {LONGEST_KEY} letters, digits, - and _"
@@ -639,7 +759,9 @@ impl Map {
     /// is still a map.
     pub fn reread(&self) -> Option<Map> {
         let file = self.file.as_ref()?;
-        let text = std::fs::read_to_string(file).ok().filter(|text| *text != self.text)?;
+        let text = std::fs::read_to_string(file)
+            .ok()
+            .filter(|text| *text != self.text)?;
         match Map::tried(&self.key, &text) {
             Ok(map) => Some(Map {
                 file: self.file.clone(),
@@ -683,11 +805,16 @@ fn stock_up(folder: &Path, stock: &[(&str, &str)]) {
         } else if ours {
             match crate::home::write(&file, text) {
                 Ok(()) => drop(written.insert(key.to_string(), print(text))),
-                Err(error) => crate::home::say(&format!("could not write {}: {error}", file.display())),
+                Err(error) => {
+                    crate::home::say(&format!("could not write {}: {error}", file.display()))
+                }
             }
         }
     }
-    let mut lines: Vec<String> = written.iter().map(|(key, print)| format!("{key} {print}\n")).collect();
+    let mut lines: Vec<String> = written
+        .iter()
+        .map(|(key, print)| format!("{key} {print}\n"))
+        .collect();
     lines.sort();
     let now = lines.concat();
     if now != was
@@ -706,7 +833,16 @@ mod tests {
         let keys: Vec<&str> = stock().iter().map(|map| map.key.as_str()).collect();
         assert_eq!(
             keys,
-            ["BRICK", "FIGURE8", "GAUNTLET", "HELTER", "YARD", "CROSSROADS", "RING", "TOWN"]
+            [
+                "BRICK",
+                "FIGURE8",
+                "GAUNTLET",
+                "HELTER",
+                "YARD",
+                "CROSSROADS",
+                "RING",
+                "TOWN"
+            ]
         );
         assert_eq!(circuits().count(), 4);
         assert!(arenas().all(|map| map.road == Road::default() && map.hazards.len() <= 2));
@@ -740,9 +876,17 @@ mod tests {
              scenery = [{{ kind = \"pond\", place = [0, 40], radius = 12 }}]\n"
         );
         let map = Map::tried("OVAL", &more).unwrap();
-        assert_eq!((map.road.pads.len(), map.hazards.len(), map.scenery.len()), (1, 2, 1));
+        assert_eq!(
+            (map.road.pads.len(), map.hazards.len(), map.scenery.len()),
+            (1, 2, 1)
+        );
         assert!(map.look != Look::default());
-        assert!(Track::made(&map, false).bank.iter().any(|&bank| bank != 0.0));
+        assert!(
+            Track::made(&map, false)
+                .bank
+                .iter()
+                .any(|&bank| bank != 0.0)
+        );
     }
 
     #[test]
@@ -755,10 +899,18 @@ mod tests {
         assert!(wrong("name = \"Nothing\"\n").contains("corners"));
         assert!(with("outline = [[0, 0], [1, 1], [2, 0]]\n").contains("one of them"));
         // A road that can't be laid.
-        let tight = OVAL.replace("[100, 0, 0, 30], [100, 0, 80, 30]", "[100, 0, 0, 50], [100, 0, 80, 50]");
+        let tight = OVAL.replace(
+            "[100, 0, 0, 30], [100, 0, 80, 30]",
+            "[100, 0, 0, 50], [100, 0, 80, 50]",
+        );
         assert!(wrong(&tight).contains("corner 2"));
-        assert!(wrong("name = \"Dot\"\ncorners = [[0, 0, 0, 0], [20, 0, 0, 5], [20, 0, 20, 5]]\n").contains("lap"));
-        assert!(wrong(&OVAL.replace("[100, 0, 80, 30]", "[100, 0, 0.5, 30]")).contains("same place"));
+        assert!(
+            wrong("name = \"Dot\"\ncorners = [[0, 0, 0, 0], [20, 0, 0, 5], [20, 0, 20, 5]]\n")
+                .contains("lap")
+        );
+        assert!(
+            wrong(&OVAL.replace("[100, 0, 80, 30]", "[100, 0, 0.5, 30]")).contains("same place")
+        );
         // Things that aren't on it, or that there is one of.
         assert!(with("pads = [{ at = 5000 }]\n").contains("pad"));
         assert!(with("banks = [{ from = 130, to = 90, tilt = 0.1 }]\n").contains("bank"));
@@ -767,7 +919,10 @@ mod tests {
         assert!(with("hazards = [{ kind = \"ghost\", at = 9000 }]\n").contains("ghost"));
         assert!(with("hazards = [{ kind = \"ghost\" }]\n").contains("place"));
         assert!(with("hazards = [{ kind = \"curse\", at = 90 }]\n").contains("drops"));
-        assert!(with("hazards = [{ kind = \"ark\", at = 9 }, { kind = \"ark\", at = 99 }]\n").contains("one ark"));
+        assert!(
+            with("hazards = [{ kind = \"ark\", at = 9 }, { kind = \"ark\", at = 99 }]\n")
+                .contains("one ark")
+        );
         assert!(with("hazards = [{ kind = \"wizard\", at = 9 }]\n").contains("wizard"));
         assert!(with("walls = { wall = \"puce\" }\n").contains("puce"));
         // An arena wants a floor that goes round its middle, and its six places.
@@ -786,23 +941,42 @@ mod tests {
         let pen = Map::tried("PEN", &format!("{floor}{faced}{more}")).unwrap();
         let track = Track::made(&pen, false);
         let laid = crate::items::laid(&track);
-        let brick = |x: f32| laid.iter().find(|brick| brick.1.x == x).expect("a brick there");
+        let brick = |x: f32| {
+            laid.iter()
+                .find(|brick| brick.1.x == x)
+                .expect("a brick there")
+        };
         assert_eq!(laid.len(), 3);
-        assert_eq!((brick(10.0).0, brick(0.0).0), (Some(crate::items::Power::Red), None));
+        assert_eq!(
+            (brick(10.0).0, brick(0.0).0),
+            (Some(crate::items::Power::Red), None)
+        );
         assert!(brick(20.0).0 == Some(crate::items::Power::Red) && brick(20.0).1.y < 1.0);
-        assert_eq!(track.course.grid[0], (Vec3::new(40.0, 0.0, 0.0), Vec3::NEG_Z));
+        assert_eq!(
+            track.course.grid[0],
+            (Vec3::new(40.0, 0.0, 0.0), Vec3::NEG_Z)
+        );
         assert_eq!(track.course.grid[1].1, Vec3::X);
         let plan = track.arena.as_ref().unwrap();
-        assert!(plan.padded(Vec3::new(-20.0, 0.1, 2.0)) && !plan.padded(Vec3::new(-20.0, 0.1, 9.0)));
+        assert!(
+            plan.padded(Vec3::new(-20.0, 0.1, 2.0)) && !plan.padded(Vec3::new(-20.0, 0.1, 9.0))
+        );
         // Without `rows` there are rows across the line, as there always were.
         let rows = Map::tried("PEN", &format!("{floor}{grid}")).unwrap();
         assert!(crate::items::laid(&Track::made(&rows, false)).len() > 20);
-        assert!(wrong(&format!("{floor}{grid}bricks = [{{ at = [0, 0], colour = \"pink\" }}]\n")).contains("white"));
+        assert!(
+            wrong(&format!(
+                "{floor}{grid}bricks = [{{ at = [0, 0], colour = \"pink\" }}]\n"
+            ))
+            .contains("white")
+        );
         assert!(wrong(&format!("{floor}{grid}bricks = [[0]]\n")).contains("brick"));
         assert!(wrong(&format!("{floor}{}", grid.replace("[40, 0]", "[40]"))).contains("grid"));
         assert!(with("pads = [{ place = [0, 0] }]\n").contains("circuit"));
         assert!(with("rows = 3\n").contains("circuit"));
-        assert!(wrong(&format!("{floor}{grid}").replace("[60, 60]", "[-90, -70]")).contains("outline"));
+        assert!(
+            wrong(&format!("{floor}{grid}").replace("[60, 60]", "[-90, -70]")).contains("outline")
+        );
         assert!(wrong(&format!("{floor}{grid}pads = [{{ at = 3 }}]\n")).contains("arena"));
         let stood = "hazards = [{ kind = \"ghost\", at = 30 }]\n";
         assert!(wrong(&format!("{floor}{grid}{stood}")).contains("arena"));
@@ -844,7 +1018,10 @@ mod tests {
 
     #[test]
     fn a_map_is_known_by_its_file_s_name() {
-        assert_eq!(key_of(Path::new("/maps/my-oval_2.toml")).as_deref(), Ok("MY-OVAL_2"));
+        assert_eq!(
+            key_of(Path::new("/maps/my-oval_2.toml")).as_deref(),
+            Ok("MY-OVAL_2")
+        );
         assert!(key_of(Path::new("/maps/my oval.toml")).is_err());
         assert!(key_of(Path::new("/maps/.toml")).is_err());
     }

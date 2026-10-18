@@ -72,7 +72,8 @@ fn shifted(before: &Ring, after: &Ring) -> Option<i32> {
     [1, -1].into_iter().find(|by| {
         (0..SLOTS.len() as i32).all(|slot| {
             let from = slot + by;
-            !(0..SLOTS.len() as i32).contains(&from) || after[slot as usize] == before[from as usize]
+            !(0..SLOTS.len() as i32).contains(&from)
+                || after[slot as usize] == before[from as usize]
         })
     })
 }
@@ -183,7 +184,8 @@ pub fn keep(
         return;
     };
     let files = Palette::files(true);
-    let surfaces = crate::world::Library::new(art.jam(), files.iter().map(String::as_str), &[leb::DIR]);
+    let surfaces =
+        crate::world::Library::new(art.jam(), files.iter().map(String::as_str), &[leb::DIR]);
     if bricks.camera.is_none() {
         let size = (SIZE * DETAIL).as_uvec2();
         let picture = images.add(Image::new_target_texture(
@@ -222,7 +224,10 @@ pub fn keep(
     // `ScrollNext`, `ScrollPrevious` and `StartScroll`: the row gone one along has
     // each brick slide from where it was to the next slot; anything else is at once
     // as it will be (`SnapToSelection`).
-    let moved = bricks.shown.as_ref().and_then(|before| shifted(before, &wanted));
+    let moved = bricks
+        .shown
+        .as_ref()
+        .and_then(|before| shifted(before, &wanted));
     let was = bricks.berths.unwrap_or(std::array::from_fn(berth));
     bricks.slide = if moved.is_some() { SLIDE } else { 0.0 };
     for (slot, choice) in wanted.iter().enumerate() {
@@ -291,7 +296,11 @@ pub fn spin(
     let rotation = basis() * turned(angle);
     // At an even speed, to be in its slot as the slide's time is up.
     let step = (time.delta_secs() * 1000.0).min(bricks.slide);
-    let share = if bricks.slide > 0.0 { step / bricks.slide } else { 1.0 };
+    let share = if bricks.slide > 0.0 {
+        step / bricks.slide
+    } else {
+        1.0
+    };
     bricks.slide -= step;
     let mut berths: [(Vec2, f32); 7] = std::array::from_fn(berth);
     for (mut slot, mut transform) in &mut slots {
@@ -335,7 +344,10 @@ mod tests {
     #[test]
     fn a_brick_is_slanted_toward_the_camera() {
         let up = turned(0.0) * Vec3::Z;
-        assert!((up.x - 0.643).abs() < 0.01 && (up.z - 0.766).abs() < 0.01, "{up}");
+        assert!(
+            (up.x - 0.643).abs() < 0.01 && (up.z - 0.766).abs() < 0.01,
+            "{up}"
+        );
         // Turning it leaves its way up as it was.
         assert!((turned(2.0) * Vec3::Z - up).length() < 1e-4);
     }

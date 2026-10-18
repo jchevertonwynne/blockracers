@@ -35,7 +35,10 @@ fn flat(corner: &[f32; 4]) -> Vec2 {
 /// How far a corner turns, to the left or the right, between the way into it and
 /// the way out.
 fn turn(before: Vec2, at: Vec2, after: Vec2) -> f32 {
-    let (into, out) = ((at - before).normalize_or_zero(), (after - at).normalize_or_zero());
+    let (into, out) = (
+        (at - before).normalize_or_zero(),
+        (after - at).normalize_or_zero(),
+    );
     into.perp_dot(out).atan2(into.dot(out))
 }
 
@@ -72,12 +75,20 @@ pub fn fitted(corners: &[[f32; 4]], wanted: &[f32], kept: (f32, f32)) -> Vec<f32
         return wanted.to_vec();
     }
     let at = |i: usize| flat(&corners[i % n]);
-    let reaches: Vec<f32> = (0..n).map(|i| reach(at(i + n - 1), at(i), at(i + 1))).collect();
+    let reaches: Vec<f32> = (0..n)
+        .map(|i| reach(at(i + n - 1), at(i), at(i + 1)))
+        .collect();
     // What each corner may have of the straight after it, and the next of the same.
     let rooms: Vec<(f32, f32)> = (0..n)
         .map(|i| {
             let next = (i + 1) % n;
-            let kept = if next == 0 { kept.0 } else if i == 0 { kept.1 } else { 0.0 };
+            let kept = if next == 0 {
+                kept.0
+            } else if i == 0 {
+                kept.1
+            } else {
+                0.0
+            };
             let room = (at(i).distance(at(next)) - kept).max(0.0);
             shared(wanted[i] * reaches[i], wanted[next] * reaches[next], room)
         })
@@ -91,7 +102,11 @@ pub fn fitted(corners: &[[f32; 4]], wanted: &[f32], kept: (f32, f32)) -> Vec<f32
             // that have all the room between them have exactly that.
             let most = (rooms[i].0.min(rooms[(i + n - 1) % n].1) + 0.002) / reaches[i];
             let radius = (most.min(wanted[i]) * 100.0).floor() / 100.0;
-            if reaches[i] > SHARPEST { 0.0 } else { radius.max(0.0) }
+            if reaches[i] > SHARPEST {
+                0.0
+            } else {
+                radius.max(0.0)
+            }
         })
         .collect()
 }
@@ -111,7 +126,10 @@ pub fn tight(corners: &[[f32; 4]], i: usize, tightest: f32) -> bool {
 /// evenly from one height to the next.
 #[cfg(test)]
 pub fn rounded(path: &[[f32; 4]], closed: bool) -> Vec<Vec3> {
-    rounded_wide(path, &[], closed).into_iter().map(|(at, _)| at).collect()
+    rounded_wide(path, &[], closed)
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// The same, with how far the road's barriers are from its middle at each place:
@@ -122,7 +140,11 @@ pub fn rounded_wide(path: &[[f32; 4]], widths: &[f32], closed: bool) -> Vec<(Vec
     let n = path.len();
     let half = |i: usize| widths.get(i).copied().unwrap_or(crate::track::WIDTH) / 2.0;
     if n < 2 || (closed && n < 3) {
-        return path.iter().enumerate().map(|(i, corner)| (Vec3::new(corner[0], corner[1], corner[2]), half(i))).collect();
+        return path
+            .iter()
+            .enumerate()
+            .map(|(i, corner)| (Vec3::new(corner[0], corner[1], corner[2]), half(i)))
+            .collect();
     }
     let at = |i: usize| flat(&path[i % n]);
     // Where each corner's arc begins and ends, and how far round it turns: a
@@ -138,7 +160,10 @@ pub fn rounded_wide(path: &[[f32; 4]], widths: &[f32], closed: bool) -> Vec<(Vec
                 return (at(i), at(i), 0.0);
             }
             let reach = radius * (turn.abs() / 2.0).tan();
-            let (into, out) = ((at(i) - before).normalize_or_zero(), (after - at(i)).normalize_or_zero());
+            let (into, out) = (
+                (at(i) - before).normalize_or_zero(),
+                (after - at(i)).normalize_or_zero(),
+            );
             (at(i) - into * reach, at(i) + out * reach, turn)
         })
         .collect();
@@ -170,7 +195,11 @@ pub fn rounded_wide(path: &[[f32; 4]], widths: &[f32], closed: bool) -> Vec<(Vec
             let from = (start - centre).to_angle();
             let steps = ((turn.abs() * radius / STEP) as usize).max(2);
             for k in 0..=steps {
-                push(&mut line, &mut along, centre + Vec2::from_angle(from + turn * k as f32 / steps as f32) * radius);
+                push(
+                    &mut line,
+                    &mut along,
+                    centre + Vec2::from_angle(from + turn * k as f32 / steps as f32) * radius,
+                );
                 if k == steps / 2 {
                     middles.push(along[along.len() - 1]);
                 }
@@ -182,7 +211,11 @@ pub fn rounded_wide(path: &[[f32; 4]], widths: &[f32], closed: bool) -> Vec<(Vec
         let next = arcs[(i + 1) % n].0;
         let steps = ((end.distance(next) / STEP) as usize).max(1);
         for k in 1..=steps {
-            push(&mut line, &mut along, end.lerp(next, k as f32 / steps as f32));
+            push(
+                &mut line,
+                &mut along,
+                end.lerp(next, k as f32 / steps as f32),
+            );
         }
     }
     // A loop comes back to the middle of its first corner.
@@ -228,7 +261,12 @@ pub struct Stroke {
 impl Stroke {
     /// One begun from where the road ends.
     pub fn begun(from: Vec2) -> Stroke {
-        Stroke { origin: from, from, run: Vec::new(), made: Vec::new() }
+        Stroke {
+            origin: from,
+            from,
+            run: Vec::new(),
+            made: Vec::new(),
+        }
     }
 
     /// The pointer has come to `at`. That makes a corner when the way it has
@@ -251,7 +289,12 @@ impl Stroke {
             let along = ((*p - self.from).dot(straight) / (length * length)).clamp(0.0, 1.0);
             p.distance(self.from + straight * along)
         };
-        let furthest = self.run.iter().map(off).enumerate().max_by(|a, b| a.1.total_cmp(&b.1));
+        let furthest = self
+            .run
+            .iter()
+            .map(off)
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(&b.1));
         let Some((furthest, bend)) = furthest else {
             return false;
         };
@@ -269,11 +312,16 @@ impl Stroke {
     /// since the last corner: the radius of the bend through that place and the
     /// places a little way along the line either side of it.
     fn round(&self, place: usize) -> f32 {
-        let line: Vec<Vec2> = std::iter::once(self.from).chain(self.run.iter().copied()).collect();
+        let line: Vec<Vec2> = std::iter::once(self.from)
+            .chain(self.run.iter().copied())
+            .collect();
         let here = line[place + 1];
         let far = |p: &&Vec2| p.distance(here) >= ROUND;
         let before = line[..=place].iter().rev().find(far).unwrap_or(&line[0]);
-        let after = line[place + 2..].iter().find(far).unwrap_or(&line[line.len() - 1]);
+        let after = line[place + 2..]
+            .iter()
+            .find(far)
+            .unwrap_or(&line[line.len() - 1]);
         let turn = turn(*before, here, *after).abs();
         let span = (before.distance(here) + here.distance(*after)) / 2.0;
         if turn < 0.05 {
@@ -288,9 +336,18 @@ impl Stroke {
     /// each is put outside the line by as much as the road will come inside it,
     /// or by `slack` at the most, for the road to come round as the line did.
     /// `beyond` is where the road goes on to after the last of them, if anywhere.
-    pub fn corners(&self, end: Option<Vec2>, beyond: Option<Vec2>, slack: f32, least: f32) -> Vec<(Vec2, f32)> {
+    pub fn corners(
+        &self,
+        end: Option<Vec2>,
+        beyond: Option<Vec2>,
+        slack: f32,
+        least: f32,
+    ) -> Vec<(Vec2, f32)> {
         let mut places = self.made.clone();
-        places.extend(end.filter(|end| end.distance(self.from) >= least * 0.4).map(|end| (end, ROUNDED)));
+        places.extend(
+            end.filter(|end| end.distance(self.from) >= least * 0.4)
+                .map(|end| (end, ROUNDED)),
+        );
         let count = places.len();
         (0..count)
             .map(|i| {
@@ -299,12 +356,16 @@ impl Stroke {
                 let Some(after) = places.get(i + 1).map(|next| next.0).or(beyond) else {
                     return (here, round);
                 };
-                let (into, out) = ((here - before).normalize_or_zero(), (after - here).normalize_or_zero());
+                let (into, out) = (
+                    (here - before).normalize_or_zero(),
+                    (after - here).normalize_or_zero(),
+                );
                 let turn = turn(before, here, after).abs();
                 // As the corners of a shape drawn round a circle are outside
                 // those of the same shape drawn in it.
                 let leg = before.distance(here).min(here.distance(after));
-                let out_by = (leg * (turn / 4.0).tan() / (2.0 * (turn / 2.0).cos().max(0.2))).min(slack);
+                let out_by =
+                    (leg * (turn / 4.0).tan() / (2.0 * (turn / 2.0).cos().max(0.2))).min(slack);
                 (here + (into - out).normalize_or_zero() * out_by, round)
             })
             .collect()
@@ -333,7 +394,9 @@ mod tests {
         }
         let corners = stroke.corners(places.last().copied(), None, 5.0, 20.0);
         let from = std::iter::once((places[0], 0.0));
-        from.chain(corners).map(|(at, round)| [at.x, 0.0, at.y, round]).collect()
+        from.chain(corners)
+            .map(|(at, round)| [at.x, 0.0, at.y, round])
+            .collect()
     }
 
     /// Rounds corners to what they want or what there is room for.
@@ -347,7 +410,9 @@ mod tests {
 
     #[test]
     fn a_straight_line_drawn_with_an_unsteady_hand_is_one_straight() {
-        let places: Vec<Vec2> = (0..=200).map(|k| Vec2::new(k as f32, (k as f32 * 0.7).sin() * 2.0)).collect();
+        let places: Vec<Vec2> = (0..=200)
+            .map(|k| Vec2::new(k as f32, (k as f32 * 0.7).sin() * 2.0))
+            .collect();
         let corners = stroked(&places);
         assert_eq!(corners.len(), 2, "{corners:?}");
     }
@@ -361,7 +426,10 @@ mod tests {
         assert_eq!(corners.len(), 3, "{corners:?}");
         // The corner is outside where it was drawn, and as sharp as a car can
         // be slid round, the line having been drawn sharper.
-        assert!(flat(&corners[1]).distance(Vec2::new(103.5, -3.5)) < 2.0, "{corners:?}");
+        assert!(
+            flat(&corners[1]).distance(Vec2::new(103.5, -3.5)) < 2.0,
+            "{corners:?}"
+        );
         assert_eq!(corners[1][3], ROUNDS.0);
         fit(&mut corners);
         let road = rounded(&corners, false);
@@ -380,31 +448,53 @@ mod tests {
             // Each with a straight into it and a straight out of it, as a bend
             // in a road has.
             let into = (0..40).map(|k| Vec2::new(radius, k as f32 - 40.0));
-            let round = (0..=270).map(|degree| Vec2::from_angle(degree as f32 * TAU / 360.0) * radius);
+            let round =
+                (0..=270).map(|degree| Vec2::from_angle(degree as f32 * TAU / 360.0) * radius);
             let out = (1..=40).map(|k| Vec2::new(k as f32, -radius));
             let places: Vec<Vec2> = into.chain(round).chain(out).collect();
             let mut corners = stroked(&places);
-            assert!((4..=most).contains(&corners.len()), "{radius}: {}", corners.len());
+            assert!(
+                (4..=most).contains(&corners.len()),
+                "{radius}: {}",
+                corners.len()
+            );
             fit(&mut corners);
             let road = rounded(&corners, false);
             let furthest = places.iter().map(|&at| off(&road, at)).fold(0.0, f32::max);
-            assert!(furthest < near, "{radius}: the road is {furthest} from what was drawn");
+            assert!(
+                furthest < near,
+                "{radius}: the road is {furthest} from what was drawn"
+            );
             // And is no tighter anywhere than the line was, or than a car can
             // be slid round.
-            let tightest = corners[1..corners.len() - 1].iter().map(|corner| corner[3]).fold(f32::MAX, f32::min);
-            assert!(tightest >= radius.min(ROUNDS.1) * 0.75, "{radius}: rounded to {tightest}");
+            let tightest = corners[1..corners.len() - 1]
+                .iter()
+                .map(|corner| corner[3])
+                .fold(f32::MAX, f32::min);
+            assert!(
+                tightest >= radius.min(ROUNDS.1) * 0.75,
+                "{radius}: rounded to {tightest}"
+            );
         }
     }
 
     #[test]
     fn corners_are_rounded_to_what_there_is_room_for() {
         // Two square corners forty apart, each wanting thirty: twenty each.
-        let corners = [[0.0, 0.0, 0.0, 0.0], [100.0, 0.0, 0.0, 0.0], [100.0, 0.0, 40.0, 0.0], [0.0, 0.0, 40.0, 0.0]];
+        let corners = [
+            [0.0, 0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0, 0.0],
+            [100.0, 0.0, 40.0, 0.0],
+            [0.0, 0.0, 40.0, 0.0],
+        ];
         let radii = fitted(&corners, &[30.0; 4], (0.0, 0.0));
         assert_eq!(radii, [20.0; 4]);
         // One that wants little leaves the rest to the next.
         let radii = fitted(&corners, &[30.0, 5.0, 60.0, 30.0], (0.0, 0.0));
-        assert!(radii[1] == 5.0 && radii[2] == 35.0 && radii[0] == 20.0 && radii[3] == 20.0, "{radii:?}");
+        assert!(
+            radii[1] == 5.0 && radii[2] == 35.0 && radii[0] == 20.0 && radii[3] == 20.0,
+            "{radii:?}"
+        );
         // With room, each has what it wants; and what is kept by the first is not had.
         let wide = corners.map(|[x, y, z, r]| [x * 3.0, y, z * 3.0, r]);
         assert_eq!(fitted(&wide, &[30.0; 4], (0.0, 0.0)), [30.0; 4]);
@@ -412,24 +502,43 @@ mod tests {
         assert!(radii[3] == 20.0 && radii[1] == 10.0, "{radii:?}");
         // A corner on a straight is rounded to nothing that matters, and one
         // that turns straight back to nothing.
-        let straight = [[0.0, 0.0, 0.0, 0.0], [50.0, 0.0, 0.0, 0.0], [100.0, 0.0, 0.0, 0.0], [50.0, 0.0, 80.0, 0.0]];
+        let straight = [
+            [0.0, 0.0, 0.0, 0.0],
+            [50.0, 0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0, 0.0],
+            [50.0, 0.0, 80.0, 0.0],
+        ];
         assert_eq!(fitted(&straight, &[30.0; 4], (0.0, 0.0))[1], 30.0);
-        let back = [[0.0, 0.0, 0.0, 0.0], [100.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.1, 0.0], [50.0, 0.0, 80.0, 0.0]];
+        let back = [
+            [0.0, 0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.1, 0.0],
+            [50.0, 0.0, 80.0, 0.0],
+        ];
         assert_eq!(fitted(&back, &[30.0; 4], (0.0, 0.0))[1], 0.0);
     }
 
     #[test]
     fn a_road_all_the_way_round_comes_back_to_where_it_began() {
-        let corners = [[0.0, 0.0, 0.0, 20.0], [100.0, 4.0, 0.0, 20.0], [100.0, 8.0, 80.0, 20.0], [0.0, 4.0, 80.0, 20.0]];
+        let corners = [
+            [0.0, 0.0, 0.0, 20.0],
+            [100.0, 4.0, 0.0, 20.0],
+            [100.0, 8.0, 80.0, 20.0],
+            [0.0, 4.0, 80.0, 20.0],
+        ];
         let road = rounded(&corners, true);
         assert!(road[0].distance(*road.last().unwrap()) < 0.01);
         // As high at each corner's middle as the corner is, and never higher or
         // lower than the two it is between.
         assert!(road.iter().all(|p| (0.0..=8.0).contains(&p.y)));
-        let at = |x: f32, z: f32| road.iter().min_by(|a, b| {
-            let off = |p: &Vec3| Vec2::new(p.x - x, p.z - z).length();
-            off(a).total_cmp(&off(b))
-        });
-        assert!((at(100.0, 80.0).unwrap().y - 8.0).abs() < 0.1 && at(0.0, 0.0).unwrap().y.abs() < 0.1);
+        let at = |x: f32, z: f32| {
+            road.iter().min_by(|a, b| {
+                let off = |p: &Vec3| Vec2::new(p.x - x, p.z - z).length();
+                off(a).total_cmp(&off(b))
+            })
+        };
+        assert!(
+            (at(100.0, 80.0).unwrap().y - 8.0).abs() < 0.1 && at(0.0, 0.0).unwrap().y.abs() < 0.1
+        );
     }
 }

@@ -266,15 +266,15 @@ pub fn load(
                 Some(Token::Int(v)) => *v as f32,
                 _ => 0.0,
             };
-            Some((
-                pixels,
-                [number(0), number(1), number(2), number(3)],
-            ))
+            Some((pixels, [number(0), number(1), number(2), number(3)]))
         })
         .or_else(|| {
             // One of the port's own circuits: a map drawn of its road.
             let built = circuits.0[settings.circuit].race.is_none();
-            track.as_deref().filter(|_| built).map(|track| sketch(track, variant.mirror))
+            track
+                .as_deref()
+                .filter(|_| built)
+                .map(|track| sketch(track, variant.mirror))
         });
     let turning = map.as_ref().map(|(pixels, _)| {
         let pane = Pixels {
@@ -345,13 +345,24 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
     // The road comes back to where it began.
     let first = lines[0][0];
     lines[0].push(first);
-    lines.extend(track.branches.iter().map(|b| b.pts.iter().map(flat).collect()));
+    lines.extend(
+        track
+            .branches
+            .iter()
+            .map(|b| b.pts.iter().map(flat).collect()),
+    );
     if let Some(plan) = &track.arena {
         let outlines = plan.outlines();
-        lines = outlines.iter().map(|line| line.iter().map(flat).collect()).collect();
+        lines = outlines
+            .iter()
+            .map(|line| line.iter().map(flat).collect())
+            .collect();
     }
     let every = || lines.iter().flatten().copied();
-    let (low, high) = (every().fold(Vec2::MAX, Vec2::min), every().fold(Vec2::MIN, Vec2::max));
+    let (low, high) = (
+        every().fold(Vec2::MAX, Vec2::min),
+        every().fold(Vec2::MIN, Vec2::max),
+    );
     // Room round it for the whole width of a road that runs along its edge.
     let drawn = SKETCH_ROAD + SKETCH_EDGE + 1.0;
     let margin = (drawn * (high - low).max_element() / (SKETCH - 2.0 * drawn)).max(SKETCH_MARGIN);
@@ -392,14 +403,25 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
     let kinds = track.arena.as_ref().map(|plan| {
         let blocks = 1..1 + plan.blocks.len();
         let ramps = blocks.end..blocks.end + plan.ramps.len();
-        let onto = plan.ramps.iter().map(|ramp| (ramp.at, ramp.half, ramp.height));
-        let onto: Vec<_> = onto.chain(plan.decks.iter().map(|deck| (deck.at, deck.half, deck.height))).collect();
+        let onto = plan
+            .ramps
+            .iter()
+            .map(|ramp| (ramp.at, ramp.half, ramp.height));
+        let onto: Vec<_> = onto
+            .chain(
+                plan.decks
+                    .iter()
+                    .map(|deck| (deck.at, deck.half, deck.height)),
+            )
+            .collect();
         let high: Vec<bool> = plan
             .blocks
             .iter()
             .map(|block| {
                 onto.iter().any(|&(at, half, height)| {
-                    let apart = |axis: usize| (block.at[axis] - at[axis]).abs() - block.half[axis] - half[axis];
+                    let apart = |axis: usize| {
+                        (block.at[axis] - at[axis]).abs() - block.half[axis] - half[axis]
+                    };
                     block.height == height && apart(0) < 1.0 && apart(1) < 1.0
                 })
             })
@@ -413,18 +435,24 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
         // in `fill` and not in the edge's grey, and what that is.
         let (inside, clear, fill) = match &kinds {
             None => {
-                let road = lines.iter().map(|line| nearest(p, line)).fold(f32::MAX, f32::min);
+                let road = lines
+                    .iter()
+                    .map(|line| nearest(p, line))
+                    .fold(f32::MAX, f32::min);
                 let inside = SKETCH_ROAD + SKETCH_EDGE - road;
                 (inside, inside, SKETCH_WHITE)
             }
             Some((blocks, ramps, high)) => {
                 let floor = nearest(p, &lines[0]);
                 let floor = if within(p, &lines[0]) { floor } else { -floor };
-                let on = |from: usize, to: usize| {
-                    lines[from..to].iter().any(|line| within(p, line))
-                };
+                let on =
+                    |from: usize, to: usize| lines[from..to].iter().any(|line| within(p, line));
                 let raised = |is: bool| {
-                    blocks.clone().zip(high).filter(move |(_, high)| **high == is).map(|(i, _)| &lines[i])
+                    blocks
+                        .clone()
+                        .zip(high)
+                        .filter(move |(_, high)| **high == is)
+                        .map(|(i, _)| &lines[i])
                 };
                 if on(ramps.end, lines.len()) || raised(true).any(|block| within(p, block)) {
                     (floor, floor, SKETCH_DECK)
@@ -449,7 +477,12 @@ fn sketch(track: &crate::track::Track, mirror: bool) -> (Pixels, [f32; 4]) {
         if kinds.is_none() && away(p, bar.0, bar.1) < 1.5 {
             colour.copy_from_slice(&[0, 0, 160, 255]);
         } else if shown > 0.0 {
-            colour.copy_from_slice(&[shade.x as u8, shade.y as u8, shade.z as u8, (shown * 255.0) as u8]);
+            colour.copy_from_slice(&[
+                shade.x as u8,
+                shade.y as u8,
+                shade.z as u8,
+                (shown * 255.0) as u8,
+            ]);
         }
     }
     let pixels = Pixels {
@@ -691,7 +724,10 @@ pub fn draw(
         Single<(&Camera, &Transform), With<Camera3d>>,
         Query<(&Kart, &Transform), Without<Camera3d>>,
         ResMut<Assets<Image>>,
-        (Res<crate::frontend::idle::Idle>, Res<crate::net::modes::Feed>),
+        (
+            Res<crate::frontend::idle::Idle>,
+            Res<crate::net::modes::Feed>,
+        ),
     ),
 ) {
     let (idle, feed) = idle;
@@ -779,14 +815,26 @@ pub fn draw(
                 FEED_TOP + n as f32 * line * FEED_SIZE,
             );
             let fade = (left / 0.5).clamp(0.0, 1.0);
-            frame.write("font_ths", words, at, FEED_SIZE, Color::WHITE.with_alpha(fade));
+            frame.write(
+                "font_ths",
+                words,
+                at,
+                FEED_SIZE,
+                Color::WHITE.with_alpha(fade),
+            );
         }
         let mut row = BOARD_TOP;
         let sides = modes::totals(&settings, karts.iter().map(|k| k.0));
         if modes::team(&settings, 0).is_some() {
             for (side, (name, colour)) in modes::TEAMS.iter().enumerate() {
                 let words = format!("{name} {}", sides[side].max(0.0).ceil() as u32);
-                frame.write("font_ths", &words, Vec2::new(BOARD_LEFT, row), BOARD_SIZE, *colour);
+                frame.write(
+                    "font_ths",
+                    &words,
+                    Vec2::new(BOARD_LEFT, row),
+                    BOARD_SIZE,
+                    *colour,
+                );
                 row += line * BOARD_SIZE;
             }
             row += line * BOARD_SIZE * 0.3;
@@ -794,7 +842,11 @@ pub fn draw(
         let mut listed: Vec<&Kart> = karts.iter().map(|k| k.0).collect();
         listed.sort_by_key(|kart| kart.place);
         for kart in listed {
-            let colour = match (kart.it, kart.slot == player.slot, modes::team(&settings, kart.slot)) {
+            let colour = match (
+                kart.it,
+                kart.slot == player.slot,
+                modes::team(&settings, kart.slot),
+            ) {
                 _ if kart.out.is_some() => Color::srgb(0.45, 0.45, 0.45),
                 (true, ..) => IT,
                 (_, true, _) => Color::WHITE,
@@ -802,7 +854,13 @@ pub fn draw(
                 _ => Color::srgb(0.8, 0.8, 0.8),
             };
             let words = format!("{} {}", kart.name, modes::tally(&settings, kart));
-            frame.write("font_ths", &words, Vec2::new(BOARD_LEFT, row), BOARD_SIZE, colour);
+            frame.write(
+                "font_ths",
+                &words,
+                Vec2::new(BOARD_LEFT, row),
+                BOARD_SIZE,
+                colour,
+            );
             row += line * BOARD_SIZE;
         }
     }
@@ -829,7 +887,8 @@ pub fn draw(
     for (kart, shown) in cars.iter().filter(|(kart, _)| {
         let other = kart.slot != player.slot;
         let sided = crate::net::modes::team(&settings, kart.slot).is_some();
-        (people.contains(&kart.slot) || (other && (kart.it || battle || sided))) && kart.out.is_none()
+        (people.contains(&kart.slot) || (other && (kart.it || battle || sided)))
+            && kart.out.is_none()
     }) {
         let above = shown.translation + Vec3::Y * TAG_HEIGHT;
         let away = above.distance(eye.translation);
@@ -854,7 +913,10 @@ pub fn draw(
         let person = people.contains(&kart.slot);
         let lives = kart.stake as u32;
         let (words, colour) = match (kart.it, battle, person) {
-            (true, _, true) => (format!("{} {}", kart.name, crate::net::modes::said(settings.mode)), IT),
+            (true, _, true) => (
+                format!("{} {}", kart.name, crate::net::modes::said(settings.mode)),
+                IT,
+            ),
             (true, _, false) => (crate::net::modes::called(settings.mode).to_string(), IT),
             (false, true, true) => (format!("{} {lives}", kart.name), Color::WHITE),
             (false, true, false) => (lives.to_string(), Color::WHITE),
@@ -1089,8 +1151,7 @@ pub fn draw(
                 // the window shows is a picture of its own.
                 if let Some((pixels, shown)) = &art.turning {
                     if let Some(mut image) = images.get_mut(shown) {
-                        image.data =
-                            Some(pane(pixels, range, own, per_unit, turn, variant.mirror));
+                        image.data = Some(pane(pixels, range, own, per_unit, turn, variant.mirror));
                     }
                     let node = ImageNode {
                         image: shown.clone(),

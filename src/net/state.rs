@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::items::Power;
 use crate::kart::Kart;
-use crate::replay::Pose;
 use crate::physics::Rigid;
+use crate::replay::Pose;
 
 /// What the display shows of a car besides where it is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,7 +129,9 @@ impl Sight {
     pub fn pose(&self) -> Pose {
         let rest = unpacked(self.turn).map(|part| part / TURNED);
         let most = (self.bits & 3) as usize;
-        let left = (1.0 - rest.iter().map(|part| part * part).sum::<f32>()).max(0.0).sqrt();
+        let left = (1.0 - rest.iter().map(|part| part * part).sum::<f32>())
+            .max(0.0)
+            .sqrt();
         let mut rest = rest.into_iter();
         let turn = [0, 1, 2, 3].map(|at| {
             if at == most {
@@ -418,14 +420,23 @@ mod tests {
             assert!(pose.rot.angle_between(was.rot) < 1e-3, "turned {turn:?}");
             assert!(pose.vel.distance(was.vel) < 0.02);
             assert!((pose.steer - was.steer).abs() < 0.005);
-            assert_eq!((pose.sliding, pose.out, pose.held, pose.whites), (true, false, was.held, 2));
+            assert_eq!(
+                (pose.sliding, pose.out, pose.held, pose.whites),
+                (true, false, was.held, 2)
+            );
             // What is left of something is never said to be none while there is some,
             // and more than can be said is said as the most that can.
             assert!((pose.boost - 0.31).abs() <= 0.05 && pose.cursed > 0.0);
             assert_eq!((pose.shield, pose.spin_out), (12.75, 0.0));
             let standing = sight.standing();
-            assert_eq!((standing.lap, standing.place, standing.progress), (2, 4, 1234.5));
-            assert_eq!((standing.finished, standing.stake, standing.it), (Some(61.25), 17.5, true));
+            assert_eq!(
+                (standing.lap, standing.place, standing.progress),
+                (2, 4, 1234.5)
+            );
+            assert_eq!(
+                (standing.finished, standing.stake, standing.it),
+                (Some(61.25), 17.5, true)
+            );
         }
     }
 }

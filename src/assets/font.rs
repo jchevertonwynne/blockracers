@@ -306,7 +306,10 @@ fn every_language_has_its_words() {
         let race = format!("/GAMEDATA/COMMON/{folder}");
         let words = load_strings(jam.get(&format!("{race}/GAME.SRF")).unwrap());
         assert_eq!(words.len(), game.len(), "{folder}");
-        assert!(!load_fonts(&jam, &race, "LEGOFNTS.FDB").is_empty(), "{folder}");
+        assert!(
+            !load_fonts(&jam, &race, "LEGOFNTS.FDB").is_empty(),
+            "{folder}"
+        );
         // The language page's own labels name each language in itself.
         assert!(!strings[157 + n].is_empty(), "{folder}");
     }

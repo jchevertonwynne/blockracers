@@ -23,7 +23,11 @@ type Rgba = [u8; 4];
 /// `BeamMesh::g_beamMinStepDistanceSquared`: shorter spans are left out.
 const MIN_STEP_SQUARED: f32 = 0.02 * UNIT * UNIT;
 
-const LIGHTNING_COLOURS: [Rgba; 3] = [[0x19, 0x41, 0xf5, 255], [0x19, 0x41, 0xff, 255], [0x19, 0x41, 0xeb, 255]];
+const LIGHTNING_COLOURS: [Rgba; 3] = [
+    [0x19, 0x41, 0xf5, 255],
+    [0x19, 0x41, 0xff, 255],
+    [0x19, 0x41, 0xeb, 255],
+];
 const LIGHTNING_HIT: [Rgba; 3] = [[255; 4]; 3];
 const LIGHTNING_THICKNESS: f32 = 0.85;
 const LIGHTNING_AMPLITUDE: f32 = 9.0;
@@ -35,7 +39,11 @@ const LIGHTNING_RAMP: f32 = 0.5;
 const JITTER_EVERY: f32 = 0.05;
 const JITTERS: usize = 20;
 
-const ROPE_COLOURS: [Rgba; 3] = [[0x64, 0x3c, 0x0e, 255], [0x8f, 0x5a, 0x1c, 255], [0x14, 0x14, 0x00, 255]];
+const ROPE_COLOURS: [Rgba; 3] = [
+    [0x64, 0x3c, 0x0e, 255],
+    [0x8f, 0x5a, 0x1c, 255],
+    [0x14, 0x14, 0x00, 255],
+];
 const ROPE_THICKNESS: f32 = 0.6;
 const ROPE_WAVE: f32 = 4.0;
 pub const ROPE_ATTACH: f32 = 3.0;
@@ -70,12 +78,19 @@ struct Ribbon {
 }
 
 fn linear(c: Rgba) -> [f32; 4] {
-    Color::srgba_u8(c[0], c[1], c[2], c[3]).to_linear().to_f32_array()
+    Color::srgba_u8(c[0], c[1], c[2], c[3])
+        .to_linear()
+        .to_f32_array()
 }
 
 fn blend(a: Rgba, b: Rgba, amount: f32) -> Rgba {
     let mix = |a: u8, b: u8| (a as i32 + ((b as i32 - a as i32) as f32 * amount) as i32) as u8;
-    [mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2]), mix(a[3], b[3])]
+    [
+        mix(a[0], b[0]),
+        mix(a[1], b[1]),
+        mix(a[2], b[2]),
+        mix(a[3], b[3]),
+    ]
 }
 
 impl Ribbon {
@@ -92,10 +107,19 @@ impl Ribbon {
     }
 
     /// `EmitRing` and `EmitQuads`: a ring of corners about `at`, joined to the one before.
-    fn ring(&mut self, at: Vec3, axes: [Vec3; 3], local: Vec3, ring: &Ring, colour: Rgba, column: f32) {
+    fn ring(
+        &mut self,
+        at: Vec3,
+        axes: [Vec3; 3],
+        local: Vec3,
+        ring: &Ring,
+        colour: Rgba,
+        column: f32,
+    ) {
         let first = self.positions.len() as u32;
         for (i, &(y, z)) in ring.corners.iter().enumerate() {
-            let offset = axes[0] * local.x + axes[1] * (local.y + y * UNIT) + axes[2] * (local.z + z * UNIT);
+            let offset =
+                axes[0] * local.x + axes[1] * (local.y + y * UNIT) + axes[2] * (local.z + z * UNIT);
             self.positions.push((at + offset).to_array());
             self.colours.push(linear(colour));
             self.uvs.push([ring.across[i], column]);
@@ -103,7 +127,8 @@ impl Ribbon {
         if let Some(before) = self.last_ring {
             for i in 0..2 {
                 let (lower, upper) = (first + i, before + i);
-                self.indices.extend([lower, lower + 1, upper, lower + 1, upper + 1, upper]);
+                self.indices
+                    .extend([lower, lower + 1, upper, lower + 1, upper + 1, upper]);
             }
         }
         self.last_ring = Some(first);
@@ -111,7 +136,15 @@ impl Ribbon {
 
     /// Steps the picture on a column, taking a fresh ring at the start of the next
     /// run of columns as the original does.
-    fn next_column(&mut self, at: Vec3, axes: [Vec3; 3], local: Vec3, ring: &Ring, colour: Rgba, wrap: bool) {
+    fn next_column(
+        &mut self,
+        at: Vec3,
+        axes: [Vec3; 3],
+        local: Vec3,
+        ring: &Ring,
+        colour: Rgba,
+        wrap: bool,
+    ) {
         self.column += 1.0;
         if self.column > self.textured_columns {
             if wrap {
@@ -124,7 +157,11 @@ impl Ribbon {
 
 /// The frame a span of a ribbon is laid in: along it, across it and up from it.
 fn frame(forward: Vec3, up: Vec3) -> [Vec3; 3] {
-    let up = if forward.cross(up).length_squared() < 1e-6 { Vec3::X } else { up };
+    let up = if forward.cross(up).length_squared() < 1e-6 {
+        Vec3::X
+    } else {
+        up
+    };
     let across = up.cross(forward).normalize();
     [forward, across, forward.cross(across).normalize()]
 }
@@ -187,11 +224,7 @@ impl Beam<'_> {
                     let first = Vec3::ZERO.lerp(middle, a);
                     let second = middle.lerp(end, a);
                     let mut local = first.lerp(second, a);
-                    let colour = blend(
-                        blend(base, end_colour, a),
-                        blend(end_colour, base, a),
-                        a,
-                    );
+                    let colour = blend(blend(base, end_colour, a), blend(end_colour, base, a), a);
                     let shift = (self.offsets)(index, i - 1) * UNIT;
                     local.x += shift;
                     local.y += shift;
@@ -227,7 +260,10 @@ fn fill(mesh: &mut Mesh, mut ribbon: Ribbon) {
 }
 
 fn empty_mesh() -> Mesh {
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     fill(&mut mesh, Ribbon::new(3.0));
     mesh
 }
@@ -237,7 +273,11 @@ fn ribbon_material(picture: Option<Handle<Image>>, additive: bool) -> StandardMa
         base_color_texture: picture,
         unlit: true,
         cull_mode: None,
-        alpha_mode: if additive { AlphaMode::Add } else { AlphaMode::Blend },
+        alpha_mode: if additive {
+            AlphaMode::Add
+        } else {
+            AlphaMode::Blend
+        },
         ..default()
     }
 }
@@ -276,7 +316,10 @@ pub struct Jitter {
 
 impl Jitter {
     fn deal(&mut self) {
-        self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        self.seed = self
+            .seed
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         let unit = (self.seed >> 16) as f32 / 65536.0;
         self.table[self.cursor] = (unit - 0.5) * 5.0;
         self.cursor = (self.cursor + 1) % JITTERS;
@@ -369,8 +412,17 @@ pub fn beams(
                 let Some(track) = &track else { continue };
                 lightning(tf, *time, *shocked, &track, &karts, &jitter, right)
             }
-            Action::Hook { owner, shot, pulling, time, released } => {
-                let Ok(from) = karts.get(*owner).map(|k| k.pos + Vec3::Y * ROPE_ATTACH * UNIT) else {
+            Action::Hook {
+                owner,
+                shot,
+                pulling,
+                time,
+                released,
+            } => {
+                let Ok(from) = karts
+                    .get(*owner)
+                    .map(|k| k.pos + Vec3::Y * ROPE_ATTACH * UNIT)
+                else {
                     continue;
                 };
                 rope(from, tf.translation, shot, *pulling, *time, *released)
@@ -429,7 +481,11 @@ fn lightning(
         spans.push((source + direction * step * i as f32, amount));
         amount = -amount;
     }
-    let colours = if shocked.is_some() { LIGHTNING_HIT } else { LIGHTNING_COLOURS };
+    let colours = if shocked.is_some() {
+        LIGHTNING_HIT
+    } else {
+        LIGHTNING_COLOURS
+    };
     let offsets = |span: usize, piece: usize| jitter.at(span, piece);
     Beam {
         origin: source,
@@ -455,9 +511,15 @@ fn rope(
     left: f32,
     released: bool,
 ) -> Ribbon {
-    let tension = pulling.map_or(0.0, |_| ((crate::items::HOOK_PULL_SECONDS - left) / 1.0).clamp(0.0, 1.0));
+    let tension = pulling.map_or(0.0, |_| {
+        ((crate::items::HOOK_PULL_SECONDS - left) / 1.0).clamp(0.0, 1.0)
+    });
     let flying = 1.0 - shot.progress();
-    let amount = if pulling.is_some() { 0.0 } else { flying * ROPE_WAVE };
+    let amount = if pulling.is_some() {
+        0.0
+    } else {
+        flying * ROPE_WAVE
+    };
     let flown = shot.age();
     let mut spans = Vec::new();
     let mut bow = amount;
@@ -476,7 +538,10 @@ fn rope(
             continue;
         }
         // The line is drawn from the hook's end, which the arc began from.
-        spans.push((Vec3::new(straight.x, high.max(straight.y.min(to.y) - 1.0), straight.z), bow));
+        spans.push((
+            Vec3::new(straight.x, high.max(straight.y.min(to.y) - 1.0), straight.z),
+            bow,
+        ));
         bow = -bow;
     }
     spans.push((to, if released { 0.0 } else { bow }));
@@ -505,9 +570,24 @@ struct Streak {
     picture: &'static str,
 }
 
-const MISSILE_STREAK: Streak = Streak { duration: 0.4, size: 1.0, colour: [255, 255, 255, 0xc8], picture: "mslstrk" };
-const CANNONBALL_STREAK: Streak = Streak { duration: 0.3, size: 3.0, colour: [0x32, 0x32, 0x32, 0xc8], picture: "canstrk" };
-const LAUNCHER_STREAK: Streak = Streak { duration: 0.3, size: 3.0, colour: [0x32, 0x32, 0x32, 0x64], picture: "streak" };
+const MISSILE_STREAK: Streak = Streak {
+    duration: 0.4,
+    size: 1.0,
+    colour: [255, 255, 255, 0xc8],
+    picture: "mslstrk",
+};
+const CANNONBALL_STREAK: Streak = Streak {
+    duration: 0.3,
+    size: 3.0,
+    colour: [0x32, 0x32, 0x32, 0xc8],
+    picture: "canstrk",
+};
+const LAUNCHER_STREAK: Streak = Streak {
+    duration: 0.3,
+    size: 3.0,
+    colour: [0x32, 0x32, 0x32, 0x64],
+    picture: "streak",
+};
 /// A trail is kept as this many pieces of its length, the newest still growing, and
 /// each ring shrinks to the middle by `END_SCALE` at the far end and fades to nothing.
 const SAMPLES: usize = 4;
@@ -566,9 +646,17 @@ pub fn trails(
             }
             _ => continue,
         };
-        let material = materials.add(ribbon_material(swatches.0.get(streak.picture).cloned(), false));
+        let material = materials.add(ribbon_material(
+            swatches.0.get(streak.picture).cloned(),
+            false,
+        ));
         commands.spawn((
-            Trail { of: Some(entity), streak, rows: Vec::new(), last: None },
+            Trail {
+                of: Some(entity),
+                streak,
+                rows: Vec::new(),
+                last: None,
+            },
             Mesh3d(meshes.add(empty_mesh())),
             MeshMaterial3d(material),
             Transform::IDENTITY,
@@ -579,11 +667,19 @@ pub fn trails(
     }
     let dt = time.delta_secs();
     for (entity, mut trail, mesh) in &mut trails {
-        let Streak { duration, size, colour, .. } = trail.streak;
+        let Streak {
+            duration,
+            size,
+            colour,
+            ..
+        } = trail.streak;
         let sample = duration / SAMPLES as f32;
         // The head row grows while the projectile is there; once it is gone the whole
         // trail runs out (`Release`).
-        let place = trail.of.and_then(|of| flying.get(of).ok()).map(|(_, tf)| tf.translation);
+        let place = trail
+            .of
+            .and_then(|of| flying.get(of).ok())
+            .map(|(_, tf)| tf.translation);
         match place {
             Some(at) => {
                 let velocity = trail.last.map_or(Vec3::ZERO, |last| at - last);
@@ -600,7 +696,11 @@ pub fn trails(
                             head.centre = at;
                             head.covers += dt;
                         }
-                        _ => trail.rows.push(Row { points, centre: at, covers: dt }),
+                        _ => trail.rows.push(Row {
+                            points,
+                            centre: at,
+                            covers: dt,
+                        }),
                     }
                 }
             }
@@ -658,14 +758,20 @@ fn streak_ribbon(rows: &[Row], duration: f32, colour: Rgba) -> Ribbon {
     let mut v = 0.0;
     let mut rings: Vec<u32> = Vec::new();
     for (n, row) in rows.iter().rev().enumerate() {
-        let pull = if n == 0 { 0.0 } else { (elapsed / duration).min(1.0) * (1.0 - END_SCALE) };
+        let pull = if n == 0 {
+            0.0
+        } else {
+            (elapsed / duration).min(1.0) * (1.0 - END_SCALE)
+        };
         if n > 0 {
             faded = (faded - step).max(0.0);
         }
         let first = ribbon.positions.len() as u32;
         let mut u = 0.0;
         for point in row.points {
-            ribbon.positions.push(point.lerp(row.centre, pull).to_array());
+            ribbon
+                .positions
+                .push(point.lerp(row.centre, pull).to_array());
             let c = [colour[0], colour[1], colour[2], (faded * 255.0) as u8];
             ribbon.colours.push(linear(c));
             ribbon.uvs.push([u, v]);
@@ -679,7 +785,9 @@ fn streak_ribbon(rows: &[Row], duration: f32, colour: Rgba) -> Ribbon {
         let (a, b) = (pair[0], pair[1]);
         for i in 0..4u32 {
             let next = (i + 1) % 4;
-            ribbon.indices.extend([b + i, a + i, b + next, b + next, a + i, a + next]);
+            ribbon
+                .indices
+                .extend([b + i, a + i, b + next, b + next, a + i, a + next]);
         }
     }
     ribbon

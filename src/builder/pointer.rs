@@ -96,7 +96,9 @@ impl Script {
             .split(',')
             .filter_map(|step| {
                 let (what, at) = step.trim().rsplit_once('@')?;
-                let words = what.strip_prefix('[').and_then(|what| what.strip_suffix(']'));
+                let words = what
+                    .strip_prefix('[')
+                    .and_then(|what| what.strip_suffix(']'));
                 let step = match what {
                     _ if words.is_some() => {
                         let (words, which) = words?.rsplit_once('#').unwrap_or((words?, "0"));
@@ -113,22 +115,37 @@ impl Script {
                         (x, y) => match x.strip_prefix('g') {
                             Some(x) => {
                                 let (z, y) = y.split_once(':').unwrap_or((y, "0"));
-                                Step::To(Place::Ground(Vec3::new(x.parse().ok()?, y.parse().ok()?, z.parse().ok()?)))
+                                Step::To(Place::Ground(Vec3::new(
+                                    x.parse().ok()?,
+                                    y.parse().ok()?,
+                                    z.parse().ok()?,
+                                )))
                             }
-                            None => Step::To(Place::Window(Vec2::new(x.parse().ok()?, y.parse().ok()?))),
+                            None => {
+                                Step::To(Place::Window(Vec2::new(x.parse().ok()?, y.parse().ok()?)))
+                            }
                         },
                     },
                 };
                 Some((at.parse().ok()?, step))
             })
             .collect();
-        (!steps.is_empty()).then_some(Script { steps, done: 0, since: (0.0, None), buttons: [false; 3] })
+        (!steps.is_empty()).then_some(Script {
+            steps,
+            done: 0,
+            since: (0.0, None),
+            buttons: [false; 3],
+        })
     }
 
     /// Where the pointer is `now`, which buttons are down, and how far the wheel
     /// has turned since this was last asked. `seen` is where on the window a
     /// place that is not on the window is.
-    fn at(&mut self, now: f32, seen: impl Fn(&Place) -> Option<Vec2>) -> (Option<Vec2>, [bool; 3], f32) {
+    fn at(
+        &mut self,
+        now: f32,
+        seen: impl Fn(&Place) -> Option<Vec2>,
+    ) -> (Option<Vec2>, [bool; 3], f32) {
         let on_window = |place: &Place| match place {
             Place::Window(at) => Some(*at),
             place => seen(place),
@@ -157,7 +174,9 @@ impl Script {
         let at = match (self.steps.get(self.done), &self.since) {
             (Some((when, Step::To(to))), (since, Some(from))) => {
                 let part = ((now - since) / (when - since).max(1e-3)).clamp(0.0, 1.0);
-                on_window(from).zip(on_window(to)).map(|(from, to)| from.lerp(to, part))
+                on_window(from)
+                    .zip(on_window(to))
+                    .map(|(from, to)| from.lerp(to, part))
             }
             (_, (_, at)) => at.as_ref().and_then(on_window),
         };
@@ -188,15 +207,24 @@ pub fn read(
                 // The middle of whichever cell says so, counting from the top
                 // and then from the left.
                 Place::Words(words, which) => {
-                    let saying = cells.iter().filter(|(text, node, _)| text.0 == *words && node.size().x > 0.0);
-                    let mut middles: Vec<Vec2> = saying.map(|(_, _, place)| place.translation / window.scale_factor()).collect();
-                    middles.sort_by(|a, b| (a.y, a.x).partial_cmp(&(b.y, b.x)).unwrap_or(std::cmp::Ordering::Equal));
+                    let saying = cells
+                        .iter()
+                        .filter(|(text, node, _)| text.0 == *words && node.size().x > 0.0);
+                    let mut middles: Vec<Vec2> = saying
+                        .map(|(_, _, place)| place.translation / window.scale_factor())
+                        .collect();
+                    middles.sort_by(|a, b| {
+                        (a.y, a.x)
+                            .partial_cmp(&(b.y, b.x))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
                     middles.get(*which).copied()
                 }
             })
         }
         None => {
-            let down = [MouseButton::Left, MouseButton::Right, MouseButton::Middle].map(|button| buttons.pressed(button));
+            let down = [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+                .map(|button| buttons.pressed(button));
             // A wheel turns by the notch, and a trackpad by a great many little units.
             let turned = match scroll.unit {
                 MouseScrollUnit::Line => scroll.delta.y,
@@ -223,21 +251,30 @@ mod tests {
 
     #[test]
     fn a_script_moves_the_pointer_evenly_and_presses_its_buttons() {
-        let mut script = Script::read("100:100@1,down@1.5,300:100@2.5,up@2.5,wheel:-2@3,nonsense,rdown@4,g5:7@5").unwrap();
+        let mut script = Script::read(
+            "100:100@1,down@1.5,300:100@2.5,up@2.5,wheel:-2@3,nonsense,rdown@4,g5:7@5",
+        )
+        .unwrap();
         // A place on the ground is, here, ten times as far across the window.
         let seen = |place: &Place| match place {
             Place::Ground(at) => Some(Vec2::new(at.x, at.z) * 10.0),
             _ => None,
         };
         assert_eq!(script.at(0.5, seen).0, None);
-        assert_eq!(script.at(1.0, seen), (Some(Vec2::new(100.0, 100.0)), [false; 3], 0.0));
+        assert_eq!(
+            script.at(1.0, seen),
+            (Some(Vec2::new(100.0, 100.0)), [false; 3], 0.0)
+        );
         // It stays where it is until the button is down, and then goes on.
         assert_eq!(script.at(1.4, seen).0, Some(Vec2::new(100.0, 100.0)));
         assert_eq!(script.at(1.5, seen).1, [true, false, false]);
         let (at, down, _) = script.at(2.0, seen);
         assert!(down[0] && (at.unwrap().x - 200.0).abs() < 0.1);
         // The button comes up where the pointer has got to.
-        assert_eq!(script.at(2.6, seen), (Some(Vec2::new(300.0, 100.0)), [false; 3], 0.0));
+        assert_eq!(
+            script.at(2.6, seen),
+            (Some(Vec2::new(300.0, 100.0)), [false; 3], 0.0)
+        );
         assert_eq!(script.at(3.1, seen).2, -2.0);
         assert_eq!(script.at(4.2, seen).1, [false, true, false]);
         // On its way to a place on the ground, and there.
@@ -246,15 +283,31 @@ mod tests {
         // However long a frame is, a button goes down and comes up where it was
         // meant to, and the pointer goes on afterwards.
         let mut script = Script::read("10:10@1,down@1.1,up@1.2,90:10@2").unwrap();
-        assert_eq!(script.at(1.9, seen), (Some(Vec2::new(10.0, 10.0)), [true, false, false], 0.0));
-        assert_eq!(script.at(1.95, seen), (Some(Vec2::new(10.0, 10.0)), [false; 3], 0.0));
+        assert_eq!(
+            script.at(1.9, seen),
+            (Some(Vec2::new(10.0, 10.0)), [true, false, false], 0.0)
+        );
+        assert_eq!(
+            script.at(1.95, seen),
+            (Some(Vec2::new(10.0, 10.0)), [false; 3], 0.0)
+        );
         assert_eq!(script.at(2.0, seen).0, Some(Vec2::new(90.0, 10.0)));
         // Something on a panel is named by what it says.
         let script = Script::read("[Try it]@1,[+#2]@2").unwrap();
-        let places: Vec<&Place> = script.steps.iter().filter_map(|step| match &step.1 {
-            Step::To(place) => Some(place),
-            _ => None,
-        }).collect();
-        assert_eq!(places, [&Place::Words("Try it".into(), 0), &Place::Words("+".into(), 2)]);
+        let places: Vec<&Place> = script
+            .steps
+            .iter()
+            .filter_map(|step| match &step.1 {
+                Step::To(place) => Some(place),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            places,
+            [
+                &Place::Words("Try it".into(), 0),
+                &Place::Words("+".into(), 2)
+            ]
+        );
     }
 }

@@ -25,6 +25,7 @@
 //!   screen the pointer finds the car, is by the car's length and width
 //!   (`KartModel::outline`), not by the radius of the whole of it.
 
+use super::stage::{self, Set};
 use super::{Action, Art, Item, LABEL, Menu, Page, Typed, Widget};
 use crate::assets::{
     leb::{self, Library, PartSet},
@@ -32,7 +33,6 @@ use crate::assets::{
 };
 use crate::audio::{Sfx, id};
 use crate::build::{Car, Catalogue, Cursor, Palette, Refusal};
-use super::stage::{self, Set};
 use crate::garage::{self, Garage};
 use crate::menu::Settings;
 use crate::physics::UNIT;
@@ -185,7 +185,15 @@ const SWING: f32 = 0.01;
 /// The keys of the page bricks are placed on, for each of the help's strings that
 /// ends by saying what the original's are: part sets, bricks, moving the brick,
 /// turning it, putting it on, taking one off, and the view.
-const KEYS: [&str; 7] = ["T", "TAB", "I J K L", "R", "ENTER", "BACKSPACE", "ARROWS, C"];
+const KEYS: [&str; 7] = [
+    "T",
+    "TAB",
+    "I J K L",
+    "R",
+    "ENTER",
+    "BACKSPACE",
+    "ARROWS, C",
+];
 
 /// A string of the help with the port's keys where it names the original's: what
 /// follows its last colon, which is where every language's says them.
@@ -309,7 +317,11 @@ impl Motion {
     /// `PitchViewAnalog`: the camera pulled up or down by so much of a height.
     fn tilt(&mut self, by: f32) {
         let now = self.tilted.unwrap_or(self.height as f32);
-        let room = if by > 0.0 { now < OVERHEAD as f32 } else { now > 0.0 };
+        let room = if by > 0.0 {
+            now < OVERHEAD as f32
+        } else {
+            now > 0.0
+        };
         if self.rising <= 0.0 && by != 0.0 && room {
             self.tilted = Some((now + by).clamp(0.0, OVERHEAD as f32));
         }
@@ -328,7 +340,9 @@ impl Motion {
         }
         if self.tilted.take().is_some() {
             let away = |height: &usize| Motion::eye_at(*height, reach).distance(self.eye);
-            let nearest = (0..=OVERHEAD).min_by(|a, b| away(a).total_cmp(&away(b))).unwrap_or(0);
+            let nearest = (0..=OVERHEAD)
+                .min_by(|a, b| away(a).total_cmp(&away(b)))
+                .unwrap_or(0);
             if away(&nearest) > 0.0 {
                 (self.eye_from, self.rising) = (self.eye, RISE_MS);
             }
@@ -399,7 +413,11 @@ impl Motion {
             }
         }
         self.fits = fits;
-        self.flash = if ms >= self.flash { self.flash - ms + 1000.0 } else { self.flash - ms };
+        self.flash = if ms >= self.flash {
+            self.flash - ms + 1000.0
+        } else {
+            self.flash - ms
+        };
         // `UpdateViewRotation`: the nearer way round.
         if self.turning > 0.0 {
             self.turning = (self.turning - ms).max(0.0);
@@ -421,7 +439,10 @@ impl Motion {
         self.eye = match self.tilted {
             Some(tilted) => {
                 let under = (tilted as usize).min(OVERHEAD - 1);
-                let (low, high) = (Motion::eye_at(under, reach), Motion::eye_at(under + 1, reach));
+                let (low, high) = (
+                    Motion::eye_at(under, reach),
+                    Motion::eye_at(under + 1, reach),
+                );
                 low.lerp(high, tilted - under as f32)
             }
             None => to + (self.eye_from - to) * Motion::eased(self.rising, RISE_MS),
@@ -480,7 +501,11 @@ impl Motion {
             let turn = self.flash * 0.001 * std::f32::consts::TAU;
             FLASH_ALPHA[0] + FLASH_ALPHA[1] * turn.cos()
         };
-        [held, ghost, (rest >= 1.0).then_some((self.rest, rest / 255.0))]
+        [
+            held,
+            ghost,
+            (rest >= 1.0).then_some((self.rest, rest / 255.0)),
+        ]
     }
 }
 /// What is behind a racer on show.
@@ -700,10 +725,34 @@ impl Tip {
     /// of it, and failing all of those in the middle. `line` is how tall the font is.
     pub fn place(target: Rect, size: Vec2, line: f32, screen: Rect) -> Vec2 {
         let beside = |from: f32, to: f32, length: f32, low: f32, high: f32| {
-            ((from + to - length) / 2.0).floor().clamp(low + line, (high - length - line).max(low + line))
+            ((from + to - length) / 2.0)
+                .floor()
+                .clamp(low + line, (high - length - line).max(low + line))
         };
-        let down = |x: f32| Vec2::new(x, beside(target.min.y, target.max.y, size.y, screen.min.y, screen.max.y));
-        let along = |y: f32| Vec2::new(beside(target.min.x, target.max.x, size.x, screen.min.x, screen.max.x), y);
+        let down = |x: f32| {
+            Vec2::new(
+                x,
+                beside(
+                    target.min.y,
+                    target.max.y,
+                    size.y,
+                    screen.min.y,
+                    screen.max.y,
+                ),
+            )
+        };
+        let along = |y: f32| {
+            Vec2::new(
+                beside(
+                    target.min.x,
+                    target.max.x,
+                    size.x,
+                    screen.min.x,
+                    screen.max.x,
+                ),
+                y,
+            )
+        };
         if size.x + line * 2.0 < screen.max.x - target.max.x {
             down(target.max.x + line)
         } else if size.y + line * 2.0 < screen.max.y - target.max.y {
@@ -722,7 +771,11 @@ impl Tip {
     /// `long` is how wide the words are on one line.
     pub fn wrap(long: f32, line: f32, screen: Rect) -> f32 {
         let most = screen.width() - line * 2.0;
-        ((line + 1.0) * 3.0 * long).sqrt().floor().min(most).max((most / 8.0).floor())
+        ((line + 1.0) * 3.0 * long)
+            .sqrt()
+            .floor()
+            .min(most)
+            .max((most / 8.0).floor())
     }
 }
 
@@ -870,7 +923,11 @@ pub fn staged(
     garage: &Garage,
     settings: &Settings,
 ) -> Option<(Option<Racer>, Set)> {
-    let from = if page == Page::Scrap && bench.ask != Ask::Delete { bench.from } else { page };
+    let from = if page == Page::Scrap && bench.ask != Ask::Delete {
+        bench.from
+    } else {
+        page
+    };
     match from {
         Page::Garage | Page::Scrap => Some((Some(garage.racing(settings)?.clone()), Set::Showcase)),
         Page::Racer => Some((Some(bench.shown()), Set::Showcase)),
@@ -914,9 +971,7 @@ fn open_parts(bench: &Bench, garage: &Garage, progress: &Progress, part: usize) 
         .and_then(|slot| garage.racers.get(slot))
         .map(|racer| worn(racer.cosmetics)[part]);
     (0..kit.catalogue.count(part) as u8)
-        .filter(|&at| {
-            kept == Some(at) || progress.part_open(kit.catalogue.mark(part, at as usize))
-        })
+        .filter(|&at| kept == Some(at) || progress.part_open(kit.catalogue.mark(part, at as usize)))
         .collect()
 }
 
@@ -1289,13 +1344,20 @@ pub fn notes(
             // Its picture is an arrow and a brick, twice as wide as it is tall.
             let beside = |name: &str, words: &str| {
                 let icon = art.place("carbuild", name).min;
-                small(Rect::new(icon.x + 72.0, icon.y, 205.0, icon.y + 32.0), words, false)
+                small(
+                    Rect::new(icon.x + 72.0, icon.y, 205.0, icon.y + 32.0),
+                    words,
+                    false,
+                )
             };
             let held = bench.kit.as_ref().and_then(|kit| {
                 let set = kit.sets.get(bench.set)?;
                 Some(format!("{} OF {}", bench.brick + 1, set.choices.len()))
             });
-            let (moves, views) = (art.place("carbuild", "procker").min, art.place("carbuild", "crocker").min);
+            let (moves, views) = (
+                art.place("carbuild", "procker").min,
+                art.place("carbuild", "crocker").min,
+            );
             let door = art.place("carbuild", "goback").min;
             // In lines down the right of something.
             let down = |from: Vec2, row: f32, words: &str| {
@@ -1305,7 +1367,11 @@ pub fn notes(
             let by_view = views + Vec2::new(98.0, 32.0);
             let by_door = door + Vec2::new(70.0, 6.0);
             vec![
-                small(Rect::new(8.0, moves.y - 14.0, 200.0, moves.y), KEYS[2], true),
+                small(
+                    Rect::new(8.0, moves.y - 14.0, 200.0, moves.y),
+                    KEYS[2],
+                    true,
+                ),
                 beside("rotbrik", KEYS[3]),
                 beside("addbrik", KEYS[4]),
                 beside("undobrik", KEYS[5]),
@@ -1584,7 +1650,10 @@ pub fn act(
             };
             // `EditDriverScreen::OnIconUnfocused`, `CanNavigate`: the driver makes
             // one or other of two moves, and the page is left when it is done.
-            let which = (std::time::UNIX_EPOCH.elapsed().map_or(0, |now| now.subsec_millis()) % 2) as usize;
+            let which = (std::time::UNIX_EPOCH
+                .elapsed()
+                .map_or(0, |now| now.subsec_millis())
+                % 2) as usize;
             if let (Page::Driver, Some(ms)) = (page, stage::exit_move(art, which)) {
                 bench.parting = Some((to, ms, which));
                 return None;
@@ -1683,7 +1752,13 @@ pub fn act(
 fn put_on(bench: &mut Bench, art: &Art, sfx: &mut Sfx) -> Option<()> {
     let kit = bench.kit.as_ref()?;
     let cursor = bench.cursor;
-    match bench.car.test(&kit.library, cursor.kind, cursor.x, cursor.y, cursor.rotation) {
+    match bench.car.test(
+        &kit.library,
+        cursor.kind,
+        cursor.x,
+        cursor.y,
+        cursor.rotation,
+    ) {
         // It goes down onto the car, and is on it when it gets there (`tick`).
         Ok(_) => bench.motion.put_on(),
         Err(refusal) => {
@@ -1766,7 +1841,12 @@ pub fn grip(
             let pulled = bench.pulled;
             // Which of the eight ways it has been pulled far enough: across, and
             // up or down, each or both.
-            let way = match (pulled.x >= PULL, pulled.x <= -PULL, pulled.y >= PULL, pulled.y <= -PULL) {
+            let way = match (
+                pulled.x >= PULL,
+                pulled.x <= -PULL,
+                pulled.y >= PULL,
+                pulled.y <= -PULL,
+            ) {
                 (true, _, true, _) => Some(3),
                 (true, _, _, true) => Some(1),
                 (true, ..) => Some(2),
@@ -1802,11 +1882,23 @@ pub fn grip_help(bench: &Bench, at: Vec2) -> Option<(usize, Rect)> {
 /// cornerwise across it (`g_carBuildDragHorizontalOffsets`,
 /// `g_carBuildDragVerticalOffsets`: an eighth of a turn on for each view).
 fn nudge(bench: &mut Bench, way: i32, sfx: &mut Sfx) {
-    const COMPASS: [(i32, i32); 8] =
-        [(1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1)];
+    const COMPASS: [(i32, i32); 8] = [
+        (1, 0),
+        (1, -1),
+        (0, -1),
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+    ];
     let (dx, dy) = COMPASS[(way - bench.view).rem_euclid(8) as usize];
     let moved = bench.cursor.step(dx, dy);
-    sfx.play(if moved { id::MENU_HIGHLIGHT } else { id::MENU_REFUSE });
+    sfx.play(if moved {
+        id::MENU_HIGHLIGHT
+    } else {
+        id::MENU_REFUSE
+    });
     bench.stale = true;
 }
 
@@ -1864,7 +1956,13 @@ pub fn tick(bench: &mut Bench, ms: f32, sfx: &mut Sfx) -> bool {
         return false;
     };
     let (width, depth) = piece.span(cursor.rotation);
-    let rest = bench.car.test(&kit.library, cursor.kind, cursor.x, cursor.y, cursor.rotation);
+    let rest = bench.car.test(
+        &kit.library,
+        cursor.kind,
+        cursor.x,
+        cursor.y,
+        cursor.rotation,
+    );
     let plates = rest.unwrap_or_else(|_| bench.car.over(cursor.x, cursor.y, width, depth));
     let (view, reach) = (bench.view, bench.reach);
     if !bench.motion.update(ms, view, reach, plates, rest.is_ok()) {
@@ -1939,7 +2037,9 @@ pub fn keys(
     ];
     for (key, what, change) in acts {
         if keys.just_pressed(key) {
-            act(what, change, art, bench, garage, settings, progress, menu, sfx);
+            act(
+                what, change, art, bench, garage, settings, progress, menu, sfx,
+            );
             done = true;
         }
     }
@@ -1998,7 +2098,10 @@ pub fn show(
         ),
     >,
     exhibits: Query<Entity, With<Exhibit>>,
-    mut bricks: Query<(&Held, &mut Transform, &mut Visibility), (Without<Turntable>, Without<Camera3d>)>,
+    mut bricks: Query<
+        (&Held, &mut Transform, &mut Visibility),
+        (Without<Turntable>, Without<Camera3d>),
+    >,
     staged_set: Res<stage::Stage>,
     (mut meshes, mut materials, mut images): (
         ResMut<Assets<Mesh>>,
@@ -2045,7 +2148,11 @@ pub fn show(
     // page and as the view of it is turned where bricks are placed
     // (`CarPartPlacement::ApplyViewAngle`).
     let building = set == Some(Set::Bench);
-    let angle = if building { bench.motion.angle } else { time.elapsed_secs() * SPIN };
+    let angle = if building {
+        bench.motion.angle
+    } else {
+        time.elapsed_secs() * SPIN
+    };
     // The car points along the game's X turned that far round.
     let way = crate::scenery::to_world(Vec3::new(angle.cos(), angle.sin(), 0.0));
     let stood = Transform::from_translation(crate::scenery::to_world(CAR_AT))
@@ -2076,9 +2183,15 @@ pub fn show(
             let middle = area.center() + across * area.size() / 2.0;
             Rect::from_center_half_size(middle, Vec2::splat(half)).intersect(area)
         };
-        let brick = bricks.iter().find(|brick| brick.0.which == 0).map(|brick| brick.0);
+        let brick = bricks
+            .iter()
+            .find(|brick| brick.0.which == 0)
+            .map(|brick| brick.0);
         let brick = brick.map_or(Rect::default(), |held| {
-            seen(stood.transform_point(held_at(held.place, HELD_AT)), held.reach * UNIT)
+            seen(
+                stood.transform_point(held_at(held.place, HELD_AT)),
+                held.reach * UNIT,
+            )
         });
         bench.grips = Some([seen(stood.translation, bench.reach * UNIT), brick]);
     } else {
@@ -2123,12 +2236,7 @@ pub fn show(
     let [side, ahead, behind] = model.outline;
     bench.reach = side.hypot((ahead + behind) / 2.0);
     let table = commands
-        .spawn((
-            Exhibit,
-            Turntable,
-            stood,
-            Visibility::default(),
-        ))
+        .spawn((Exhibit, Turntable, stood, Visibility::default()))
         .id();
     // In its set, it is the set's camera that draws it.
     if set.is_some() {
@@ -2274,7 +2382,10 @@ fn help_comes_after_three_seconds_and_goes_with_the_pointer() {
     let left = Rect::new(100.0, 100.0, 132.0, 132.0);
     assert_eq!(Tip::place(left, size, line, screen), Vec2::new(142.0, 86.0));
     let right = Rect::new(600.0, 100.0, 632.0, 132.0);
-    assert_eq!(Tip::place(right, size, line, screen), Vec2::new(430.0, 142.0));
+    assert_eq!(
+        Tip::place(right, size, line, screen),
+        Vec2::new(430.0, 142.0)
+    );
     // About three times as wide as tall, and never wider than the screen.
     assert_eq!(Tip::wrap(1200.0, 11.0, screen), 207.0);
     assert_eq!(Tip::wrap(100000.0, 11.0, screen), 618.0);
@@ -2373,9 +2484,15 @@ fn the_bricks_page_has_its_pads_where_the_layout_puts_them() {
     assert_eq!(art.place("carbuild", "crocker").min, Vec2::new(51.0, 301.0));
     // Places laid out the plainer way are where they were.
     assert_eq!(art.place("carbuild", "rotbrik").min, Vec2::new(60.0, 160.0));
-    assert_eq!(art.place("carbuild", "garage"), Rect::new(207.0, 115.0, 627.0, 469.0));
+    assert_eq!(
+        art.place("carbuild", "garage"),
+        Rect::new(207.0, 115.0, 627.0, 469.0)
+    );
     // Every place to press is inside its pad's picture, and no two overlap.
-    for (spots, size) in [(&MOVE_SPOTS[..], Vec2::new(120.0, 112.0)), (&VIEW_SPOTS[..], Vec2::splat(92.0))] {
+    for (spots, size) in [
+        (&MOVE_SPOTS[..], Vec2::new(120.0, 112.0)),
+        (&VIEW_SPOTS[..], Vec2::splat(92.0)),
+    ] {
         for (n, (_, [left, top, right, bottom])) in spots.iter().enumerate() {
             assert!(*left >= 0.0 && *top >= 0.0 && *right <= size.x && *bottom <= size.y);
             let rect = Rect::new(*left, *top, *right, *bottom);
@@ -2440,9 +2557,15 @@ fn the_help_names_the_ports_keys_in_every_language() {
         art.speak(language);
         for (string, keys) in KEYS.iter().enumerate() {
             let words = help(&art.help[string], string);
-            assert!(words.ends_with(&format!(": {keys}")), "{language} {string}: {words}");
+            assert!(
+                words.ends_with(&format!(": {keys}")),
+                "{language} {string}: {words}"
+            );
             // What is said before the keys is the game's own.
-            assert!(words.len() > keys.len() + 10 && !words.contains("NUMERIC KEYPAD"), "{words}");
+            assert!(
+                words.len() > keys.len() + 10 && !words.contains("NUMERIC KEYPAD"),
+                "{words}"
+            );
         }
         // The two about the pointer say nothing of keys, and are as they were.
         assert_eq!(help(&art.help[7], 7), art.help[7]);

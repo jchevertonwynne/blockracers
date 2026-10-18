@@ -1044,12 +1044,20 @@ impl Ai {
         // What a car can get at is what nothing stands between at its own height: a
         // place up a ramp is plain to see over the ramp's side, and is not got at
         // from there.
-        let hidden = |at: Vec3| track.collision.wall(k.pos + lift, at.with_y(k.pos.y) + lift).is_some();
+        let hidden = |at: Vec3| {
+            track
+                .collision
+                .wall(k.pos + lift, at.with_y(k.pos.y) + lift)
+                .is_some()
+        };
         let chased = self.quarry.filter(|&at| !hidden(at));
         // A car on an arena's floor that can't see where it is to go along the line,
         // having left it, goes round whatever is in the way by the floor's own way
         // back, and not fast.
-        let back = track.ways.as_ref().filter(|_| k.pos.y < WAY_FLOOR && chased.is_none() && hidden(target));
+        let back = track
+            .ways
+            .as_ref()
+            .filter(|_| k.pos.y < WAY_FLOOR && chased.is_none() && hidden(target));
         let back = back.and_then(|ways| ways.back(k.pos, |at| !hidden(at)));
         let (target, limit) = match back {
             Some(way) => (way, WAY_PACE),
@@ -1335,10 +1343,14 @@ pub fn spawn_karts(
             size: model.chassis.footprint * UNIT,
         });
         // The driver is on its skeleton, to move (`driver`), where there is one.
-        let figure = model.figure.take().zip(binds.as_mut()).map(|(figure, binds)| {
-            model.driver.clear();
-            (figure, binds, model.chassis.mount, model.driver_scale)
-        });
+        let figure = model
+            .figure
+            .take()
+            .zip(binds.as_mut())
+            .map(|(figure, binds)| {
+                model.driver.clear();
+                (figure, binds, model.chassis.mount, model.driver_scale)
+            });
         crate::time_race::dress(
             &mut commands,
             id,
@@ -1416,10 +1428,7 @@ pub fn player_input(
     // `PlayerControls::UpdateThrottle`: a slide is the slide key with the accelerator
     // down, and holds the accelerator full on; without it, accelerator and brake
     // together are half throttle.
-    let (go, stop) = (
-        actions.held(Event::Accelerate),
-        actions.held(Event::Brake),
-    );
+    let (go, stop) = (actions.held(Event::Accelerate), actions.held(Event::Brake));
     // `PlayerControls::UpdateSteering`: a stick steers when neither key is down.
     let (left, right) = (actions.held(Event::Left), actions.held(Event::Right));
     c.steer = if left || right {
@@ -1483,7 +1492,13 @@ pub fn ai_drive(
     loaded: Option<Res<LoadedWorld>>,
     settings: Res<Settings>,
     mark: Option<Res<crate::net::modes::Mark>>,
-    mut q: Query<(&mut Kart, &mut Ai, &mut Controls, Has<Player>, Option<&Remote>)>,
+    mut q: Query<(
+        &mut Kart,
+        &mut Ai,
+        &mut Controls,
+        Has<Player>,
+        Option<&Remote>,
+    )>,
 ) {
     let dt = time.delta_secs();
     let racing = matches!(race.phase, Phase::Racing | Phase::Finished);
@@ -1505,7 +1520,9 @@ pub fn ai_drive(
     let mode = settings.mode;
     // Where the hill is just now, and where a flag nobody has lies.
     let top = track.hill_at(race.time);
-    let loose = mark.and_then(|mark| mark.0).filter(|_| mode == Mode::KeepAway);
+    let loose = mark
+        .and_then(|mark| mark.0)
+        .filter(|_| mode == Mode::KeepAway);
     // The nearest other car between two distances inside a cone ahead.
     let ahead = |k: &Kart, (min, max, cone): (f32, f32, f32)| {
         let forward = k.rot * Vec3::NEG_Z;
@@ -1593,12 +1610,17 @@ pub fn ai_drive(
             let fired_at = |at: Vec3| {
                 track.perils.iter().any(|&(from, reach)| {
                     let way = at - k.pos;
-                    let along = ((from - k.pos).dot(way) / way.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                    let along =
+                        ((from - k.pos).dot(way) / way.length_squared().max(1e-6)).clamp(0.0, 1.0);
                     from.distance(k.pos + way * along) < reach
                 })
             };
             let clear = |at: Vec3| {
-                track.collision.wall(k.pos + lift, at.with_y(k.pos.y) + lift).is_none() && !fired_at(at)
+                track
+                    .collision
+                    .wall(k.pos + lift, at.with_y(k.pos.y) + lift)
+                    .is_none()
+                    && !fired_at(at)
             };
             // Who a driver is after is the game's to say: in infection a car that
             // is "it" wants one that isn't, in keep-away every car wants the one
@@ -1633,8 +1655,12 @@ pub fn ai_drive(
                     let kept = |&(at, _, left): &(Vec3, Vec3, f32)| {
                         hunting && left > 0.0 && at.distance(k.pos) > QUARRY_REACHED
                     };
-                    ai.seen = ai.seen.filter(kept).map(|(at, on, left)| (at, on, left - dt));
-                    ai.seen.and_then(|(at, on, _)| [on, at].into_iter().find(|&place| clear(place)))
+                    ai.seen = ai
+                        .seen
+                        .filter(kept)
+                        .map(|(at, on, left)| (at, on, left - dt));
+                    ai.seen
+                        .and_then(|(at, on, _)| [on, at].into_iter().find(|&place| clear(place)))
                 }
             };
             // In infection a car that hasn't been caught runs from those that have,
@@ -1681,7 +1707,9 @@ pub fn ai_drive(
                 ai.quarry = Some(top);
             }
             // A flag lying loose is made for by whoever can see it.
-            if let Some(flag) = loose.filter(|flag| (flag.y - k.pos.y).abs() < QUARRY_LEVEL && clear(*flag)) {
+            if let Some(flag) =
+                loose.filter(|flag| (flag.y - k.pos.y).abs() < QUARRY_LEVEL && clear(*flag))
+            {
                 ai.quarry = Some(flag);
             }
             ai.drive(&k, &mut c, &track, &mut rng, dt);
@@ -1890,7 +1918,9 @@ impl Kart {
         } else if warping && track.unrouted {
             // `WarpAction::Update`: with no checkpoints to be carried along, the car
             // is taken nowhere, and comes out where it went in, facing the game's X.
-            k.facing = crate::scenery::to_world(Vec3::X).with_y(0.0).normalize_or(k.facing);
+            k.facing = crate::scenery::to_world(Vec3::X)
+                .with_y(0.0)
+                .normalize_or(k.facing);
             k.rot = Transform::IDENTITY.looking_to(k.facing, Vec3::Y).rotation;
             k.rigid = physics::Rigid::default();
             k.vel = k.facing * WARP_EXIT_SPEED;
@@ -2425,7 +2455,12 @@ mod tests {
         };
         let (plain, fast) = (run(1.0, 160, 3.0 / 120.0), run(3.0, 160, 1.0 / 120.0));
         assert!(plain.vel.length() > 10.0, "{}", plain.vel.length());
-        assert!(plain.pos.distance(fast.pos) < 0.01, "{} {}", plain.pos, fast.pos);
+        assert!(
+            plain.pos.distance(fast.pos) < 0.01,
+            "{} {}",
+            plain.pos,
+            fast.pos
+        );
         assert!((plain.vel * 3.0).distance(fast.vel) < 0.01);
 
         let Some(jam) = crate::assets::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM")
@@ -2433,7 +2468,8 @@ mod tests {
             return;
         };
         let record = jam.get("/GAMEDATA/RACEC0R0/R2_M_0.RRB").unwrap();
-        let record = std::sync::Arc::new(crate::assets::route::Record::parse(record, false).unwrap());
+        let record =
+            std::sync::Arc::new(crate::assets::route::Record::parse(record, false).unwrap());
         let played = |pace: f32, dt: f32| {
             let mut kart = Kart::new(&track, 0);
             kart.pace = pace;
@@ -2447,7 +2483,12 @@ mod tests {
         };
         let (plain, fast) = (played(1.0, 3.0 / 60.0), played(3.0, 1.0 / 60.0));
         assert!(plain.vel.length() > 5.0, "{}", plain.vel.length());
-        assert!(plain.pos.distance(fast.pos) < 0.05, "{} {}", plain.pos, fast.pos);
+        assert!(
+            plain.pos.distance(fast.pos) < 0.05,
+            "{} {}",
+            plain.pos,
+            fast.pos
+        );
         assert!((plain.vel * 3.0).distance(fast.vel) < 0.5);
     }
 
@@ -2499,7 +2540,10 @@ mod tests {
                 }
                 let laps: Vec<i32> = karts.iter().map(|kart| kart.lap).collect();
                 println!("{layout} reversed {reverse}: laps begun {laps:?}, {bumps} bumps");
-                assert!(laps.iter().all(|&lap| lap >= 3), "{layout} {reverse} {laps:?}");
+                assert!(
+                    laps.iter().all(|&lap| lap >= 3),
+                    "{layout} {reverse} {laps:?}"
+                );
             }
         }
     }
@@ -2543,7 +2587,10 @@ mod tests {
                 kart.lap
             );
             assert!(kart.lap >= 4, "{layout} {}", kart.lap);
-            assert!(touching * 100 < frames && slowest > 18.0, "{layout} {touching} {slowest}");
+            assert!(
+                touching * 100 < frames && slowest > 18.0,
+                "{layout} {touching} {slowest}"
+            );
         }
     }
 
@@ -2555,7 +2602,10 @@ mod tests {
         let map = crate::map::Map::tried("WIDE", text).unwrap();
         let track = Track::made(&map, false);
         let mut kart = Kart::new(&track, 0);
-        let mut c = Controls { throttle: 1.0, ..default() };
+        let mut c = Controls {
+            throttle: 1.0,
+            ..default()
+        };
         let dt = 1.0 / 60.0;
         let (mut frames, mut touching) = (0, 0);
         for _ in 0..(lapping_time(&track) / dt) as usize {
@@ -2569,7 +2619,11 @@ mod tests {
                 touching += kart.wall_contact as usize;
             }
         }
-        assert!(kart.lap >= 4 && touching * 100 < frames, "{} laps, at a wall {touching} frames of {frames}", kart.lap);
+        assert!(
+            kart.lap >= 4 && touching * 100 < frames,
+            "{} laps, at a wall {touching} frames of {frames}",
+            kart.lap
+        );
         // Its grid is across the road where the cars line up.
         let lined = Kart::new(&track, 1);
         assert!(track.on_road(lined.pos, -1.0));
@@ -2581,7 +2635,9 @@ mod tests {
                 track.reverse();
             }
             let mut karts: Vec<Kart> = (0..6).map(|slot| Kart::new(&track, slot)).collect();
-            let mut drivers: Vec<Ai> = (0..6).map(|slot| Ai::new(1.0 - 0.03 * slot as f32, slot)).collect();
+            let mut drivers: Vec<Ai> = (0..6)
+                .map(|slot| Ai::new(1.0 - 0.03 * slot as f32, slot))
+                .collect();
             let mut controls: Vec<Controls> = (0..6).map(|_| Controls::default()).collect();
             let (mut rng, dt) = (Rng(7), 1.0 / 60.0);
             for _ in 0..(1.3 * lapping_time(&track) / dt) as usize {
@@ -2597,7 +2653,10 @@ mod tests {
                 }
             }
             let laps: Vec<i32> = karts.iter().map(|kart| kart.lap).collect();
-            assert!(laps.iter().all(|&lap| lap >= 3), "reversed {reverse}: {laps:?}");
+            assert!(
+                laps.iter().all(|&lap| lap >= 3),
+                "reversed {reverse}: {laps:?}"
+            );
         }
     }
 
@@ -2617,7 +2676,11 @@ mod tests {
             for step in 0..60 * 60 {
                 ai.drive(&kart, &mut c, &track, &mut rng, dt);
                 kart.advance(&c, &track, dt);
-                assert!(plan.open(kart.pos, 0.0), "{layout} off the floor at {}", kart.pos);
+                assert!(
+                    plan.open(kart.pos, 0.0),
+                    "{layout} off the floor at {}",
+                    kart.pos
+                );
                 far += kart.pos.distance(last);
                 last = kart.pos;
                 slow += (step > 300 && kart.vel.length() < 5.0) as usize;
@@ -2628,7 +2691,11 @@ mod tests {
             let mut kart = Kart::new(&track, 0);
             let quarry = track.course.grid[4].0;
             let lift = Vec3::Y * 0.6;
-            if track.collision.wall(kart.pos + lift, quarry + lift).is_some() {
+            if track
+                .collision
+                .wall(kart.pos + lift, quarry + lift)
+                .is_some()
+            {
                 continue;
             }
             let mut ai = Ai::new(1.0, 0);
@@ -2660,14 +2727,16 @@ mod tests {
                 let reach = |way: Vec3| (way.x * ramp.half[0]).abs() + (way.z * ramp.half[1]).abs();
                 let middle = Vec3::new(ramp.at[0], 0.0, ramp.at[1]);
                 for side in [-1.0, 1.0] {
-                    let from = middle + up * (reach(up) - 3.0) + across * side * (reach(across) + 3.0);
+                    let from =
+                        middle + up * (reach(up) - 3.0) + across * side * (reach(across) + 3.0);
                     let floor = track.collision.ground(from + Vec3::Y * 2.0, 4.0);
                     if !plan.open(from, 1.5) || floor.is_none_or(|floor| floor.point.y > 0.5) {
                         continue;
                     }
                     tried += 1;
                     let mut kart = Kart::new(&track, 0);
-                    (kart.pos, kart.rot) = (from, Transform::IDENTITY.looking_to(up, Vec3::Y).rotation);
+                    (kart.pos, kart.rot) =
+                        (from, Transform::IDENTITY.looking_to(up, Vec3::Y).rotation);
                     (kart.facing, kart.safe) = (up, (from, kart.rot));
                     let (mut ai, mut rng, mut c) = (Ai::new(1.0, 0), Rng(7), Controls::default());
                     let (dt, mut far) = (1.0 / 60.0, 0.0f32);
@@ -2756,7 +2825,11 @@ mod tests {
             );
             // How far past the jump it is, the line being crossed on the way.
             let past = |kart: &Kart| (kart.idx + track.n() - to) % track.n();
-            assert!((20..track.n() / 2).contains(&past(&kart)), "stopped at {}", kart.idx);
+            assert!(
+                (20..track.n() / 2).contains(&past(&kart)),
+                "stopped at {}",
+                kart.idx
+            );
             if !reverse {
                 assert!(
                     lowest > 5.0 && landed.is_some_and(|at| at > last + 3),
@@ -2809,9 +2882,7 @@ mod tests {
                         inside[b] = middle;
                     }
                 }
-                println!(
-                    "{layout} reversed {reverse}: {laps} laps begun, byways taken {taken:?}"
-                );
+                println!("{layout} reversed {reverse}: {laps} laps begun, byways taken {taken:?}");
                 assert!(laps >= 3, "{layout} {reverse}");
                 assert!(
                     taken.iter().all(|&times| times >= 2),
@@ -2827,7 +2898,13 @@ mod tests {
     fn the_strongest_turbo_floats_the_car_over_the_road() {
         let track = Track::built(crate::map::named("BRICK"));
         let mut kart = Kart::new(&track, 0);
-        let (c, dt) = (Controls { throttle: 1.0, ..default() }, 1.0 / 60.0);
+        let (c, dt) = (
+            Controls {
+                throttle: 1.0,
+                ..default()
+            },
+            1.0 / 60.0,
+        );
         let over = |kart: &Kart| {
             let ground = track.collision.ground(kart.pos + Vec3::Y, 20.0);
             kart.pos.y - ground.expect("road under the car").point.y
@@ -2843,7 +2920,10 @@ mod tests {
             highest = highest.max(over(&kart));
         }
         // It is held up by its back axle, nose in the air, so its middle is higher yet.
-        assert!((HOVER_HEIGHT..HOVER_HEIGHT + 0.6).contains(&highest), "{highest}");
+        assert!(
+            (HOVER_HEIGHT..HOVER_HEIGHT + 0.6).contains(&highest),
+            "{highest}"
+        );
         for _ in 0..120 {
             kart.advance(&c, &track, dt);
         }
@@ -2991,4 +3071,3 @@ mod tests {
         assert!(failed.is_empty(), "{failed:#?}");
     }
 }
-

@@ -371,7 +371,12 @@ fn a_decal_is_cut_to_its_box_and_lies_only_on_what_faces_it() {
     floor(0.0, true);
     floor(2.0, false);
     floor(-20.0, true);
-    let lies = world.decal(Vec3::new(1.0, 5.0, 1.0), Vec3::NEG_Y, Vec3::X, [4.0, 6.0, 10.0]);
+    let lies = world.decal(
+        Vec3::new(1.0, 5.0, 1.0),
+        Vec3::NEG_Y,
+        Vec3::X,
+        [4.0, 6.0, 10.0],
+    );
     assert!(!lies.is_empty() && lies.len() % 3 == 0);
     let mut area = 0.0;
     for corners in lies.chunks_exact(3) {
@@ -389,6 +394,11 @@ fn a_decal_is_cut_to_its_box_and_lies_only_on_what_faces_it() {
     assert!((area - 24.0).abs() < 1e-3, "{area}");
     // Mirrored, every face is the other one, and it lies on the ceiling.
     world.set_mirrored(true);
-    let lies = world.decal(Vec3::new(1.0, 5.0, 1.0), Vec3::NEG_Y, Vec3::X, [4.0, 6.0, 10.0]);
+    let lies = world.decal(
+        Vec3::new(1.0, 5.0, 1.0),
+        Vec3::NEG_Y,
+        Vec3::X,
+        [4.0, 6.0, 10.0],
+    );
     assert!(lies.iter().all(|corner| corner.0.y == 2.0) && !lies.is_empty());
 }

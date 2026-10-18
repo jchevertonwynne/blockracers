@@ -185,8 +185,12 @@ pub fn end_demo(
     }
     idle.flashing(real.delta_secs());
     let pad = pads.iter().any(|pad| {
-        pad.get_just_pressed()
-            .any(|b| !matches!(b, GamepadButton::LeftTrigger2 | GamepadButton::RightTrigger2))
+        pad.get_just_pressed().any(|b| {
+            !matches!(
+                b,
+                GamepadButton::LeftTrigger2 | GamepadButton::RightTrigger2
+            )
+        })
     });
     if keys.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some() || pad
     {
@@ -263,8 +267,8 @@ mod tests {
         }
         assert_eq!(picks.len(), 4);
         // The circuit list's first entry is `c0`, whose races these are.
-        let jam = crate::assets::jam::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM")
-            .unwrap();
+        let jam =
+            crate::assets::jam::Jam::open("Lego_Racers_Win_Files_EN/Game Files/LEGO.JAM").unwrap();
         let (code, rounds) = &crate::roster::circuits(&jam)[0];
         assert_eq!(code, "c0");
         for pick in picks {

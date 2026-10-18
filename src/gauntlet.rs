@@ -33,10 +33,10 @@ use crate::assets::materials::Surface;
 use crate::events::TrackEvents;
 use crate::hazards::{Hazards, Kind, Places};
 use crate::items::{BRICK_HEIGHT, Power};
+use crate::map::Map;
 use crate::meshgen::*;
 use crate::physics::UNIT;
 use crate::scenery::{mirror, to_world};
-use crate::map::Map;
 use crate::track::{Lane, Track};
 use crate::world::{self, LoadedWorld};
 use bevy::prelude::*;
@@ -104,7 +104,12 @@ pub(crate) const DRAGON_REACH: f32 = 70.0;
 const BORROWS: [(Sort, &str, &[&str], &[&str]); 13] = [
     (Sort::Hammer, "RACEC0R0", &["rkhamm02"], &[]),
     (Sort::Crane, "RACEC0R1", &["crane"], &[]),
-    (Sort::Barrels, "RACEC0R1", &["block", "barrel", "barrel01", "barrel02"], &[]),
+    (
+        Sort::Barrels,
+        "RACEC0R1",
+        &["block", "barrel", "barrel01", "barrel02"],
+        &[],
+    ),
     (Sort::Pillar, "RACEC0R2", &["piltop"], &[]),
     (Sort::Lava, "RACEC0R3", &["mmlavbl"], &["lavasmk"]),
     (Sort::Field, "RACEC0R3", &["mmrocon", "mmrocof"], &[]),
@@ -151,7 +156,9 @@ impl Stood {
                 return Some(format!("the {name} wants `at` or `place`, one of them"));
             }
             (Some(_), _, None) => {
-                return Some(format!("the {name} is `at` a distance round a road, and an arena has none"));
+                return Some(format!(
+                    "the {name} is `at` a distance round a road, and an arena has none"
+                ));
             }
             (None, ..) if roaded => return Some(format!("the {name} wants a road to be `at`")),
             (Some(at), ..) if !within(at) => {
@@ -159,7 +166,12 @@ impl Stood {
             }
             _ => {}
         }
-        let rounds = self.drops.iter().flatten().map(|drop| drop[0]).chain(self.out);
+        let rounds = self
+            .drops
+            .iter()
+            .flatten()
+            .map(|drop| drop[0])
+            .chain(self.out);
         if let Some(off) = rounds.into_iter().find(|&s| !within(s)) {
             return Some(format!("the {name} has {off}, which is not on the lap"));
         }
@@ -419,7 +431,11 @@ impl Builder<'_> {
                 colour,
             );
         }
-        for (right, power) in [(0.25, Power::Red), (0.5, Power::Green), (0.75, Power::Yellow)] {
+        for (right, power) in [
+            (0.25, Power::Red),
+            (0.5, Power::Green),
+            (0.75, Power::Yellow),
+        ] {
             let at = site.at(14.0, right * wall, BRICK_HEIGHT);
             self.world.bricks.push((Some(power), to_world(at)));
         }
@@ -434,7 +450,11 @@ impl Builder<'_> {
     /// site to `after` it.
     fn keep_left(&mut self, site: Site, before: f32, after: f32, most: f32) {
         let road = self.track.tarmac_at(site.s);
-        let (least, most) = if mirror() { (-most, road) } else { (-road, most) };
+        let (least, most) = if mirror() {
+            (-most, road)
+        } else {
+            (-road, most)
+        };
         self.track.lanes.push(Lane {
             from: site.s - before,
             to: site.s + after,
@@ -579,7 +599,9 @@ impl Builder<'_> {
         // Its bolt comes from under it and reaches as far as a car's does.
         let stood = self.world.props.iter().find(|def| def.name() == "arktp");
         if let Some(from) = stood.map(|def| to_world(def.position() - Vec3::Z * ARK_UNDER)) {
-            self.track.perils.push((from, crate::items::LIGHTNING_RANGE + ARK_BERTH));
+            self.track
+                .perils
+                .push((from, crate::items::LIGHTNING_RANGE + ARK_BERTH));
         }
     }
 
@@ -805,7 +827,8 @@ impl Builder<'_> {
             &["dp_def"],
         );
         self.hazard(SMOKE, Kind::SmokeVent { emitter: None }, site.origin, 70.0);
-        self.events.trigger(to_world(site.origin), 100.0, SNOW, true);
+        self.events
+            .trigger(to_world(site.origin), 100.0, SNOW, true);
         self.hazards.push((SNOW, Kind::Snowfall { emitter: None }));
     }
 
@@ -838,7 +861,10 @@ mod tests {
 
     /// Every model a map's hazards take.
     fn wanted(map: &Map) -> Vec<&'static str> {
-        borrowed(&map.hazards).into_iter().flat_map(|taken| taken.1).collect()
+        borrowed(&map.hazards)
+            .into_iter()
+            .flat_map(|taken| taken.1)
+            .collect()
     }
 
     /// Needs the original game data; silently passes without it.
@@ -867,7 +893,10 @@ mod tests {
             assert!(off < 140.0, "{name} is {off} from the road");
         }
         assert_eq!(world.props.len(), wanted.len());
-        for emitter in borrowed(&map.hazards).iter().flat_map(|taken| taken.2.iter()) {
+        for emitter in borrowed(&map.hazards)
+            .iter()
+            .flat_map(|taken| taken.2.iter())
+        {
             assert!(world.emitters.iter().any(|e| e.0 == *emitter), "{emitter}");
         }
         // The gates are shut and the fallen pillar isn't there yet.
@@ -880,7 +909,11 @@ mod tests {
         }
         // The computer's cars are kept out of the shut lanes, and bricks are left in them.
         let field = map.hazards.iter().find(|stood| stood.kind == Sort::Field);
-        let gate = Site::along(&Track::plain(map), field.and_then(|field| field.at).unwrap(), 0.0);
+        let gate = Site::along(
+            &Track::plain(map),
+            field.and_then(|field| field.at).unwrap(),
+            0.0,
+        );
         assert_eq!(track.lane(gate.s, 5.0), -2.0);
         assert_eq!(track.lane(gate.s - 100.0, 5.0), 5.0);
         assert!(world.bricks.iter().any(|b| b.1.distance(to_world(gate.at(
@@ -936,7 +969,11 @@ mod tests {
             // carries along its animation may be some way from where it is itself.
             for prop in &world.props {
                 let at = to_world(prop.position());
-                assert!(at.with_y(0.0).length() < plan.reach() + 100.0, "{layout} {} is at {at}", prop.name());
+                assert!(
+                    at.with_y(0.0).length() < plan.reach() + 100.0,
+                    "{layout} {} is at {at}",
+                    prop.name()
+                );
             }
             assert_eq!(world.bricks.len(), crate::items::laid(&track).len());
             // The ring's ark fires from under itself as far as a bolt reaches: at
@@ -949,11 +986,19 @@ mod tests {
             let reach = crate::items::LIGHTNING_RANGE;
             assert_eq!(track.perils, [(from, reach + ARK_BERTH)], "{layout}");
             for &p in &track.pts {
-                assert!(p.distance(from) > reach + 2.0, "{layout} the ark reaches the line at {p}");
+                assert!(
+                    p.distance(from) > reach + 2.0,
+                    "{layout} the ark reaches the line at {p}"
+                );
             }
-            let whites = crate::items::laid(&track).into_iter().filter(|brick| brick.0.is_none());
+            let whites = crate::items::laid(&track)
+                .into_iter()
+                .filter(|brick| brick.0.is_none());
             for (_, at) in whites {
-                assert!(at.distance(from) < reach, "{layout} the white brick at {at} is out of the ark's reach");
+                assert!(
+                    at.distance(from) < reach,
+                    "{layout} the white brick at {at} is out of the ark's reach"
+                );
             }
         }
     }
@@ -996,7 +1041,10 @@ mod tests {
             // left of the road for it on one side is a car and a half wide.
             let (reach, car) = (10.0 * UNIT + 1.5 * UNIT, 0.95);
             let rights = drops.map(|drop| drop.1);
-            let left = rights.iter().fold(f32::MAX, |least, &right| least.min(right)) - reach;
+            let left = rights
+                .iter()
+                .fold(f32::MAX, |least, &right| least.min(right))
+                - reach;
             let right = rights.iter().fold(f32::MIN, |most, &right| most.max(right)) + reach;
             let room = (left + (WALL - car)).max((WALL - car) - right);
             assert!(room > 3.0 * car, "{layout} {room}");

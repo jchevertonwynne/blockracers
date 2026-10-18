@@ -121,7 +121,10 @@ pub fn team(settings: &Settings, slot: usize) -> Option<usize> {
 /// Whether a game's coloured bricks are each a colour for the car coming to it
 /// (`items`): those of the tag family are, a battle's being as its arena lays them.
 pub fn suits(mode: Mode) -> bool {
-    matches!(mode, Mode::Tag | Mode::Infection | Mode::KeepAway | Mode::Hill)
+    matches!(
+        mode,
+        Mode::Tag | Mode::Infection | Mode::KeepAway | Mode::Hill
+    )
 }
 
 /// Whether a car in a game of the tag family is after another, and wants bricks
@@ -184,12 +187,20 @@ fn struck(play: &mut Play, kart: &Kart) -> bool {
 /// games give it the worst of the draw.
 fn leader(room: Option<&super::room::Room>, lineup: Option<&super::Lineup>) -> Option<usize> {
     let (room, lineup) = (room?, lineup?);
-    let most = room.voters.iter().map(|voter| voter.points).max().filter(|most| *most > 0)?;
+    let most = room
+        .voters
+        .iter()
+        .map(|voter| voter.points)
+        .max()
+        .filter(|most| *most > 0)?;
     let mut leading = room.voters.iter().filter(|voter| voter.points == most);
     let (first, None) = (leading.next()?, leading.next()) else {
         return None;
     };
-    let seat = lineup.seats.iter().find(|seat| seat.peer == Some(first.peer))?;
+    let seat = lineup
+        .seats
+        .iter()
+        .find(|seat| seat.peer == Some(first.peer))?;
     Some(seat.slot as usize)
 }
 
@@ -245,7 +256,11 @@ pub fn battle(
             put_out(&mut kart, race.time);
         }
     }
-    let left: Vec<usize> = karts.iter().filter(|kart| playing(kart)).map(|kart| kart.slot).collect();
+    let left: Vec<usize> = karts
+        .iter()
+        .filter(|kart| playing(kart))
+        .map(|kart| kart.slot)
+        .collect();
     // By teams it is over when one of them has nobody left.
     let one_side = left.iter().all(|slot| allies(&settings, *slot, left[0]));
     let limit = match settings.battle_time() {
@@ -270,14 +285,29 @@ fn playing(kart: &Kart) -> bool {
 
 /// One of the cars still in the game is made "it": `first` if that is one of
 /// them, and otherwise any but those of `spared`, unless they are all there are.
-fn draw(karts: &mut Query<&mut Kart>, dice: &mut Rng, first: Option<usize>, spared: &[usize]) -> Option<usize> {
-    let mut slots: Vec<usize> = karts.iter().filter(|kart| playing(kart)).map(|kart| kart.slot).collect();
+fn draw(
+    karts: &mut Query<&mut Kart>,
+    dice: &mut Rng,
+    first: Option<usize>,
+    spared: &[usize],
+) -> Option<usize> {
+    let mut slots: Vec<usize> = karts
+        .iter()
+        .filter(|kart| playing(kart))
+        .map(|kart| kart.slot)
+        .collect();
     slots.sort();
-    let free: Vec<usize> = slots.iter().copied().filter(|slot| !spared.contains(slot)).collect();
+    let free: Vec<usize> = slots
+        .iter()
+        .copied()
+        .filter(|slot| !spared.contains(slot))
+        .collect();
     let among = if free.is_empty() { &slots } else { &free };
-    let drawn = first
-        .filter(|first| slots.contains(first))
-        .or_else(|| among.get((dice.f() * among.len() as f32) as usize % among.len().max(1)).copied())?;
+    let drawn = first.filter(|first| slots.contains(first)).or_else(|| {
+        among
+            .get((dice.f() * among.len() as f32) as usize % among.len().max(1))
+            .copied()
+    })?;
     for mut kart in karts.iter_mut().filter(|kart| kart.slot == drawn) {
         kart.it = true;
     }
@@ -355,8 +385,17 @@ pub fn tag(
         .find(|kart| kart.it)
         .map_or(TAG_TIME, |kart| kart.stake);
     // A car caught with the clock all but out has a moment to pass it on in.
-    let least = if caught.is_some() { settings.tag_least() } else { 0.0 };
-    let lost = dt + if hit && caught.is_none() { TAG_HIT } else { 0.0 };
+    let least = if caught.is_some() {
+        settings.tag_least()
+    } else {
+        0.0
+    };
+    let lost = dt
+        + if hit && caught.is_none() {
+            TAG_HIT
+        } else {
+            0.0
+        };
     let mut clock = (clock - lost).max(least);
     let ran_out = clock <= 0.0;
     if ran_out {
@@ -389,7 +428,8 @@ fn bumped(karts: &Query<&mut Kart>, bumps: &Bumps) -> Vec<(usize, usize)> {
             .any(|kart| kart.slot == slot && kart.it == it && playing(kart))
     };
     let met = bumps.0.iter().flat_map(|&(a, b)| [(a, b), (b, a)]);
-    met.filter(|&(it, other)| is(it, true) && is(other, false)).collect()
+    met.filter(|&(it, other)| is(it, true) && is(other, false))
+        .collect()
 }
 
 /// How long the cars of a round of infection have to get away from the one drawn,
@@ -438,7 +478,10 @@ pub fn infection(
         *spared = (*spared - dt).max(0.0);
     }
     let able = |by: usize| play.held <= 0.0 && play.spared.get(by).is_none_or(|left| *left <= 0.0);
-    let mut caught: Vec<(usize, usize)> = bumped(&karts, &bumps).into_iter().filter(|met| able(met.0)).collect();
+    let mut caught: Vec<(usize, usize)> = bumped(&karts, &bumps)
+        .into_iter()
+        .filter(|met| able(met.0))
+        .collect();
     caught.sort_by_key(|met| met.1);
     caught.dedup_by_key(|met| met.1);
     for mut kart in &mut karts {
@@ -457,7 +500,10 @@ pub fn infection(
         }
     }
     let cars = karts.iter().filter(|kart| playing(kart)).count();
-    let free = karts.iter().filter(|kart| playing(kart) && !kart.it).count();
+    let free = karts
+        .iter()
+        .filter(|kart| playing(kart) && !kart.it)
+        .count();
     let timed_out = race.time >= settings.battle_time();
     if free > 1 && !timed_out {
         return;
@@ -520,7 +566,9 @@ pub fn keep_away(
             (kart.stake, kart.it) = (0.0, false);
         }
         // Whoever leads the series is not the one to begin with it.
-        let leads: Vec<usize> = leader(room.as_deref(), lineup.as_deref()).into_iter().collect();
+        let leads: Vec<usize> = leader(room.as_deref(), lineup.as_deref())
+            .into_iter()
+            .collect();
         draw(&mut karts, &mut dice, None, &leads);
     }
     if !on(&race) || !karts.iter().any(|kart| playing(kart)) {
@@ -547,14 +595,19 @@ pub fn keep_away(
         let level = |kart: &Kart| (kart.pos.y - at.y).abs() < HILL_LEVEL;
         let nearest = karts
             .iter()
-            .filter(|kart| playing(kart) && (*lain > LOOSE_FOR || (level(kart) && off(kart) < FLAG_REACH)))
+            .filter(|kart| {
+                playing(kart) && (*lain > LOOSE_FOR || (level(kart) && off(kart) < FLAG_REACH))
+            })
             .min_by(|a, b| off(a).total_cmp(&off(b)));
         taker = nearest.map(|kart| kart.slot);
     } else if !karts.iter().any(|kart| kart.it) {
         // Whoever had it has gone: it is drawn for again.
         draw(&mut karts, &mut dice, None, &[]);
     } else {
-        taker = bumped(&karts, &bumps).first().map(|met| met.1).filter(|_| play.held <= 0.0);
+        taker = bumped(&karts, &bumps)
+            .first()
+            .map(|met| met.1)
+            .filter(|_| play.held <= 0.0);
     }
     if let Some(taker) = taker {
         (play.held, play.loose) = (settings.tag_back(), None);
@@ -614,7 +667,11 @@ pub fn hill(
     for kart in &karts {
         let hit = struck(play, kart);
         if let Some(spared) = play.spared.get_mut(kart.slot) {
-            *spared = if hit { KNOCKED } else { (*spared - dt).max(0.0) };
+            *spared = if hit {
+                KNOCKED
+            } else {
+                (*spared - dt).max(0.0)
+            };
         }
     }
     let top = track.hill_at(race.time);
@@ -622,7 +679,11 @@ pub fn hill(
         let from = kart.pos - top;
         playing(kart) && from.with_y(0.0).length() < HILL_REACH && from.y.abs() < HILL_LEVEL
     };
-    let mut there: Vec<usize> = karts.iter().filter(|kart| on_it(kart)).map(|kart| kart.slot).collect();
+    let mut there: Vec<usize> = karts
+        .iter()
+        .filter(|kart| on_it(kart))
+        .map(|kart| kart.slot)
+        .collect();
     there.sort();
     let held = there.len() == 1 || there.iter().all(|slot| allies(&settings, *slot, there[0]));
     let king = there
@@ -747,7 +808,8 @@ pub fn notice(
     if !said.is_empty() {
         sfx.play(crate::audio::id::BRICK_RESPAWN);
     }
-    feed.lines.extend(said.into_iter().map(|line| (line, SAID_FOR)));
+    feed.lines
+        .extend(said.into_iter().map(|line| (line, SAID_FOR)));
     let extra = feed.lines.len().saturating_sub(SAID);
     feed.lines.drain(..extra);
 }
@@ -825,13 +887,18 @@ pub fn beacon(
         }
     }
     for (beacon, mut transform, mut visibility) in &mut beacons {
-        let shown = if at.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+        let shown = if at.is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
         if *visibility != shown {
             *visibility = shown;
         }
         let Some(at) = at else { continue };
         let placed = if beacon.ring {
-            Transform::from_translation(at + Vec3::Y * 0.15).with_scale(Vec3::new(reach, 0.3, reach))
+            Transform::from_translation(at + Vec3::Y * 0.15)
+                .with_scale(Vec3::new(reach, 0.3, reach))
         } else {
             Transform::from_translation(at + Vec3::Y * BEACON.0 / 2.0)
         };
@@ -1102,7 +1169,9 @@ mod tests {
         assert!(car(&mut world, third).it && car(&mut world, third).shield > 0.0);
         assert_eq!(world.resource::<Mark>().0, None);
         // Left lying long enough, it is the nearest car's wherever that is.
-        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(3));
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(3));
         car(&mut world, third).spin = 0.0;
         car(&mut world, third).shield = 0.0;
         car(&mut world, third).spin_round(1.0);
@@ -1126,14 +1195,28 @@ mod tests {
             let settings = world.resource::<Settings>().clone();
             chasing(&settings, &car(world, slot), &[1])
         };
-        assert_eq!([1, 2].map(|slot| after(&mut world, slot)), [Some(true), Some(false)]);
+        assert_eq!(
+            [1, 2].map(|slot| after(&mut world, slot)),
+            [Some(true), Some(false)]
+        );
         world.resource_mut::<Settings>().mode = Mode::KeepAway;
-        assert_eq!([1, 2, 3].map(|slot| after(&mut world, slot)), [Some(false), Some(true), Some(true)]);
+        assert_eq!(
+            [1, 2, 3].map(|slot| after(&mut world, slot)),
+            [Some(false), Some(true), Some(true)]
+        );
         world.resource_mut::<Settings>().teams = true;
-        assert_eq!([1, 2, 3].map(|slot| after(&mut world, slot)), [Some(false), Some(true), Some(false)]);
+        assert_eq!(
+            [1, 2, 3].map(|slot| after(&mut world, slot)),
+            [Some(false), Some(true), Some(false)]
+        );
         world.resource_mut::<Settings>().mode = Mode::Battle;
         assert_eq!(after(&mut world, 1), None);
-        assert!(suits(Mode::Hill) && suits(Mode::Infection) && !suits(Mode::Battle) && !suits(Mode::Race));
+        assert!(
+            suits(Mode::Hill)
+                && suits(Mode::Infection)
+                && !suits(Mode::Battle)
+                && !suits(Mode::Race)
+        );
     }
 
     #[test]
@@ -1141,7 +1224,10 @@ mod tests {
         // Keep-away by teams: the even slots against the odd. One team's seconds
         // are its cars' together, and the team that gets there first has won.
         let mut world = world(Mode::KeepAway, 4);
-        (world.resource_mut::<Settings>().teams, world.resource_mut::<Settings>().goal) = (true, 0);
+        (
+            world.resource_mut::<Settings>().teams,
+            world.resource_mut::<Settings>().goal,
+        ) = (true, 0);
         world.run_system_once(keep_away).unwrap();
         let holder = cars(&mut world).iter().position(|kart| kart.it).unwrap();
         let mate = (holder + 2) % 4;
@@ -1235,7 +1321,10 @@ mod tests {
         world.run_system_once(crate::kart::update_places).unwrap();
         let all = cars(&mut world);
         assert!(all.iter().all(|kart| kart.finished.is_some() && !kart.it));
-        assert_eq!((all[other].place, all[first].place, all[third].place), (1, 2, 3));
+        assert_eq!(
+            (all[other].place, all[first].place, all[third].place),
+            (1, 2, 3)
+        );
     }
 
     #[test]
@@ -1247,7 +1336,11 @@ mod tests {
             car(&mut world, slot).pos = top + Vec3::X * 40.0 * (slot + 1) as f32;
         }
         world.run_system_once(hill).unwrap();
-        assert!(cars(&mut world).iter().all(|kart| !kart.it && kart.stake == 0.0));
+        assert!(
+            cars(&mut world)
+                .iter()
+                .all(|kart| !kart.it && kart.stake == 0.0)
+        );
         // One car on it is its king, and counts the time it is.
         car(&mut world, 0).pos = top + Vec3::X * 2.0;
         world.run_system_once(hill).unwrap();
@@ -1328,7 +1421,10 @@ mod tests {
     fn a_battle_and_a_game_of_tag_are_as_the_host_has_them() {
         // Five lives, and nobody spared: two hits in two steps take two of them.
         let mut world = world(Mode::Battle, 2);
-        (world.resource_mut::<Settings>().lives, world.resource_mut::<Settings>().spared) = (5, 0);
+        (
+            world.resource_mut::<Settings>().lives,
+            world.resource_mut::<Settings>().spared,
+        ) = (5, 0);
         world.run_system_once(battle).unwrap();
         for left in [4.0, 3.0] {
             car(&mut world, 0).spin = 0.0;
@@ -1344,8 +1440,10 @@ mod tests {
         // With no time to catch back in and nothing put on the clock, a car caught
         // at the last is out.
         let mut world = self::world(Mode::Tag, 3);
-        (world.resource_mut::<Settings>().tag_back, world.resource_mut::<Settings>().tag_least) =
-            (0, 0);
+        (
+            world.resource_mut::<Settings>().tag_back,
+            world.resource_mut::<Settings>().tag_least,
+        ) = (0, 0);
         world.run_system_once(tag).unwrap();
         let it = cars(&mut world).iter().position(|kart| kart.it).unwrap();
         let other = (it + 1) % 3;
@@ -1425,7 +1523,10 @@ mod tests {
         assert_eq!(all.iter().filter(|kart| kart.it).count(), 1);
         assert!(all.iter().all(|kart| kart.finished.is_none()));
         // A round of two is the shortest.
-        assert_eq!((round(6), round(3), round(2), round(1)), (50.0, 35.0, 30.0, 30.0));
+        assert_eq!(
+            (round(6), round(3), round(2), round(1)),
+            (50.0, 35.0, 30.0, 30.0)
+        );
         assert_eq!(all[first].stake, TAG_TIME);
         let second = all.iter().position(|kart| kart.it).unwrap();
         world.resource_mut::<Race>().time = 40.0;

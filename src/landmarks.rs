@@ -65,7 +65,13 @@ impl Landmark {
         let side = if crate::scenery::mirror() { -1.0 } else { 1.0 };
         let (sin, cos) = self.heading.to_radians().sin_cos();
         // The points of the compass are exact, so that what is square is square.
-        let whole = |v: f32| if (v - v.round()).abs() < 1e-6 { v.round() } else { v };
+        let whole = |v: f32| {
+            if (v - v.round()).abs() < 1e-6 {
+                v.round()
+            } else {
+                v
+            }
+        };
         Vec3::new(whole(cos), 0.0, -whole(sin) * side)
     }
 }

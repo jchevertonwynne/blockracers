@@ -32,8 +32,8 @@ use crate::film::{Showing, entries, facing, number, text, vec3};
 use crate::lighting::{Beam, Lights};
 use crate::menu::{Circuits, Settings};
 use crate::scenery::{self, Animated, PropDef};
-use crate::{build, roster};
 use crate::world::Library;
+use crate::{build, roster};
 use bevy::{
     camera::{RenderTarget, visibility::RenderLayers},
     mesh::skinning::SkinnedMeshInverseBindposes,
@@ -81,9 +81,8 @@ pub struct Staged;
 fn theme(art: &Art, folder: &str) -> Option<(String, String)> {
     let tokens = tokenize(art.jam().get("/MENUDATA/LEGORACE.RCB")?);
     entries(&tokens, 0x27).into_iter().find_map(|(_, fields)| {
-        (text(fields, 0x29)?.eq_ignore_ascii_case(folder)).then(|| {
-            Some((text(fields, 0x2d)?, text(fields, 0x2e).unwrap_or_default()))
-        })?
+        (text(fields, 0x29)?.eq_ignore_ascii_case(folder))
+            .then(|| Some((text(fields, 0x2d)?, text(fields, 0x2e).unwrap_or_default())))?
     })
 }
 
@@ -191,7 +190,10 @@ fn stage(
     });
     // `SetPreviewDriver`: with a driver named, the frame's figure gives way to theirs.
     if let Some(at) = props.iter().position(|prop| prop.name() == MASCOT) {
-        if let Some(driver) = (!driver.is_empty()).then(|| mascot(jam, driver, &props[at])).flatten() {
+        if let Some(driver) = (!driver.is_empty())
+            .then(|| mascot(jam, driver, &props[at]))
+            .flatten()
+        {
             props[at] = driver;
         }
     }
@@ -242,7 +244,13 @@ pub fn keep(
     let folder = if showing.busy() {
         None
     } else {
-        wanted(&menu, time.elapsed_secs(), &circuits, &settings, &championship)
+        wanted(
+            &menu,
+            time.elapsed_secs(),
+            &circuits,
+            &settings,
+            &championship,
+        )
     };
     let mut theme = folder.and_then(|folder| theme(&art, &folder));
     if let (Page::TimeRace, Some(theme)) = (menu.page, &mut theme) {
@@ -311,7 +319,10 @@ pub fn dress(
     mut starting: Query<(Entity, &mut Animated, &Cue), (With<Staged>, Without<Started>)>,
 ) {
     for mesh in &made {
-        if parents.iter_ancestors(mesh).any(|above| staged.contains(above)) {
+        if parents
+            .iter_ancestors(mesh)
+            .any(|above| staged.contains(above))
+        {
             commands.entity(mesh).insert(RenderLayers::layer(LAYER));
         }
     }
@@ -334,14 +345,9 @@ fn clear(commands: &mut Commands, preview: &mut Preview, lights: &mut Lights) {
 }
 
 /// Clears the view away when the menus are left.
-pub fn put_away(
-    mut commands: Commands,
-    mut preview: ResMut<Preview>,
-    mut lights: ResMut<Lights>,
-) {
+pub fn put_away(mut commands: Commands, mut preview: ResMut<Preview>, mut lights: ResMut<Lights>) {
     clear(&mut commands, &mut preview, &mut lights);
 }
-
 
 #[cfg(test)]
 #[test]
@@ -359,7 +365,11 @@ fn each_race_has_its_mascot_and_the_time_race_has_veronica_voltage() {
     for race in &all {
         let (_, who) = theme(&art, &race.folder).unwrap();
         // Every race names a driver, who has parts to be made of.
-        assert!(roster::cosmetics_of(jam, &who).is_some(), "{} {who}", race.folder);
+        assert!(
+            roster::cosmetics_of(jam, &who).is_some(),
+            "{} {who}",
+            race.folder
+        );
         seen.insert(who);
     }
     assert!(seen.len() >= 6, "{seen:?}");

@@ -184,14 +184,22 @@ pub fn keep(
         for (slot, choice) in shown.0.iter().enumerate() {
             let Some(choice) = choice else { continue };
             let mut worn = cosmetics;
-            [&mut worn.hat, &mut worn.face, &mut worn.torso, &mut worn.legs][part]
+            [
+                &mut worn.hat,
+                &mut worn.face,
+                &mut worn.torso,
+                &mut worn.legs,
+            ][part]
                 .clone_from(choice);
             let Some(surfaces) = crate::world::figure_part(art.jam(), worn, part) else {
                 continue;
             };
             let [left, top, right, bottom] = slots[slot];
             // Where the slot is, from the picture's middle, upwards being up.
-            let middle = Vec2::new((left + right) / 2.0 - SIZE.x / 2.0, SIZE.y / 2.0 - (top + bottom) / 2.0);
+            let middle = Vec2::new(
+                (left + right) / 2.0 - SIZE.x / 2.0,
+                SIZE.y / 2.0 - (top + bottom) / 2.0,
+            );
             let fit = (right - left).min(bottom - top) * FILL;
             let bundles: Vec<_> = surfaces
                 .into_iter()

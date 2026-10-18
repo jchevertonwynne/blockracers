@@ -461,11 +461,22 @@ mod tests {
         (hosts.tag_least, hosts.tag_back) = (0, 4);
         let rules = Rules::of(&hosts, &circuits);
         let mut players = Settings::new(&circuits);
-        assert!(decode::<Rules>(&encode(&rules)).unwrap().apply(&mut players, &circuits));
-        assert_eq!((players.lives, players.battle_time(), players.spared()), (7, 60.0, 3.0));
+        assert!(
+            decode::<Rules>(&encode(&rules))
+                .unwrap()
+                .apply(&mut players, &circuits)
+        );
+        assert_eq!(
+            (players.lives, players.battle_time(), players.spared()),
+            (7, 60.0, 3.0)
+        );
         assert_eq!((players.tag_least(), players.tag_back()), (0.0, 4.0));
         // What is out of range is brought into it.
-        let wild = Rules { lives: 0, battle_time: 99, ..rules };
+        let wild = Rules {
+            lives: 0,
+            battle_time: 99,
+            ..rules
+        };
         assert!(wild.apply(&mut players, &circuits));
         assert_eq!((players.lives, players.battle_time()), (1, f32::INFINITY));
     }

@@ -50,7 +50,10 @@ impl Lexer<'_> {
             0x02 => {
                 let len = self.d[self.at..].iter().position(|&b| b == 0)?;
                 // The files are Latin-1: a font names its accented glyphs by their bytes.
-                let s: String = self.d[self.at..self.at + len].iter().map(|&b| b as char).collect();
+                let s: String = self.d[self.at..self.at + len]
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect();
                 self.at += len + 1;
                 Token::Str(s)
             }

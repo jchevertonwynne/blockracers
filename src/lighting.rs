@@ -93,7 +93,12 @@ impl Lit {
                 let colour = colour.min(Vec3::ONE);
                 // The colours of a mesh are linear, as `Library::meshes` makes them.
                 let linear = |value: f32| value.powf(2.2);
-                [linear(colour.x), linear(colour.y), linear(colour.z), base[3]]
+                [
+                    linear(colour.x),
+                    linear(colour.y),
+                    linear(colour.z),
+                    base[3],
+                ]
             })
             .collect()
     }

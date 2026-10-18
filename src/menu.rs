@@ -1,8 +1,8 @@
 //! The front end: pick a circuit and a few race settings.
 
 use crate::audio::{Sfx, id};
-use crate::meshgen::YELLOW;
 use crate::map::Map;
+use crate::meshgen::YELLOW;
 use crate::world;
 use bevy::prelude::*;
 
@@ -36,7 +36,8 @@ pub struct Circuit {
 impl Circuit {
     /// Whether it is one of the arenas, which are for a battle or a game of tag.
     pub fn arena(&self) -> bool {
-        self.map.as_ref().is_some_and(Map::arena) || self.hosts.as_ref().is_some_and(|hosts| hosts.1)
+        self.map.as_ref().is_some_and(Map::arena)
+            || self.hosts.as_ref().is_some_and(|hosts| hosts.1)
     }
 
     /// Who made it, as the menus say after its name; nothing where nobody is said to.
@@ -103,7 +104,10 @@ impl Circuits {
         for map in maps {
             // A map named as a folder of the game's would never be found by name.
             if circuits.iter().any(|c| c.key() == map.key) || map.key == TEST_TRACK {
-                crate::home::say(&format!("the map {} is left out: the game has a race called that", map.key));
+                crate::home::say(&format!(
+                    "the map {} is left out: the game has a race called that",
+                    map.key
+                ));
                 continue;
             }
             circuits.push(Circuit {
@@ -122,8 +126,13 @@ impl Circuits {
     /// game's own of that name, or as well as its own: which circuit it then is,
     /// or what is wrong with it.
     pub fn lend(&mut self, key: &str, text: &str) -> Result<usize, String> {
-        let had = self.0.iter().position(|c| c.race.is_none() && c.key() == key);
-        if let Some(at) = had.filter(|&at| self.0[at].hosts.is_none() && self.0[at].map().text == text) {
+        let had = self
+            .0
+            .iter()
+            .position(|c| c.race.is_none() && c.key() == key);
+        if let Some(at) =
+            had.filter(|&at| self.0[at].hosts.is_none() && self.0[at].map().text == text)
+        {
             return Ok(at);
         }
         if self.0.iter().any(|c| c.race.as_deref() == Some(key)) || key == TEST_TRACK {
@@ -156,7 +165,11 @@ impl Circuits {
     /// name or as another.
     pub fn keep(&mut self, map: Map) {
         let group = self.own();
-        match self.0.iter_mut().find(|c| c.race.is_none() && c.key() == map.key) {
+        match self
+            .0
+            .iter_mut()
+            .find(|c| c.race.is_none() && c.key() == map.key)
+        {
             Some(had) => {
                 (had.name, had.author) = (map.name.clone(), map.author.clone());
                 (had.map, had.hosts) = (Some(map), None);
@@ -192,8 +205,14 @@ impl Circuits {
 
     /// The set the port's own maps are in, after the game's circuits.
     fn own(&self) -> usize {
-        let maps = self.0.iter().filter(|c| c.race.is_none()).map(|c| c.group).next();
-        maps.or(self.0.iter().map(|c| c.group + 1).max()).unwrap_or(0)
+        let maps = self
+            .0
+            .iter()
+            .filter(|c| c.race.is_none())
+            .map(|c| c.group)
+            .next();
+        maps.or(self.0.iter().map(|c| c.group + 1).max())
+            .unwrap_or(0)
     }
 
     /// Takes the name of a map a session's host has and this game hasn't, to be
@@ -547,10 +566,11 @@ impl Settings {
     /// original's, or a built-in circuit's key.
     pub fn new(circuits: &Circuits) -> Self {
         let wanted = std::env::var("BRICK_RACE").ok();
-        let circuit = circuits
-            .0
-            .iter()
-            .position(|c| wanted.as_deref().is_some_and(|wanted| wanted.eq_ignore_ascii_case(c.key())));
+        let circuit = circuits.0.iter().position(|c| {
+            wanted
+                .as_deref()
+                .is_some_and(|wanted| wanted.eq_ignore_ascii_case(c.key()))
+        });
         Settings {
             circuit: circuit.unwrap_or(0),
             test_drive: None,
@@ -675,9 +695,7 @@ impl Settings {
                 // Past the game's drivers are the garage's racers, however many it has.
                 "car" => self.car = value,
                 "racer" => self.racer = value,
-                "language" if value < crate::assets::font::LANGUAGES.len() => {
-                    self.language = value
-                }
+                "language" if value < crate::assets::font::LANGUAGES.len() => self.language = value,
                 _ => {}
             }
         }
@@ -740,9 +758,8 @@ impl Settings {
     /// Steps an extra setting on or back.
     pub fn turn(&mut self, extra: Extra, change: i32) {
         let flip = |on: &mut bool| *on = !*on;
-        let step = |at: &mut usize, of: usize| {
-            *at = (*at as i32 + change).rem_euclid(of as i32) as usize
-        };
+        let step =
+            |at: &mut usize, of: usize| *at = (*at as i32 + change).rem_euclid(of as i32) as usize;
         match extra {
             Extra::Mirror => flip(&mut self.mirror),
             Extra::Reverse => flip(&mut self.reverse),
@@ -762,7 +779,8 @@ impl Settings {
             }
             // From one life to the most, and round.
             Extra::Lives => {
-                self.lives = (self.lives as i32 - 1 + change).rem_euclid(MAX_LIVES as i32) as usize + 1
+                self.lives =
+                    (self.lives as i32 - 1 + change).rem_euclid(MAX_LIVES as i32) as usize + 1
             }
             Extra::BattleTime => step(&mut self.battle_time, BATTLE_TIMES.len()),
             Extra::Spared => step(&mut self.spared, SPARES.len()),
@@ -800,7 +818,12 @@ impl Settings {
             Extra::TagBack => seconds(self.tag_back()),
             Extra::Goal => seconds(self.goal()),
             Extra::Teams => on(self.teams),
-            Extra::Returns => if self.returns { "Comes back" } else { "For good" }.to_string(),
+            Extra::Returns => if self.returns {
+                "Comes back"
+            } else {
+                "For good"
+            }
+            .to_string(),
             Extra::VSync => if self.vsync { "Synced" } else { "Unlimited" }.to_string(),
             Extra::Fullscreen => on(self.fullscreen),
             Extra::Smoothing => on(self.smoothing),
@@ -1006,7 +1029,10 @@ fn menu(
         let line = match row.0 {
             0 => {
                 let circuit = &circuits.0[settings.circuit];
-                option("Circuit", format!("{}{}", circuit.name, circuit.credit().to_lowercase()))
+                option(
+                    "Circuit",
+                    format!("{}{}", circuit.name, circuit.credit().to_lowercase()),
+                )
             }
             1 => option("Laps", settings.laps().to_string()),
             2 => option("Opponents", settings.opponents.to_string()),
@@ -1127,12 +1153,21 @@ fn a_host_s_map_is_raced_in_place_of_this_game_s_own() {
     assert_eq!(circuits.0[brick].map(), own);
     // Another of the same name is raced in its place, and one this game hasn't
     // is another circuit, among the port's own.
-    let theirs = own.text.replace("Brick Circuit", "Their Circuit").replace("[88, 0, 8, 32]", "[90, 0, 8, 30]");
+    let theirs = own
+        .text
+        .replace("Brick Circuit", "Their Circuit")
+        .replace("[88, 0, 8, 32]", "[90, 0, 8, 30]");
     assert_eq!(circuits.lend("BRICK", &theirs), Ok(brick));
     assert_eq!(circuits.0[brick].name, "Their Circuit");
-    assert_eq!(circuits.0[brick].map().road.corners[1], [90.0, 0.0, 8.0, 30.0]);
+    assert_eq!(
+        circuits.0[brick].map().road.corners[1],
+        [90.0, 0.0, 8.0, 30.0]
+    );
     assert_eq!(circuits.lend("THEIRS", &theirs), Ok(count));
-    assert_eq!((circuits.0[count].key(), circuits.0[count].group), ("THEIRS", circuits.0[brick].group));
+    assert_eq!(
+        (circuits.0[count].key(), circuits.0[count].group),
+        ("THEIRS", circuits.0[brick].group)
+    );
     assert!(!circuits.0[count].arena());
     // One that is no map, or is named as a race of the game's, is refused.
     assert!(circuits.lend("BROKEN", "name = 3").is_err());
@@ -1161,7 +1196,10 @@ fn a_map_changed_on_file_is_read_again() {
     assert_eq!(circuits.0[at].map().file.as_ref(), Some(&file));
     std::fs::write(&file, "name = \"Brick Circus\"\ncorners = [[0, 0, 0, 0]]\n").unwrap();
     circuits.reread(at);
-    assert_eq!(circuits.0[at].map().road.corners.len(), own.road.corners.len());
+    assert_eq!(
+        circuits.0[at].map().road.corners.len(),
+        own.road.corners.len()
+    );
     let _ = std::fs::remove_file(file);
 }
 
@@ -1176,7 +1214,10 @@ fn a_host_s_map_is_voted_for_before_this_game_has_it() {
     assert_eq!(circuits.0[count].credit(), " BY Penny");
     assert_eq!(circuits.0.len(), count + 1);
     let pen = &circuits.0[count];
-    assert_eq!((pen.key(), pen.name.as_str(), pen.arena()), ("PEN", "The Pen", true));
+    assert_eq!(
+        (pen.key(), pen.name.as_str(), pen.arena()),
+        ("PEN", "The Pen", true)
+    );
     assert_eq!(pen.group, circuits.0[count - 1].group);
     // Sent with a start, it is that map; never sent, it goes with the session.
     circuits.promise("OVAL", "Oval", "Someone", false);

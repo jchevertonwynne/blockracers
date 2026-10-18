@@ -1381,10 +1381,11 @@ fn events_set_off_particles_tints_and_models() {
     // only there while their events are on.
     let moon = load("RACEC0R3").unwrap();
     assert_eq!(moon.particles[0].follows, Some(("mmlavbl".to_string(), 0)));
-    assert!(moon.tints.iter().any(|t| {
-        t.when.event == 6
-            && t.tint == Some(Vec3::new(167.0, 132.0, 132.0) / 255.0)
-    }));
+    assert!(
+        moon.tints.iter().any(|t| {
+            t.when.event == 6 && t.tint == Some(Vec3::new(167.0, 132.0, 132.0) / 255.0)
+        })
+    );
     let lasers: Vec<_> = moon
         .models
         .iter()

@@ -251,10 +251,9 @@ pub fn kart_effects(
         for (entity, mark) in &marks {
             // Those that have lasted their time are gone already.
             if mark.0 <= mark.1 {
-                commands.entity(entity).insert((
-                    Faded(0.0),
-                    MeshMaterial3d(shades[mark.3 as usize].clone()),
-                ));
+                commands
+                    .entity(entity)
+                    .insert((Faded(0.0), MeshMaterial3d(shades[mark.3 as usize].clone())));
             }
         }
         fx.fades.push((shades, 0.0));
@@ -411,7 +410,13 @@ pub fn shadows(
     track: Res<crate::track::Track>,
     bare: Query<(Entity, &Kart, Option<&Silhouette>), Added<Kart>>,
     karts: Query<(&Kart, Option<&Silhouette>)>,
-    camera: Query<&Transform, (With<Camera3d>, Without<bevy::camera::visibility::RenderLayers>)>,
+    camera: Query<
+        &Transform,
+        (
+            With<Camera3d>,
+            Without<bevy::camera::visibility::RenderLayers>,
+        ),
+    >,
     mut shadows: Query<(
         Entity,
         &Shadow,

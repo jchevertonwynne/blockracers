@@ -71,7 +71,12 @@ pub struct Cell {
 
 impl Cell {
     pub fn new(words: impl Into<String>, look: Look) -> Cell {
-        Cell { words: words.into(), act: None, look, wide: 0.0 }
+        Cell {
+            words: words.into(),
+            act: None,
+            look,
+            wide: 0.0,
+        }
     }
 
     pub fn wide(self, wide: f32) -> Cell {
@@ -79,7 +84,10 @@ impl Cell {
     }
 
     pub fn does(self, act: Act) -> Cell {
-        Cell { act: Some(act), ..self }
+        Cell {
+            act: Some(act),
+            ..self
+        }
     }
 
     /// A button, which does something unless it is `off`.
@@ -110,8 +118,18 @@ pub struct Sheet {
 impl Sheet {
     /// Each panel's rows.
     fn panels(&self) -> [Vec<Vec<Cell>>; 4] {
-        let lone = |cells: &Vec<Cell>| if cells.is_empty() { Vec::new() } else { vec![cells.clone()] };
-        let hint = self.hint.iter().map(|line| vec![Cell::new(line.as_str(), Look::Plain)]).collect();
+        let lone = |cells: &Vec<Cell>| {
+            if cells.is_empty() {
+                Vec::new()
+            } else {
+                vec![cells.clone()]
+            }
+        };
+        let hint = self
+            .hint
+            .iter()
+            .map(|line| vec![Cell::new(line.as_str(), Look::Plain)])
+            .collect();
         [self.side.clone(), lone(&self.bar), lone(&self.said), hint]
     }
 
@@ -119,7 +137,10 @@ impl Sheet {
     /// that is the same, the cells that are there are kept.
     fn shape(&self) -> Vec<Vec<Vec<u32>>> {
         let widths = |row: &Vec<Cell>| row.iter().map(|cell| cell.wide as u32).collect();
-        self.panels().iter().map(|panel| panel.iter().map(widths).collect()).collect()
+        self.panels()
+            .iter()
+            .map(|panel| panel.iter().map(widths).collect())
+            .collect()
     }
 }
 
@@ -160,7 +181,10 @@ fn colours(look: Look, over: bool) -> (Color, Color) {
         (Look::Lit, true) => (Color::WHITE, Color::srgba(0.35, 0.55, 1.0, 0.9)),
         (Look::Button, false) => (Color::WHITE, Color::srgba(1.0, 1.0, 1.0, 0.18)),
         (Look::Button, true) => (Color::BLACK, Color::srgba(1.0, 0.92, 0.3, 0.95)),
-        (Look::Off, _) => (Color::srgba(1.0, 1.0, 1.0, 0.35), Color::srgba(1.0, 1.0, 1.0, 0.06)),
+        (Look::Off, _) => (
+            Color::srgba(1.0, 1.0, 1.0, 0.35),
+            Color::srgba(1.0, 1.0, 1.0, 0.06),
+        ),
         (Look::Good, _) => (Color::srgb(0.75, 1.0, 0.75), clear),
         (Look::Wrong, _) => (Color::srgb(1.0, 0.62, 0.5), clear),
     }
@@ -186,10 +210,40 @@ pub fn open(mut commands: Commands, mut board: ResMut<Board>, mut asked: ResMut<
         )
     };
     let edge = Val::Px(10.0);
-    commands.spawn(pane(SIDE, Node { left: edge, top: edge, ..default() }));
-    commands.spawn(pane(BAR, Node { right: edge, top: edge, ..default() }));
-    commands.spawn(pane(SAID, Node { right: edge, top: Val::Px(62.0), max_width: Val::Px(560.0), ..default() }));
-    commands.spawn(pane(HINT, Node { left: edge, bottom: edge, max_width: Val::Px(1240.0), ..default() }));
+    commands.spawn(pane(
+        SIDE,
+        Node {
+            left: edge,
+            top: edge,
+            ..default()
+        },
+    ));
+    commands.spawn(pane(
+        BAR,
+        Node {
+            right: edge,
+            top: edge,
+            ..default()
+        },
+    ));
+    commands.spawn(pane(
+        SAID,
+        Node {
+            right: edge,
+            top: Val::Px(62.0),
+            max_width: Val::Px(560.0),
+            ..default()
+        },
+    ));
+    commands.spawn(pane(
+        HINT,
+        Node {
+            left: edge,
+            bottom: edge,
+            max_width: Val::Px(1240.0),
+            ..default()
+        },
+    ));
 }
 
 /// Has the panels say what `sheet` has: with the cells there are, if they are
@@ -205,35 +259,57 @@ pub fn lay(
     if sheet.shape() != board.shown.shape() || cells.is_empty() {
         for (entity, pane, mut visibility) in panes.iter_mut() {
             let rows = &panels[pane.0];
-            *visibility = if rows.is_empty() { Visibility::Hidden } else { Visibility::Visible };
+            *visibility = if rows.is_empty() {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
             let size = if pane.0 == HINT { SMALL } else { WORDS };
             // What is said runs on to the next line, and a row of cells doesn't.
-            let wrapped = if matches!(pane.0, SAID | HINT) { TextLayout::default() } else { TextLayout::no_wrap() };
-            commands.entity(entity).despawn_related::<Children>().with_children(|panel| {
-                for (row, line) in rows.iter().enumerate() {
-                    let across = Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(3.0), ..default() };
-                    panel.spawn(across).with_children(|across| {
-                        for (column, cell) in line.iter().enumerate() {
-                            let (ink, back) = colours(cell.look, false);
-                            let width = if cell.wide > 0.0 { Val::Px(cell.wide) } else { Val::Auto };
-                            across.spawn((
-                                Spot(pane.0, row, column),
-                                Text::new(cell.words.clone()),
-                                wrapped,
-                                TextFont { font_size: FontSize::Px(size), ..default() },
-                                TextColor(ink),
-                                BackgroundColor(back),
-                                Node {
-                                    width,
-                                    padding: UiRect::axes(Val::Px(5.0), Val::Px(2.0)),
-                                    overflow: Overflow::clip(),
-                                    ..default()
-                                },
-                            ));
-                        }
-                    });
-                }
-            });
+            let wrapped = if matches!(pane.0, SAID | HINT) {
+                TextLayout::default()
+            } else {
+                TextLayout::no_wrap()
+            };
+            commands
+                .entity(entity)
+                .despawn_related::<Children>()
+                .with_children(|panel| {
+                    for (row, line) in rows.iter().enumerate() {
+                        let across = Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(3.0),
+                            ..default()
+                        };
+                        panel.spawn(across).with_children(|across| {
+                            for (column, cell) in line.iter().enumerate() {
+                                let (ink, back) = colours(cell.look, false);
+                                let width = if cell.wide > 0.0 {
+                                    Val::Px(cell.wide)
+                                } else {
+                                    Val::Auto
+                                };
+                                across.spawn((
+                                    Spot(pane.0, row, column),
+                                    Text::new(cell.words.clone()),
+                                    wrapped,
+                                    TextFont {
+                                        font_size: FontSize::Px(size),
+                                        ..default()
+                                    },
+                                    TextColor(ink),
+                                    BackgroundColor(back),
+                                    Node {
+                                        width,
+                                        padding: UiRect::axes(Val::Px(5.0), Val::Px(2.0)),
+                                        overflow: Overflow::clip(),
+                                        ..default()
+                                    },
+                                ));
+                            }
+                        });
+                    }
+                });
         }
     } else {
         for (spot, mut text, mut ink, mut back) in cells.iter_mut() {
@@ -281,7 +357,10 @@ pub fn pressed(
         return;
     }
     let panels = board.shown.panels();
-    let over = cells.iter().find(|(_, node, place)| on(node, place)).map(|(spot, ..)| (spot.0, spot.1, spot.2));
+    let over = cells
+        .iter()
+        .find(|(_, node, place)| on(node, place))
+        .map(|(spot, ..)| (spot.0, spot.1, spot.2));
     let act = over.and_then(|(pane, row, column)| panels[pane].get(row)?.get(column)?.act);
     board.over = over;
     let now = time.elapsed_secs();
@@ -292,7 +371,9 @@ pub fn pressed(
     pointer.wheel = 0.0;
     if pointer.left.pressed {
         asked.0.extend(act);
-        board.held = act.filter(|act| matches!(act, Act::Turn(..))).map(|act| (act, now + AGAIN.0));
+        board.held = act
+            .filter(|act| matches!(act, Act::Turn(..)))
+            .map(|act| (act, now + AGAIN.0));
     } else if !pointer.left.down {
         board.held = None;
     } else if let Some((held, at)) = board.held

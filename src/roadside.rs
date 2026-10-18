@@ -273,7 +273,8 @@ pub fn draw(track: &Track, look: &Look, fences: &[Fence], b: &mut BrickMesh) {
             let (p, q) = (pair[0], pair[1]);
             let (top, middle) = ((p.y + q.y) / 2.0, ((p + q) / 2.0).with_y(0.0));
             // Not where something of a hazard's stands, or a byway or a lawn is.
-            let taken = |&(centre, radius): &(Vec3, f32)| xz_dist2(centre, middle) < radius * radius;
+            let taken =
+                |&(centre, radius): &(Vec3, f32)| xz_dist2(centre, middle) < radius * radius;
             if track.clearings.iter().any(taken) {
                 continue;
             }
@@ -334,7 +335,11 @@ pub fn draw(track: &Track, look: &Look, fences: &[Fence], b: &mut BrickMesh) {
             // A pier at each end of it and every so often along it, a little higher
             // than the wall, with a cap.
             let last = at + 2 == fence.line.len();
-            for end in [p].into_iter().filter(|_| at % 10 == 0).chain(last.then_some(q)) {
+            for end in [p]
+                .into_iter()
+                .filter(|_| at % 10 == 0)
+                .chain(last.then_some(q))
+            {
                 let high = end.y + if body > 0.05 { 1.0 } else { 0.4 };
                 b.brick(
                     end.with_y(high / 2.0),
@@ -389,7 +394,10 @@ mod tests {
             for side in [-1.0, 1.0] {
                 // So far outside the barriers, however wide the road is there.
                 let at = |out: f32, high: f32| {
-                    let (a, b) = (track.edge(i, side * (track.half[i] + out)), track.edge(j, side * (track.half[j] + out)));
+                    let (a, b) = (
+                        track.edge(i, side * (track.half[i] + out)),
+                        track.edge(j, side * (track.half[j] + out)),
+                    );
                     (a.with_y(a.y + high), b.with_y(b.y + high))
                 };
                 if let Some(screen) = track.screens.iter().find(|screen| screen.stands(i, side)) {
@@ -404,7 +412,11 @@ mod tests {
                 let raised = (track.pts[i].y + track.pts[j].y) / 2.0;
                 if raised > 0.8 {
                     let (a, b) = at(0.4, 0.9 + parapet(raised));
-                    let foot = if bridged[i] || bridged[j] { raised - 0.85 } else { 0.0 };
+                    let foot = if bridged[i] || bridged[j] {
+                        raised - 0.85
+                    } else {
+                        0.0
+                    };
                     blinds.push((a, b, foot));
                 }
             }
@@ -501,7 +513,10 @@ mod tests {
             );
             // Little of the road elsewhere is seen, and far less than without them;
             // and most of what could be seen of the road next still is.
-            assert!(hidden.0 < 0.15 && hidden.0 < 0.65 * bare.0, "{layout} {bare:?} {hidden:?}");
+            assert!(
+                hidden.0 < 0.15 && hidden.0 < 0.65 * bare.0,
+                "{layout} {bare:?} {hidden:?}"
+            );
             assert!(hidden.1 > 0.6 * bare.1, "{layout} {bare:?} {hidden:?}");
             // Nothing of them is on a road, a byway or its barriers, and nothing is
             // near the crossing.

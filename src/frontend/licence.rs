@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use super::{Art, Menu, Page, workshop::Bench};
 use crate::assets::{adb::Animation, gdb::parse_skeleton, lrs::Cosmetics};
+use crate::build;
 use crate::scenery::{self, Animated, PropDef, Rig};
 use crate::world::Library;
-use crate::build;
 use bevy::{
     camera::{RenderTarget, visibility::RenderLayers},
     mesh::skinning::SkinnedMeshInverseBindposes,
@@ -56,7 +56,9 @@ fn figure(art: &Art, cosmetics: Cosmetics) -> Option<PropDef> {
     let (files, folders) = build::Catalogue::files();
     let library = Library::new(jam, files.iter().map(String::as_str), &folders);
     let rig = Rig {
-        bones: Arc::new(parse_skeleton(build::skeleton(jam, &catalogue, cosmetics, true)?)?),
+        bones: Arc::new(parse_skeleton(build::skeleton(
+            jam, &catalogue, cosmetics, true,
+        )?)?),
         animation: Arc::new(Animation::parse(jam.get(MOVES)?)?),
     };
     Some(PropDef::made("licence", &model, Some(rig), &library))
@@ -163,7 +165,10 @@ pub fn dress(
     figures: Query<(), With<Posing>>,
 ) {
     for mesh in &made {
-        if parents.iter_ancestors(mesh).any(|above| figures.contains(above)) {
+        if parents
+            .iter_ancestors(mesh)
+            .any(|above| figures.contains(above))
+        {
             commands.entity(mesh).insert(RenderLayers::layer(LAYER));
         }
     }

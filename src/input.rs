@@ -31,8 +31,8 @@ use std::time::Duration;
 use bevy::input::gamepad::{GamepadInput, GamepadRumbleIntensity, GamepadRumbleRequest};
 use bevy::prelude::*;
 use serde::Deserialize;
-use serde::de::value::{Error, StrDeserializer};
 use serde::de::Error as _;
+use serde::de::value::{Error, StrDeserializer};
 
 use crate::kart::{Kart, Player};
 use crate::menu::Settings;
@@ -209,7 +209,8 @@ impl Bindings {
             Bound::Key(key) => !BLOCKED.contains(&key),
             Bound::Button(_) => entry == PAD,
             Bound::Axis(..) => {
-                entry == PAD && (event == Event::Accelerate as usize || event == Event::Brake as usize)
+                entry == PAD
+                    && (event == Event::Accelerate as usize || event == Event::Brake as usize)
             }
         }
     }
@@ -269,7 +270,9 @@ impl Bindings {
                 (_, Some(axis)) => read_axis(axis).ok_or(Error::custom("axis")),
                 _ => KeyCode::deserialize(word(name)).map(Bound::Key),
             };
-            bound.ok().filter(|bound| Self::allowed(entry, event, *bound))
+            bound
+                .ok()
+                .filter(|bound| Self::allowed(entry, event, *bound))
         };
         let mut names = names.trim().split(',');
         for event in 0..EVENTS {
@@ -447,16 +450,16 @@ pub fn read(
         .collect();
     // Any axis pushed over, for the controls page to bind: not the left stick's
     // steering, and not the triggers, which come as buttons.
-    devices.pushed = pads
-        .iter()
-        .flat_map(|pad| pad.get_analog_axes())
-        .find_map(|input| match input {
-            GamepadInput::Axis(axis) if *axis != GamepadAxis::LeftStickX => {
-                let value = pads.iter().find_map(|pad| pad.get(*input))?;
-                (value.abs() > AXIS_BIND).then_some((*input, value < 0.0))
-            }
-            _ => None,
-        });
+    devices.pushed =
+        pads.iter()
+            .flat_map(|pad| pad.get_analog_axes())
+            .find_map(|input| match input {
+                GamepadInput::Axis(axis) if *axis != GamepadAxis::LeftStickX => {
+                    let value = pads.iter().find_map(|pad| pad.get(*input))?;
+                    (value.abs() > AXIS_BIND).then_some((*input, value < 0.0))
+                }
+                _ => None,
+            });
     let amount = |bound: &Bound| match *bound {
         Bound::None => 0.0,
         Bound::Key(key) => keys.pressed(key) as i32 as f32,
@@ -662,7 +665,9 @@ impl Rumble {
 
     fn surface_pulse(&mut self, speed: f32) {
         let part = speed.abs().min(SURFACE_FULL_SPEED) / SURFACE_FULL_SPEED;
-        let part = Some(part * part).filter(|part| *part >= 0.02).unwrap_or(0.0);
+        let part = Some(part * part)
+            .filter(|part| *part >= 0.02)
+            .unwrap_or(0.0);
         self.on = (part * SURFACE_BURST * self.surface) as u32;
     }
 
@@ -834,7 +839,11 @@ fn swell(through: f32) -> f32 {
 /// (`engine_hum`), on the motor that suits its frequency.
 fn hum(speed: f32) -> GamepadRumbleIntensity {
     let period = hum_period(speed);
-    let hertz = if period > 0.0 { 1.0 / period } else { f32::INFINITY };
+    let hertz = if period > 0.0 {
+        1.0 / period
+    } else {
+        f32::INFINITY
+    };
     let quick = ((hertz - HUM_SLOW) / (HUM_QUICK - HUM_SLOW)).clamp(0.0, 1.0);
     GamepadRumbleIntensity {
         strong_motor: HUM_MAGNITUDE * (1.0 - quick),
@@ -857,9 +866,8 @@ fn engine_hum(
     mut through: Local<f32>,
 ) {
     let kart = karts.single().ok().filter(|kart| kart.finished.is_none());
-    let on = pause.0.is_none()
-        && !race.demo
-        && matches!(race.phase, Phase::Countdown | Phase::Racing);
+    let on =
+        pause.0.is_none() && !race.demo && matches!(race.phase, Phase::Countdown | Phase::Racing);
     let Some(kart) = kart.filter(|_| on) else {
         if std::mem::take(&mut *humming) {
             for gamepad in &pads {
@@ -912,10 +920,7 @@ pub fn plugin(app: &mut App) {
             PreUpdate,
             (read, pad_keys).chain().after(bevy::input::InputSystems),
         )
-        .add_systems(
-            Update,
-            (rumble, engine_hum).run_if(in_state(Screen::Race)),
-        )
+        .add_systems(Update, (rumble, engine_hum).run_if(in_state(Screen::Race)))
         .add_systems(OnExit(Screen::Race), silence);
 }
 
@@ -928,7 +933,10 @@ mod tests {
         let mut bindings = Bindings::default();
         // The letters' accelerator, given to the arrows' brake.
         bindings.set(1, Event::Brake as usize, Bound::Key(KeyCode::KeyW));
-        assert_eq!(bindings.0[1][Event::Brake as usize], Bound::Key(KeyCode::KeyW));
+        assert_eq!(
+            bindings.0[1][Event::Brake as usize],
+            Bound::Key(KeyCode::KeyW)
+        );
         // The letters' accelerator has nothing to go back to, its own key being taken.
         assert_eq!(bindings.0[2][Event::Accelerate as usize], Bound::None);
         // The down arrow is free again, and nothing was bound to nothing but that.
@@ -940,15 +948,31 @@ mod tests {
 
     #[test]
     fn a_button_is_only_the_pads_and_some_keys_are_nobodys() {
-        assert!(Bindings::allowed(PAD, 0, Bound::Button(GamepadButton::South)));
-        assert!(!Bindings::allowed(1, 0, Bound::Button(GamepadButton::South)));
+        assert!(Bindings::allowed(
+            PAD,
+            0,
+            Bound::Button(GamepadButton::South)
+        ));
+        assert!(!Bindings::allowed(
+            1,
+            0,
+            Bound::Button(GamepadButton::South)
+        ));
         assert!(Bindings::allowed(PAD, 0, Bound::Key(KeyCode::KeyJ)));
         assert!(!Bindings::allowed(1, 0, Bound::Key(KeyCode::Escape)));
         let mut bindings = Bindings::default();
         // A button swapped within the pad's set leaves the other with its own back.
-        bindings.set(PAD, Event::Slide as usize, Bound::Button(GamepadButton::South));
+        bindings.set(
+            PAD,
+            Event::Slide as usize,
+            Bound::Button(GamepadButton::South),
+        );
         assert_eq!(bindings.0[PAD][Event::Powerup as usize], Bound::None);
-        bindings.set(PAD, Event::Powerup as usize, Bound::Button(GamepadButton::West));
+        bindings.set(
+            PAD,
+            Event::Powerup as usize,
+            Bound::Button(GamepadButton::West),
+        );
         assert_eq!(
             bindings.0[PAD][Event::Powerup as usize],
             Bound::Button(GamepadButton::West)
@@ -970,7 +994,11 @@ mod tests {
         assert!(!read.read("music=3"));
         assert!(read.read("controls1=KeyW,KeyW,Nonsense,Escape,pad:South"));
         read.mend();
-        let keys = read.0.iter().flatten().filter(|b| **b == Bound::Key(KeyCode::KeyW));
+        let keys = read
+            .0
+            .iter()
+            .flatten()
+            .filter(|b| **b == Bound::Key(KeyCode::KeyW));
         assert_eq!(keys.count(), 1);
         // The letters' accelerator lost its key to the arrows' set, and has no other.
         assert_eq!(read.0[2][Event::Accelerate as usize], Bound::None);
@@ -1090,7 +1118,10 @@ mod tests {
         assert_eq!(key_for(start, true, true), Some(KeyCode::Escape));
         assert_eq!(key_for(south, false, true), Some(KeyCode::Enter));
         assert_eq!(key_for(start, false, false), Some(KeyCode::Enter));
-        assert_eq!(key_for(Source::Stick(2), false, false), Some(KeyCode::ArrowLeft));
+        assert_eq!(
+            key_for(Source::Stick(2), false, false),
+            Some(KeyCode::ArrowLeft)
+        );
     }
 
     #[test]
