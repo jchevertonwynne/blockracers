@@ -364,7 +364,14 @@ Racers, its package is `blockracers`, and nothing it says of itself claims other
   and are shown where the display counts laps. A session's "series" scores any of
   them by place, race after race. A race on one of the port's own maps is run on
   the host's: its file goes to the players with the start (`ToPlayer::Start`,
-  `Circuits::lend`) and is raced whatever their own games have of that name. The
+  `Circuits::lend`) and is raced whatever their own games have of that name,
+  their own being put back when the session is over (`Circuits::forget`). Each
+  game keeps it in its folder of maps (`map::save_new`), by its name or, where it
+  has one of that name already, by another like it (`BRICK-2`), to be raced
+  again whenever. While a session's rules are raced by, the settings kept on
+  file are the player's own (`Session::own`, `Rules::put_back`), and leaving
+  keeps whatever of their own they changed in it; a host's rules are its own,
+  and are kept (`Rules::keep`). The
   circuits there are to vote for are the host's: it tells each player its list
   as they join (`ToPlayer::Circuits`), a player's vote page shows that list and
   none of their own that the host hasn't (`frontend`'s `offered`), and a map

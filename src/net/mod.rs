@@ -317,7 +317,8 @@ pub struct Session {
     /// Why the session ended, for the menu to say, and that one has just been left.
     pub notice: Option<String>,
     pub left: bool,
-    /// The player's own settings, put by while the session's are raced by.
+    /// The player's own settings of those the session's races are run by, put by
+    /// while the session's are raced by (`Rules::put_back`), and a host's rules.
     pub own: Option<Settings>,
     /// The most players the host will have, if fewer than the game allows.
     pub limit: Option<u8>,
@@ -347,6 +348,15 @@ pub struct Session {
 }
 
 impl Session {
+    /// The player's own settings, if a session's are being raced by: `settings`
+    /// but for what the session sets.
+    pub fn own(&self, settings: &Settings) -> Option<Settings> {
+        let own = self.own.as_ref()?;
+        let mut mine = settings.clone();
+        Rules::put_back(&mut mine, own);
+        Some(mine)
+    }
+
     /// The most players the session takes, the host among them.
     pub fn most(&self) -> u8 {
         self.limit
@@ -699,18 +709,24 @@ pub fn leave(
     session.members.clear();
     (session.notice, session.left) = (why.map(str::to_string), true);
     (session.token, session.retrying) = (0, None);
-    if let Some(own) = session.own.take() {
+    if let Some(own) = session.own(settings) {
         // A test drive is still to be ended, back at the menu.
         let driving = settings.test_drive.is_some();
         *settings = own;
         settings.test_drive = driving.then_some(settings.circuit);
     }
+    session.own = None;
     next.set(Screen::Menu);
 }
 
-/// A session over, the maps its host promised and never sent are gone.
+/// A session over, the maps its host promised and never sent are gone, and those
+/// it lent that are not kept give way to this game's own again.
 fn forget(mut circuits: ResMut<Circuits>, mut settings: ResMut<Settings>) {
-    if circuits.0.iter().any(|c| c.hosts.is_some()) {
+    if circuits
+        .0
+        .iter()
+        .any(|c| c.hosts.is_some() || c.lent.is_some())
+    {
         circuits.forget();
         settings.circuit = settings.circuit.min(circuits.0.len().saturating_sub(1));
     }

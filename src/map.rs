@@ -719,6 +719,35 @@ pub fn save(key: &str, text: &str) -> Result<PathBuf, String> {
     save_in(&folder, key, text)
 }
 
+/// The folder this game's maps are kept in, if it keeps any.
+pub fn folder_kept() -> Option<PathBuf> {
+    FOLDER.lock().unwrap().clone()
+}
+
+/// Keeps a map as a new file of `folder`, known by `key` or, where that is
+/// `taken` or a file of the folder already, by another like it: what it is
+/// known by and the file, or why there is none.
+pub fn save_new(
+    folder: &Path,
+    key: &str,
+    text: &str,
+    taken: impl Fn(&str) -> bool,
+) -> Result<(String, PathBuf), String> {
+    let free = |key: &str| {
+        !taken(key)
+            && !folder
+                .join(format!("{}.{EXTENSION}", key.to_ascii_lowercase()))
+                .exists()
+    };
+    let stem: String = key.chars().take(LONGEST_KEY - 4).collect();
+    let key = std::iter::once(key.to_string())
+        .chain((2..1000).map(|n| format!("{stem}-{n}")))
+        .find(|key| free(key))
+        .ok_or("there is no name left to keep it by")?;
+    let file = save_in(folder, &key, text)?;
+    Ok((key, file))
+}
+
 pub fn save_in(folder: &Path, key: &str, text: &str) -> Result<PathBuf, String> {
     Map::tried(key, text)?;
     let file = folder.join(format!("{}.{EXTENSION}", key.to_ascii_lowercase()));

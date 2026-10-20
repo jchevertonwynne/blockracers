@@ -230,6 +230,12 @@ impl Rules {
             return false;
         };
         settings.circuit = circuit;
+        self.set(settings);
+        true
+    }
+
+    /// What `apply` sets but the circuit.
+    fn set(&self, settings: &mut Settings) {
         settings.lap_choice = (self.lap_choice as usize).min(LAP_CHOICES.len() - 1);
         (settings.championship, settings.time_race) = (None, false);
         (settings.mirror, settings.reverse, settings.elimination) =
@@ -246,7 +252,38 @@ impl Rules {
         settings.tag_back = (self.tag_back as usize).min(crate::menu::TAG_BACKS.len() - 1);
         settings.goal = (self.goal as usize).min(crate::menu::GOALS.len() - 1);
         (settings.teams, settings.returns) = (self.teams, self.returns);
-        true
+    }
+
+    /// Puts back over `settings` what `apply` and a race's start set, as `own` has
+    /// it: everything else of them is the player's own, changed in a session or not.
+    pub fn put_back(settings: &mut Settings, own: &Settings) {
+        settings.circuit = own.circuit;
+        settings.lap_choice = own.lap_choice;
+        (settings.championship, settings.time_race) = (own.championship.clone(), own.time_race);
+        (settings.mirror, settings.reverse, settings.elimination) =
+            (own.mirror, own.reverse, own.elimination);
+        settings.mode = own.mode;
+        settings.bricks = own.bricks;
+        settings.speed = own.speed;
+        settings.opponents = own.opponents;
+        settings.difficulty = own.difficulty;
+        settings.lives = own.lives;
+        settings.battle_time = own.battle_time;
+        settings.spared = own.spared;
+        settings.tag_least = own.tag_least;
+        settings.tag_back = own.tag_back;
+        settings.goal = own.goal;
+        (settings.teams, settings.returns) = (own.teams, own.returns);
+        (settings.rivals, settings.sides) = (own.rivals, own.sides);
+    }
+
+    /// A host's rules for its session, kept as its own for races alone: all of
+    /// them but how a race is won, which alone is a race, by elimination or not.
+    pub fn keep(&self, own: &mut Settings) {
+        let (mode, championship, time_race) = (own.mode, own.championship.take(), own.time_race);
+        self.set(own);
+        (own.mode, own.championship, own.time_race) = (mode, championship, time_race);
+        own.elimination = self.mode() == Mode::Elimination;
     }
 }
 
@@ -479,6 +516,71 @@ mod tests {
         };
         assert!(wild.apply(&mut players, &circuits));
         assert_eq!((players.lives, players.battle_time()), (1, f32::INFINITY));
+    }
+
+    #[test]
+    fn a_session_s_rules_are_put_back_and_the_player_s_own_choices_kept() {
+        let circuits = Circuits::find();
+        let own = Settings::new(&circuits);
+        let mut hosts = Settings::new(&circuits);
+        (hosts.circuit, hosts.lap_choice, hosts.mirror, hosts.reverse) = (1, 2, true, true);
+        (hosts.mode, hosts.bricks, hosts.speed, hosts.opponents) = (Mode::Tag, 3, 4, 2);
+        (
+            hosts.difficulty,
+            hosts.lives,
+            hosts.battle_time,
+            hosts.spared,
+        ) = (2, 7, 0, 5);
+        (hosts.tag_least, hosts.tag_back, hosts.goal) = (0, 4, 2);
+        (hosts.teams, hosts.returns) = (true, true);
+        let rules = Rules::of(&hosts, &circuits);
+        // What the session sets, and what the player changes of their own in it.
+        let mut raced = own.clone();
+        assert!(rules.apply(&mut raced, &circuits));
+        (raced.rivals, raced.sides) = (Some(5), 0b1010);
+        (raced.music, raced.racer, raced.car, raced.language) = (3, 2, 9, 4);
+        let session = super::super::Session {
+            own: Some(own.clone()),
+            ..default()
+        };
+        let back = session.own(&raced).unwrap();
+        let rules_of = |s: &Settings| {
+            (
+                (s.circuit, s.lap_choice, s.mirror, s.reverse, s.elimination),
+                (s.mode, s.bricks, s.speed, s.opponents, s.difficulty),
+                (s.lives, s.battle_time, s.spared, s.tag_least, s.tag_back),
+                (s.goal, s.teams, s.returns, s.rivals, s.sides),
+                (s.championship.clone(), s.time_race),
+            )
+        };
+        assert_eq!(rules_of(&back), rules_of(&own));
+        assert_eq!(
+            (back.music, back.racer, back.car, back.language),
+            (3, 2, 9, 4)
+        );
+        // A host's rules are its own, but for how a race is won.
+        let mut kept = own.clone();
+        rules.keep(&mut kept);
+        assert_eq!(
+            (
+                kept.lap_choice,
+                kept.mirror,
+                kept.lives,
+                kept.tag_back,
+                kept.teams
+            ),
+            (2, true, 7, 4, true)
+        );
+        assert_eq!(
+            (kept.mode, kept.circuit, kept.elimination),
+            (own.mode, own.circuit, false)
+        );
+        Rules {
+            mode: Mode::Elimination as u8,
+            ..rules
+        }
+        .keep(&mut kept);
+        assert!(kept.elimination && kept.mode == own.mode);
     }
 
     #[test]

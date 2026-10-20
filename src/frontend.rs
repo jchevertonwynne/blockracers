@@ -2312,10 +2312,12 @@ fn enter(
         return;
     }
     // Out of a session, the way back in is where the menu opens.
-    if std::mem::take(&mut session.left) || session.notice.is_some() {
+    // Why it ended is said there then, and not after whatever is done next.
+    if std::mem::take(&mut session.left) {
         (menu.page, menu.focus) = (Page::Online, 2);
         return;
     }
+    session.notice = None;
     // `BRICK_MENU=race` (or options, game, audio) opens on that page, for screenshots.
     let page = match std::env::var("BRICK_MENU").as_deref() {
         Ok("race") => Page::SingleRace,
@@ -2988,7 +2990,12 @@ fn input(
             _ => {}
         }
         if let Some(wish) = wish {
-            (room.ballot, room.revision) = (Some(Rules::of(&wish, &circuits)), room.revision + 1);
+            let rules = Rules::of(&wish, &circuits);
+            // A host's rules are its own, and are kept for after the session.
+            if let (Role::Host, Some(own)) = (*role, &mut session.own) {
+                rules.keep(own);
+            }
+            (room.ballot, room.revision) = (Some(rules), room.revision + 1);
         }
         if matches!(
             items[focus].widget,
@@ -3956,4 +3963,32 @@ fn a_player_votes_among_the_host_s_circuits() {
         // A host with no arena has its circuits to fight on.
         assert_eq!(offered(&circuits, mode, &hosts[..2]).len(), 2);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_session_ended_is_said_once_and_not_after_the_next_race() {
+    use bevy::ecs::system::RunSystemOnce;
+    let circuits = Circuits::find();
+    let mut world = World::new();
+    world.insert_resource(Settings::new(&circuits));
+    world.insert_resource(circuits);
+    world.init_resource::<Menu>();
+    world.init_resource::<Progress>();
+    world.init_resource::<Showing>();
+    world.init_resource::<Garage>();
+    world.init_resource::<Championship>();
+    world.insert_resource(Session {
+        notice: Some("THE HOST HAS LEFT".into()),
+        left: true,
+        ..default()
+    });
+    // The menu a session ends on is the way back into one, which says why.
+    world.run_system_once(enter).unwrap();
+    assert!(world.resource::<Menu>().page == Page::Online);
+    assert!(world.resource::<Session>().notice.is_some());
+    // Back from a race alone after that, it is the menu as it always is.
+    world.run_system_once(enter).unwrap();
+    assert!(world.resource::<Menu>().page == Page::Main);
+    assert!(world.resource::<Session>().notice.is_none());
 }

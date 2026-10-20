@@ -28,6 +28,10 @@ pub struct Circuit {
     /// A map a session's host has and this game hasn't, until the host sends it
     /// with a race's start: what it is known by, and whether it is an arena.
     pub hosts: Option<(String, bool)>,
+    /// A map a session's host has sent, raced here for as long as the session
+    /// lasts, from no file of this game's: this game's own map of the name, which
+    /// is put back after it, if there was one (`Circuits::forget`).
+    pub lent: Option<Option<Map>>,
     /// Which of the game's circuits the race is one of, counting from none; the
     /// built-in circuits are in a set of their own after the last.
     pub group: usize,
@@ -96,6 +100,7 @@ impl Circuits {
                     race: Some(race),
                     map: None,
                     hosts: None,
+                    lent: None,
                     group,
                 }
             })
@@ -116,6 +121,7 @@ impl Circuits {
                 race: None,
                 map: Some(map),
                 hosts: None,
+                lent: None,
                 group: sets,
             });
         }
@@ -124,8 +130,20 @@ impl Circuits {
 
     /// Takes a map as a session's host has it, to be raced in place of this
     /// game's own of that name, or as well as its own: which circuit it then is,
-    /// or what is wrong with it.
+    /// or what is wrong with it. It is kept as a file of the folder of maps, to be
+    /// raced again whenever: by its own name, or by another like it where this
+    /// game has a map of that name already.
     pub fn lend(&mut self, key: &str, text: &str) -> Result<usize, String> {
+        self.lend_in(crate::map::folder_kept().as_deref(), key, text)
+    }
+
+    /// `lend`, keeping the map in `folder`, if there is one.
+    fn lend_in(
+        &mut self,
+        folder: Option<&std::path::Path>,
+        key: &str,
+        text: &str,
+    ) -> Result<usize, String> {
         let had = self
             .0
             .iter()
@@ -138,27 +156,61 @@ impl Circuits {
         if self.0.iter().any(|c| c.race.as_deref() == Some(key)) || key == TEST_TRACK {
             return Err("the game has a race called that".into());
         }
-        let mut map = Map::tried(key, text)?;
-        match had {
-            Some(at) => {
-                // Its file is still this game's own, to be read again later.
-                map.file = self.0[at].map().file.clone();
-                (self.0[at].name, self.0[at].author) = (map.name.clone(), map.author.clone());
-                (self.0[at].map, self.0[at].hosts) = (Some(map), None);
-                Ok(at)
+        let map = Map::tried(key, text)?;
+        // This game's own map of the name, which is raced in the session's place.
+        let own = had.filter(|&at| self.0[at].hosts.is_none());
+        let promised = had.filter(|_| own.is_none());
+        let kept = self.0.iter().any(|c| {
+            c.map
+                .as_ref()
+                .is_some_and(|map| map.file.is_some() && map.text == text)
+        });
+        let saved = folder.filter(|_| !kept).map(|folder| {
+            crate::map::save_new(folder, key, text, |other| {
+                self.0
+                    .iter()
+                    .enumerate()
+                    .any(|(at, c)| Some(at) != promised && c.key().eq_ignore_ascii_case(other))
+            })
+        });
+        let mut file = None;
+        match saved {
+            Some(Ok((saved, path))) if saved == key => file = Some(path),
+            Some(Ok((saved, path))) => {
+                info!("the host's {key} is kept as {saved}");
+                let copy = Map::tried(&saved, text)?;
+                self.keep(Map {
+                    file: Some(path),
+                    ..copy
+                });
             }
+            Some(Err(why)) => warn!("the host's {key} is not kept: {why}"),
+            None => {}
+        }
+        // Raced from no file of its own, it is the session's, and goes with it.
+        let lent = file
+            .is_none()
+            .then(|| own.and_then(|at| self.0[at].map.clone()));
+        let map = Map { file, ..map };
+        let at = match had {
+            Some(at) => at,
             None => {
                 self.0.push(Circuit {
-                    name: map.name.clone(),
-                    author: map.author.clone(),
+                    name: String::new(),
+                    author: String::new(),
                     race: None,
-                    map: Some(map),
+                    map: None,
                     hosts: None,
+                    lent: None,
                     group: self.own(),
                 });
-                Ok(self.0.len() - 1)
+                self.0.len() - 1
             }
-        }
+        };
+        let circuit = &mut self.0[at];
+        (circuit.name, circuit.author) = (map.name.clone(), map.author.clone());
+        (circuit.map, circuit.hosts, circuit.lent) = (Some(map), None, lent);
+        Ok(at)
     }
 
     /// Takes a map made or changed in the builder, in place of the one of its
@@ -180,6 +232,7 @@ impl Circuits {
                 race: None,
                 map: Some(map),
                 hosts: None,
+                lent: None,
                 group,
             }),
         }
@@ -198,6 +251,7 @@ impl Circuits {
             race: None,
             map: Some(map),
             hosts: None,
+            lent: None,
             group,
         });
         Ok(self.0.len() - 1)
@@ -227,13 +281,24 @@ impl Circuits {
             race: None,
             map: None,
             hosts: Some((key.to_string(), arena)),
+            lent: None,
             group: self.own(),
         });
     }
 
-    /// Forgets the maps a host promised and never sent, the session being over.
+    /// Forgets the maps a host promised and never sent and those it lent that
+    /// weren't kept, and puts back this game's own that they were raced in place
+    /// of, the session being over.
     pub fn forget(&mut self) {
-        self.0.retain(|c| c.hosts.is_none());
+        self.0.retain_mut(|circuit| match circuit.lent.take() {
+            Some(Some(own)) => {
+                (circuit.name, circuit.author) = (own.name.clone(), own.author.clone());
+                circuit.map = Some(own);
+                true
+            }
+            Some(None) => false,
+            None => circuit.hosts.is_none(),
+        });
     }
 
     /// Reads a circuit's map again if its file has changed, so that a map being
@@ -265,6 +330,7 @@ impl Circuits {
             race: Some(TEST_TRACK.into()),
             map: None,
             hosts: None,
+            lent: None,
             group,
         });
         settings.circuit = self.0.len() - 1;
@@ -882,12 +948,20 @@ fn settings_file() -> Option<std::path::PathBuf> {
     crate::home::kept("BRICK_SETTINGS", "settings")
 }
 
-/// Keeps the settings whenever they change, for the next session.
-pub fn keep(settings: Res<Settings>, mut kept: Local<Option<String>>) {
-    if !settings.is_changed() {
+/// Keeps the settings whenever they change, for the next session: the player's
+/// own, while an online session's are raced by.
+pub fn keep(
+    settings: Res<Settings>,
+    session: Res<crate::net::Session>,
+    mut kept: Local<Option<String>>,
+) {
+    if !settings.is_changed() && !session.is_changed() {
         return;
     }
-    let text = settings.write();
+    let text = match session.own(&settings) {
+        Some(own) => own.write(),
+        None => settings.write(),
+    };
     // The first look is at what was just restored, which is on file already.
     if kept.as_ref().is_some_and(|kept| *kept != text)
         && let Some(Err(error)) = settings_file().map(|file| crate::home::write(&file, &text))
@@ -1174,6 +1248,59 @@ fn a_host_s_map_is_raced_in_place_of_this_game_s_own() {
     assert!(circuits.lend(TEST_TRACK, &own.text).is_err());
     assert!(circuits.lend("../BRICK", &theirs).is_err());
     assert_eq!(circuits.0.len(), count + 1);
+    // The session over, this game's own is back, and with no folder to keep it
+    // in the host's goes.
+    circuits.forget();
+    assert_eq!(
+        (circuits.0[brick].name.as_str(), circuits.0[brick].map()),
+        ("Brick Circuit", own)
+    );
+    assert_eq!(circuits.0.len(), count);
+}
+
+#[cfg(test)]
+#[test]
+fn a_host_s_map_is_kept_to_be_raced_again() {
+    let folder = std::env::temp_dir().join(format!("brick_lent_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut circuits = Circuits::find();
+    let count = circuits.0.len();
+    let own = crate::map::named("BRICK");
+    let brick = circuits.0.iter().position(|c| c.key() == "BRICK").unwrap();
+    let theirs = own
+        .text
+        .replace("Brick Circuit", "Their Circuit")
+        .replace("[88, 0, 8, 32]", "[90, 0, 8, 30]");
+    // One named as this game's own is raced in its place, and kept by another name.
+    assert_eq!(circuits.lend_in(Some(&folder), "BRICK", &theirs), Ok(brick));
+    assert_eq!(circuits.0[brick].name, "Their Circuit");
+    let copy = &circuits.0[count];
+    assert_eq!(
+        (copy.key(), copy.map().text.as_str()),
+        ("BRICK-2", theirs.as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("brick-2.toml")).unwrap(),
+        theirs
+    );
+    // Sent again, it is kept already.
+    assert_eq!(circuits.lend_in(Some(&folder), "BRICK", &theirs), Ok(brick));
+    assert_eq!(circuits.0.len(), count + 1);
+    // One this game hasn't is kept by its own name, and is that circuit.
+    circuits.promise("PEN", "The Pen", "", false);
+    let pen = theirs.replace("Their Circuit", "The Pen");
+    assert_eq!(circuits.lend_in(Some(&folder), "PEN", &pen), Ok(count + 1));
+    assert_eq!(
+        circuits.0[count + 1].map().file,
+        Some(folder.join("pen.toml"))
+    );
+    // The session over, this game's own is back beside them.
+    circuits.forget();
+    assert_eq!(circuits.0[brick].map(), own);
+    let keys: Vec<&str> = circuits.0[count..].iter().map(Circuit::key).collect();
+    assert_eq!(keys, ["BRICK-2", "PEN"]);
+    let _ = std::fs::remove_dir_all(folder);
 }
 
 #[cfg(test)]
@@ -1219,13 +1346,13 @@ fn a_host_s_map_is_voted_for_before_this_game_has_it() {
         ("PEN", "The Pen", true)
     );
     assert_eq!(pen.group, circuits.0[count - 1].group);
-    // Sent with a start, it is that map; never sent, it goes with the session.
+    // Sent with a start, it is that map; never sent, or sent to a game that
+    // keeps no maps, it goes with the session.
     circuits.promise("OVAL", "Oval", "Someone", false);
     let oval = "name = \"Oval\"\ncorners = [[0, 0, 0, 0], [100, 0, 0, 30], [100, 0, 80, 30], [-100, 0, 80, 30], [-100, 0, 0, 30]]\n";
     assert_eq!(circuits.lend("OVAL", oval), Ok(count + 1));
     assert!(circuits.0[count + 1].hosts.is_none() && circuits.0[count + 1].map.is_some());
     assert_eq!(circuits.0[count + 1].credit(), "");
     circuits.forget();
-    let keys: Vec<&str> = circuits.0[count..].iter().map(Circuit::key).collect();
-    assert_eq!(keys, ["OVAL"]);
+    assert_eq!(circuits.0.len(), count);
 }
