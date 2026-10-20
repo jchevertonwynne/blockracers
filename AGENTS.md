@@ -556,3 +556,17 @@ The game opens a window and plays audio on the machine the user is sitting at.
 
 - Work is on `master`. Commit only when asked.
 - The game data and `target/` are ignored; nothing from the original game is committed.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues on `jchevertonwynne/blockracers`, using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, both created when first needed. See `docs/agents/domain.md`.
